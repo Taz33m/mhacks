@@ -8,28 +8,76 @@ import AVFoundation
 
     var body: some Scene {
         WindowGroup {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    Text("LIFELINE").font(.largeTitle.bold())
+            WearerHomeView(model: model)
+                .onAppear { model.startForDeveloperLaunchIfRequested() }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .background { model.stopForBackground() }
+                }
+        }
+    }
+}
+
+private struct WearerHomeView: View {
+    @ObservedObject var model: ChestMotionModel
+    @State private var lastKnownIncident: PhoneIncident?
+    @State private var lastKnownOwnerName: String?
+    @State private var connectionDetailsExpanded = false
+
+    private var setupIncomplete: Bool {
+        model.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || model.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var displayedIncident: PhoneIncident? {
+        model.incident ?? (model.checkinAvailable ? nil : lastKnownIncident)
+    }
+
+    // These values only retain presentation context; the model remains authoritative for every action.
+    private var presentationIdentity: [String] {
+        let incident = model.incident
+        return [model.checkinAvailable ? "available" : "unavailable", incident?.id ?? "",
+                incident?.phase ?? "", incident?.ownerId ?? "", incident?.outcome ?? "",
+                incident?.evidence.summary ?? "", incident?.checkinDeadline.map { String($0) } ?? "",
+                incident?.progressDeadline.map { String($0) } ?? ""]
+            + model.responders.flatMap { [$0.id, $0.name] }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                Text("LIFELINE").font(.largeTitle.bold())
 #if targetEnvironment(simulator)
-                    Text("Simulator UI · physical motion and speech unverified").font(.caption).foregroundStyle(.orange)
+                Text("Simulator UI · physical motion and speech unverified").font(.caption).foregroundStyle(.orange)
 #else
-                    Text("Chest iPhone · real motion").foregroundStyle(.secondary)
+                Text("Chest iPhone · real motion").font(.subheadline).foregroundStyle(.secondary)
 #endif
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Relay Mac address (port 8877)").font(.caption)
-                        TextField("Mac LAN or Tailscale IP", text: $model.host)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        Text("Development pairing token").font(.caption)
-                        SecureField("From the Mac's local dashboard", text: $model.token)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    }.textFieldStyle(.roundedBorder).disabled(model.monitoring)
-                    if model.relayHost != model.host.trimmingCharacters(in: .whitespacesAndNewlines) {
-                        Text("Active developer connection: \(model.relayHost). Saved Wi-Fi address is unchanged.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+
+                incidentCard
+
+                Button {
+                    Task { await model.requestManualHelp() }
+                } label: {
+                    Label(model.requestingHelp ? "REQUESTING HELP…" : "I NEED HELP", systemImage: "exclamationmark.circle.fill")
+                        .font(.title2.bold()).frame(maxWidth: .infinity).padding(.vertical, 6)
+                }.buttonStyle(.borderedProminent).controlSize(.large).tint(.red)
+                    .disabled(model.requestingHelp || setupIncomplete)
+                Text(model.checkinStatus).font(.subheadline).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                CheckinVoiceStatusView(voice: model.voice)
+                if let policy = model.demoPolicyExplanation {
+                    Text(policy).font(.caption).foregroundStyle(.orange)
+                }
+
+                Divider()
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Monitoring").font(.headline)
                     Button(model.monitoring ? "Stop monitoring" : "Start monitoring") {
-                        if model.monitoring { model.stop() } else { model.start() }
+                        if model.monitoring {
+                            model.stop()
+                        } else {
+                            if setupIncomplete { connectionDetailsExpanded = true }
+                            model.start()
+                        }
                     }.buttonStyle(.borderedProminent).controlSize(.large)
                     Button(model.calibrating ? "Calibrating…" : "Calibrate sensors") {
                         Task { await model.calibrateSensors() }
@@ -40,64 +88,134 @@ import AVFoundation
                     if !model.calibrationStatus.isEmpty {
                         Text(model.calibrationStatus).font(.caption).fixedSize(horizontal: false, vertical: true)
                     }
-                    Text(model.status).fixedSize(horizontal: false, vertical: true)
-                    Text(model.connectionStatus).font(.caption).fixedSize(horizontal: false, vertical: true)
-                    if let policy = model.demoPolicyExplanation {
-                        Text(policy).font(.caption).foregroundStyle(.orange)
-                    }
-                    Text("Socket completed \(model.samples) frames · skipped \(model.dropped)")
-                        .font(.caption.monospacedDigit())
-                    Text(model.totalG.map { String(format: "Local acceleration: %.2f g", $0) } ?? "No motion sample available")
-                        .font(.caption.monospacedDigit())
-                    Text("The dashboard confirms received motion; a completed socket send is not a server acknowledgement.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Button("I NEED HELP") { Task { await model.requestManualHelp() } }
-                        .font(.title2.bold()).buttonStyle(.borderedProminent)
-                        .controlSize(.large).tint(.red)
-                        .disabled(model.requestingHelp || model.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            || model.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    Divider()
-                    if let incident = model.incident {
-                        Text("Incident: \(incident.phase)").font(.headline)
-                        Text("\(incident.evidence.summary)")
-                        if incident.phase == "CONFIRMING" {
-                            Text("Possible fall. Do you need help?").font(.title2.bold())
-                            Text("If you don't respond, LIFELINE will request help from approved responders.")
-                            Text("You can say ‘I need help.’ Spoken replies never cancel the incident.")
-                            Button("I DON'T NEED HELP") { Task { await model.cancelCurrentCheckin() } }
-                                .font(.title2.bold()).buttonStyle(.borderedProminent)
-                                .controlSize(.large).tint(.green).disabled(model.cancelling)
-                            if let deadline = incident.checkinDeadline {
-                                Text("Check-in deadline: \(Date(timeIntervalSince1970: deadline / 1000), style: .time)")
-                                    .font(.caption)
-                            }
+                }
+
+                DisclosureGroup("Connection and device details", isExpanded: $connectionDetailsExpanded) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Relay Mac address (port 8877)").font(.caption)
+                            TextField("Mac LAN or Tailscale IP", text: $model.host)
+                                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                                .accessibilityLabel("Relay Mac address")
+                            Text("Development pairing token").font(.caption)
+                            SecureField("From the Mac's local dashboard", text: $model.token)
+                                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                                .accessibilityLabel("Development pairing token")
+                        }.textFieldStyle(.roundedBorder).disabled(model.monitoring)
+                        if model.relayHost != model.host.trimmingCharacters(in: .whitespacesAndNewlines) {
+                            Text("Active developer connection: \(model.relayHost). Saved Wi-Fi address is unchanged.")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
-                        if incident.ownerId != nil {
-                            Text("Responder: \(model.ownerName)").font(.headline)
-                            Text(model.progressExplanation)
-                        } else if incident.phase == "HELP_REQUESTED" {
-                            Text("Help requested. No responder has accepted responsibility yet.")
-                        }
-                        if let deadline = incident.progressDeadline {
-                            Text("Next response/progress deadline: \(Date(timeIntervalSince1970: deadline / 1000), style: .time)")
-                                .font(.caption)
-                        }
-                        if let outcome = incident.outcome, !outcome.isEmpty {
-                            Text("Recorded outcome: \(outcome)")
-                        }
-                    } else {
-                        Text(model.checkinAvailable ? "No active incident" : "Incident state not available").font(.headline)
-                    }
-                    Text(model.checkinStatus).foregroundStyle(.secondary)
-                    CheckinVoiceStatusView(voice: model.voice)
-                    Text("Keep this app foregrounded with the phone mounted on your chest. Calibrate both sources after mounting or reconnecting.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }.padding(24)
+                        Text(model.status).font(.subheadline).fixedSize(horizontal: false, vertical: true)
+                        Text(model.connectionStatus).font(.caption).fixedSize(horizontal: false, vertical: true)
+                        Text("Socket completed \(model.samples) frames · skipped \(model.dropped)")
+                            .font(.caption.monospacedDigit())
+                        Text(model.totalG.map { String(format: "Local acceleration: %.2f g", $0) } ?? "No motion sample available")
+                            .font(.caption.monospacedDigit())
+                        Text("The dashboard confirms received motion; a completed socket send is not a server acknowledgement.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }.padding(.top, 12)
+                }.font(.subheadline)
+                Text("Keep this app foregrounded with the phone mounted on your chest. Calibrate both sources after mounting or reconnecting.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }.padding(24)
+        }
+        .onChange(of: setupIncomplete, initial: true) { _, incomplete in
+            if incomplete { connectionDetailsExpanded = true }
+        }
+        .onChange(of: presentationIdentity, initial: true) { _, _ in
+            if model.checkinAvailable {
+                lastKnownIncident = model.incident
+                lastKnownOwnerName = model.incident?.ownerId == nil ? nil : model.ownerName
             }
-            .onAppear { model.startForDeveloperLaunchIfRequested() }
-            .onChange(of: scenePhase) { _, phase in
-                if phase == .background { model.stopForBackground() }
+        }
+    }
+
+    private var incidentCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if !model.checkinAvailable {
+                Label(displayedIncident == nil ? "Status unavailable" : "Last known status", systemImage: "wifi.exclamationmark")
+                    .font(.subheadline.bold()).foregroundStyle(.orange)
+                Text(model.monitoring
+                     ? "The phone cannot confirm the latest incident state. Reconnect to get current progress."
+                     : "Monitoring is stopped. Start monitoring to get the current incident state.")
+                    .font(.subheadline).foregroundStyle(.secondary)
             }
+            if let incident = displayedIncident {
+                let presentation = phasePresentation(incident.phase)
+                Label(presentation.title, systemImage: presentation.symbol)
+                    .font(.title2.bold()).foregroundStyle(presentation.color)
+                    .accessibilityAddTraits(.isHeader)
+                Text(presentation.explanation).fixedSize(horizontal: false, vertical: true)
+
+                if incident.ownerId != nil {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(incident.phase == "RESOLVED" ? "Responder who recorded the outcome" : "Assigned responder")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text(model.incident == nil ? (lastKnownOwnerName ?? "Assigned responder") : model.ownerName)
+                            .font(.headline)
+                    }.accessibilityElement(children: .combine)
+                } else if incident.phase == "HELP_REQUESTED" {
+                    Text("No responder has accepted responsibility yet.").font(.headline)
+                }
+
+                if let outcome = incident.outcome, !outcome.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Recorded outcome").font(.caption.bold())
+                        Text(outcome).fixedSize(horizontal: false, vertical: true)
+                    }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+                }
+
+                if incident.phase == "CONFIRMING", model.checkinAvailable, model.incident?.id == incident.id {
+                    Text("You can say ‘I need help.’ To cancel this check-in, use the button below. Spoken replies never cancel it.")
+                        .font(.subheadline)
+                    Button(model.cancelling ? "CANCELLING…" : "I DON'T NEED HELP") {
+                        Task { await model.cancelCurrentCheckin() }
+                    }.font(.headline).buttonStyle(.borderedProminent).controlSize(.large).tint(.blue)
+                        .disabled(model.cancelling)
+                    if let deadline = incident.checkinDeadline {
+                        Text("Response deadline: \(Date(timeIntervalSince1970: deadline / 1000), style: .time)")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if let deadline = incident.progressDeadline {
+                    Text("\(model.checkinAvailable ? "Next progress deadline" : "Last reported progress deadline"): \(Date(timeIntervalSince1970: deadline / 1000), style: .time)")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Text(incident.evidence.summary).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Incident \(incident.id)").font(.caption.monospaced()).foregroundStyle(.secondary)
+            } else if model.checkinAvailable {
+                Label("No active incident", systemImage: "bell")
+                    .font(.title2.bold()).accessibilityAddTraits(.isHeader)
+                Text("The controller has no active incident to report. You can request help at any time.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
+        }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 20))
+    }
+
+    private func phasePresentation(_ phase: String) -> (title: String, explanation: String, symbol: String, color: Color) {
+        switch phase {
+        case "DETECTED":
+            return ("Possible incident detected", "A possible incident was reported. LIFELINE is opening a check-in.", "exclamationmark.circle", .orange)
+        case "CONFIRMING":
+            return ("Do you need help?", "A possible fall was detected. Without an explicit cancellation, LIFELINE will request help from approved responders.", "questionmark.circle.fill", .orange)
+        case "HELP_REQUESTED":
+            return ("Help requested", "LIFELINE is trying to reach approved responders. Sending an alert does not confirm that someone has accepted.", "bell.badge.fill", .red)
+        case "ACKNOWLEDGED":
+            return ("Responder accepted", "The assigned responder accepted responsibility. Departure has not been confirmed.", "person.crop.circle.badge.checkmark", .blue)
+        case "RESPONDER_EN_ROUTE":
+            return ("Responder on the way", "The assigned responder reported that they are on their way.", "figure.walk", .blue)
+        case "ON_SCENE":
+            return ("Responder reported arrival", "The assigned responder reported arrival. An outcome still needs to be recorded.", "person.crop.circle.fill", .blue)
+        case "RESOLVED":
+            return ("Outcome recorded", "The on-scene responder closed this incident with the outcome below.", "doc.text.fill", .primary)
+        case "CANCELLED_FALSE_ALARM":
+            return ("Check-in closed", "This check-in was cancelled. Closure is not a medical assessment.", "bell.slash", .primary)
+        default:
+            return ("Incident update", "An incident was reported. Waiting for a recognized progress update.", "info.circle", .secondary)
         }
     }
 }

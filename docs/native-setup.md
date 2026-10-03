@@ -65,8 +65,9 @@ before retrying. That account restriction prevents certificate/profile creation.
    iPhone; no token needs to be printed in logs.
 2. Open the Mac waist app, enter the host (`127.0.0.1` when the backend is on
    this Mac) and token, and press **Start motion**.
-3. Enter the Mac LAN/Tailscale hostname or IP and the same token in the chest
-   iPhone app; press **Start monitoring**. The field accepts a hostname/IP,
+3. Open **Connection and device details** in the chest iPhone app, enter the
+   Mac LAN/Tailscale hostname or IP and the same token, then press **Start monitoring**.
+   Missing pairing values expand this section automatically. The field accepts a hostname/IP,
    not an entire URL. Port 8877 is fixed.
 4. Keep the iPhone app foregrounded. It disables screen sleep while monitoring
    and explicitly stops when backgrounded. Check-in polling continues when a
@@ -78,6 +79,12 @@ before retrying. That account restriction prevents certificate/profile creation.
    **Calibrate sensors** in the iPhone app or above the console's sensor cards.
    The phone reports whether both sources or only one was calibrated. Repeat
    after reconnecting, changing the reporting bud, or remounting.
+
+The wearer screen keeps the current incident, assigned responder, reported
+progress, and recorded outcome above setup details. Lost polling shows explicitly
+labelled last-known context and removes the stale cancellation control. Start/stop
+monitoring, manual help, and explicit calibration remain available; connection
+details and frame diagnostics are grouped below them.
 
 The token is saved in each development app's own UserDefaults so setup
 persists. This is development pairing, not production enrollment or secure
