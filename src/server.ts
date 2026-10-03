@@ -377,7 +377,9 @@ server.on('upgrade', (req, socket, head) => {
           RESPONDER_EN_ROUTE: `${ownerName ?? 'RESPONDER'} EN ROUTE`,
           ON_SCENE: `${ownerName ?? 'RESPONDER'} ON SCENE`,
           RESOLVED: 'RESOLVED\nOUTCOME RECORDED',
-          CANCELLED_FALSE_ALARM: 'CHECK-IN CLOSED\nGREEN BUTTON CONFIRMED',
+          CANCELLED_FALSE_ALARM: i?.resolutionActor === 'development-operator'
+            ? 'REHEARSAL ENDED\nDEVELOPMENT RESET'
+            : 'CHECK-IN CLOSED\nEXPLICIT CONTROL CONFIRMED',
         };
         const voices: Record<string, string> = { CONFIRMING: 'CHECKIN', HELP_REQUESTED: 'HELP', ACKNOWLEDGED: 'ACCEPTED',
           RESPONDER_EN_ROUTE: 'ENROUTE', ON_SCENE: 'ARRIVED', RESOLVED: 'RESOLVED' };

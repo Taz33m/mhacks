@@ -47,7 +47,7 @@ def display_text(value, limit):
 
 
 class StockGateway:
-    def __init__(self, serial, audio_dir, emit=None, now=time.monotonic):
+    def __init__(self, serial, audio_dir, emit=None, now=time.monotonic, pause_accel_for_audio=True):
         self.serial, self.audio_dir, self.now = serial, audio_dir, now
         self.emit = emit or self.write_packet
         self.session = str(uuid.uuid4())
@@ -63,6 +63,9 @@ class StockGateway:
         self.pending_capture = None
         self.capture = None
         self.audio_enabled = False
+        self.pause_accel_for_audio = pause_accel_for_audio
+        self.accel_paused = False
+        self.playback_until = None
         self.zero_reported = False
         self.readiness_reported = False
 
@@ -87,6 +90,19 @@ class StockGateway:
         if text != self.displayed:
             self.require(self.serial.show_text_display(text[:450]))
             self.displayed = text
+
+    def resume_accel(self):
+        if self.accel_paused:
+            if not self.serial.is_open():
+                raise RuntimeError("Stock serial connection ended while acquisition was paused.")
+            # Discard queued pre-pause accel frames while the callback still
+            # knows acquisition is suspended. Buttons continue to be handled.
+            self.serial.process_events(0.0)
+            self.require(self.serial.enable_accel_events(True, 33))
+            self.serial.process_events(0.0)
+            self.accel_paused = False
+            self.status("accel-resumed", "Accelerometer events resumed after voice playback; the recorded gap remains.")
+        self.playback_until = None
 
     def load_assets(self):
         if self.audio_dir is None:
@@ -152,7 +168,8 @@ class StockGateway:
             return
         self.sequences[event_type] = sequence
         if event_type == EventType.Accel:
-            self.acceleration(frame, data)
+            if not self.accel_paused:
+                self.acceleration(frame, data)
         elif event_type == EventType.Button:
             for name in ("green", "red"):
                 pressed = bool(getattr(data, name))
@@ -241,14 +258,23 @@ class StockGateway:
         try:
             # OG v54 playback resolves a basename in the selected directory.
             self.require(self.serial.change_directory('/sounds'))
+            if self.pause_accel_for_audio and not self.accel_paused:
+                self.accel_paused = True
+                self.require(self.serial.enable_accel_events(False, 33))
+                self.serial.process_events(0.0)
+                self.status("accel-paused", "Accelerometer events suspended for voice playback; no samples are fabricated.")
             self.require(self.serial.play_audio_file(name + ".WAV"))
         except RuntimeError:
+            self.resume_accel()
             self.status("audio-error", "Stock board playback command failed; audibility is unknown.")
             return
         # SDK success means command acceptance, not an audible completion event.
         # Exclude prompt echo using known clip duration plus a short guard.
+        after = self.now() + self.assets[name] + 0.2
+        if self.accel_paused:
+            self.playback_until = after
         if checkin_capture:
-            self.pending_capture = {"after": self.now() + self.assets[name] + 0.2,
+            self.pending_capture = {"after": after,
                                     "incidentId": self.context["incidentId"], "checkinId": self.context["checkinId"]}
 
     def context_update(self, packet):
@@ -265,6 +291,7 @@ class StockGateway:
             # The new phase screen replaces LISTENING directly; do not flash
             # the prior incident's screen while processing a context change.
             self.stop_capture(restore_display=False)
+            self.resume_accel()
         self.context = {"incidentId": incident, "checkinId": checkin, "phase": phase}
         self.phase_display = " | ".join(value for value in (phase, owner, status) if value) or "No active incident"
         if self.capture is None:
@@ -292,6 +319,8 @@ class StockGateway:
             raise ValueError("Unsupported stock command.")
 
     def audio_tick(self):
+        if self.accel_paused and self.playback_until is not None and self.now() >= self.playback_until:
+            self.resume_accel()
         if self.pending_capture is not None and self.now() >= self.pending_capture["after"]:
             pending, self.pending_capture = self.pending_capture, None
             if self.context["phase"] == "CONFIRMING" and all(pending[k] == self.context[k] for k in ("incidentId", "checkinId")):
@@ -386,6 +415,10 @@ class StockGateway:
                 self.stop_capture()
             finally:
                 if self.serial.is_open():
+                    try:
+                        self.resume_accel()
+                    except Exception:
+                        pass
                     for disable in (lambda: self.serial.enable_audio_events(False),
                                     lambda: self.serial.enable_accel_events(False, 33),
                                     lambda: self.serial.enable_button_events(False, 50)):
@@ -400,13 +433,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", required=True)
     parser.add_argument("--audio-dir", type=pathlib.Path)
+    parser.add_argument("--keep-accel-during-audio", action="store_true",
+                        help="Keep accelerometer events running during voice playback for comparison.")
     options = parser.parse_args()
     if not re.fullmatch(r"/dev/(cu\.[\w.-]+|tty(?:ACM|USB)\d+)", options.port) or not stat.S_ISCHR(pathlib.Path(options.port).stat().st_mode):
         raise ValueError("An explicit verified DISPLAY character-device port is required.")
     if options.audio_dir is not None and not options.audio_dir.is_dir():
         raise ValueError("Prepared audio directory is missing.")
     logging.disable(logging.CRITICAL)
-    gateway = StockGateway(FreeWiliSerial(options.port, stay_open=True), options.audio_dir)
+    gateway = StockGateway(FreeWiliSerial(options.port, stay_open=True), options.audio_dir,
+                           pause_accel_for_audio=not options.keep_accel_during_audio)
     def stop(_signal, _frame):
         gateway.running = False
     signal.signal(signal.SIGTERM, stop)

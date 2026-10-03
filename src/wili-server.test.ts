@@ -181,7 +181,7 @@ test('isolated stock WILi acquisition, speech and buttons preserve policy and re
     assert.equal(cancelled.timeline.some(event => event.actor === 'freewili-button' && event.type === 'CANCELLED_FALSE_ALARM'), true);
     const closedCheckin = await context(confirming.id, 'CANCELLED_FALSE_ALARM');
     // A closed check-in must not replay instructions to press green again.
-    assert.equal(closedCheckin.voiceAsset, null); assert.match(closedCheckin.statusText!, /GREEN BUTTON CONFIRMED/);
+    assert.equal(closedCheckin.voiceAsset, null); assert.match(closedCheckin.statusText!, /EXPLICIT CONTROL CONFIRMED/);
 
     intervals.forEach(clearInterval); intervals.length = 0;
     const closed = once(ws, 'close');

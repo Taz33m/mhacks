@@ -57,6 +57,8 @@ class SerialDouble:
         self.files = {}
         self.downloads = []
         self.fail_get = False
+        self.fail_play = False
+        self.fail_accel_resume = False
     def open(self):
         self.calls.append(("open",)); self.opened = True; return Result()
     def is_open(self):
@@ -68,7 +70,7 @@ class SerialDouble:
     def enable_audio_events(self, enable):
         self.calls.append(("audio", enable)); return Result(fail=(self.fail_disable and not enable) or (self.fail_enable and enable))
     def enable_accel_events(self, enable, interval):
-        self.calls.append(("accel", enable, interval)); return Result()
+        self.calls.append(("accel", enable, interval)); return Result(fail=self.fail_accel_resume and enable)
     def enable_button_events(self, enable, interval):
         self.calls.append(("buttons", enable, interval)); return Result()
     def read_all_buttons(self):
@@ -88,7 +90,7 @@ class SerialDouble:
         destination.write_bytes(self.files[source])
         return Result(fail=self.fail_get)
     def play_audio_file(self, target):
-        self.calls.append(("play", target)); return Result()
+        self.calls.append(("play", target)); return Result(fail=self.fail_play)
     def change_directory(self, target):
         self.calls.append(("directory", target)); return Result()
     def list_current_directory(self):
@@ -96,7 +98,8 @@ class SerialDouble:
     def show_text_display(self, text):
         self.calls.append(("display", text)); return Result()
     def process_events(self, delay):
-        self.gateway.running = False
+        if delay:
+            self.gateway.running = False
 
 
 # Stub every imported SDK surface before loading production worker. Importing this
@@ -128,6 +131,7 @@ class StockTests(unittest.TestCase):
         now, packets, serial = [0.0], [], SerialDouble()
         gateway = worker.StockGateway(serial, None, packets.append, lambda: now[0])
         serial.gateway = gateway
+        serial.opened = True
         return gateway, serial, now, packets
 
     def start_capture(self, gateway, now):
@@ -197,7 +201,10 @@ class StockTests(unittest.TestCase):
         self.assertEqual(sample["captureClock"], "host-receipt")
         self.assertEqual(sample["sensorTime"], now[0])
         self.assertEqual(sample["accelerationG"], [0, 0, 1])
-        self.assertNotIn(("accel", False, 33), serial.calls, "listening does not pause or synthesize motion samples")
+        self.assertLess(serial.calls.index(("accel", False, 33)), serial.calls.index(("play", "CHECKIN.WAV")))
+        self.assertLess(serial.calls.index(("play", "CHECKIN.WAV")), serial.calls.index(("accel", True, 33)))
+        self.assertLess(serial.calls.index(("accel", True, 33)), serial.calls.index(("audio", True)))
+        self.assertFalse(gateway.accel_paused, "motion resumes before listening and is not synthesized")
         gateway.on_event(EventType.Audio, frame(8), types.SimpleNamespace(data=[-32768, 0, 32767]))
         gateway.on_event(EventType.Audio, frame(8), types.SimpleNamespace(data=[99]))
         now[0] = 6.32
@@ -292,8 +299,118 @@ class StockTests(unittest.TestCase):
         self.assertNotIn("LISTENING", gateway.displayed)
         self.assertEqual(serial.calls[-1], ("play", "CHECKIN.WAV"))
 
+    def test_voice_pause_keeps_buttons_and_discards_queued_old_accel_until_resume(self):
+        gateway, serial, now, packets = self.setup_gateway()
+        gateway.assets["CHECKIN"] = 1
+        gateway.command(context())
+        self.assertTrue(gateway.accel_paused)
+        self.assertFalse(gateway.audio_enabled)
+        self.assertFalse(any(call[0] == "buttons" for call in serial.calls))
+        gateway.on_event(EventType.Accel, frame(1), types.SimpleNamespace(g=2, x=0, y=0, z=16000))
+        gateway.on_event(EventType.Button, frame(2), types.SimpleNamespace(green=True, red=False))
+        self.assertTrue(any(packet["type"] == "button.press" for packet in packets))
+        self.assertFalse(any(packet["type"] == "accel.sample" for packet in packets))
+        drained = []
+
+        def old_events(_delay):
+            sequence = 3 + len(drained)
+            drained.append(sequence)
+            gateway.on_event(EventType.Accel, frame(sequence), types.SimpleNamespace(g=2, x=0, y=0, z=16000))
+
+        serial.process_events = old_events
+        now[0] = 1.19
+        gateway.audio_tick()
+        self.assertTrue(gateway.accel_paused)
+        now[0] = 1.21
+        gateway.audio_tick()
+        self.assertEqual(len(drained), 2)
+        self.assertFalse(any(packet["type"] == "accel.sample" for packet in packets),
+                         "buffered motion is not relabelled as fresh after playback")
+        self.assertFalse(gateway.accel_paused)
+        self.assertLess(serial.calls.index(("accel", True, 33)), serial.calls.index(("audio", True)))
+        gateway.on_event(EventType.Accel, frame(5), types.SimpleNamespace(g=2, x=0, y=0, z=16000))
+        self.assertEqual(len([packet for packet in packets if packet["type"] == "accel.sample"]), 1)
+        self.assertEqual(packets[-1]["sensorTime"], now[0])
+
+    def test_overlapping_phase_voice_replaces_old_pause_timer_without_old_mic_start(self):
+        gateway, serial, now, _packets = self.setup_gateway()
+        gateway.assets.update({"CHECKIN": .1, "HELP": 2})
+        gateway.command(context())
+        now[0] = .1
+        gateway.command(context("HELP_REQUESTED", "HELP"))
+        self.assertIsNone(gateway.pending_capture)
+        self.assertAlmostEqual(gateway.playback_until, 2.3)
+        self.assertEqual(serial.calls.count(("accel", True, 33)), 1,
+                         "a phase change restores acquisition before the replacement prompt")
+        now[0] = .31
+        gateway.audio_tick()
+        self.assertTrue(gateway.accel_paused, "the old prompt timer cannot resume the newer voice window")
+        self.assertNotIn(("audio", True), serial.calls)
+        gateway.command(context("HELP_REQUESTED", "HELP"))
+        self.assertEqual(serial.calls.count(("play", "HELP.WAV")), 1, "repeated context does not loop voice")
+        self.assertAlmostEqual(gateway.playback_until, 2.3)
+        now[0] = 2.31
+        gateway.audio_tick()
+        self.assertFalse(gateway.accel_paused)
+        self.assertNotIn(("audio", True), serial.calls)
+
+    def test_playback_failure_and_shutdown_restore_accel_without_starting_mic(self):
+        gateway, serial, _now, packets = self.setup_gateway()
+        gateway.assets["CHECKIN"] = .1
+        serial.fail_play = True
+        gateway.command(context())
+        self.assertFalse(gateway.accel_paused)
+        self.assertIsNone(gateway.playback_until)
+        self.assertIsNone(gateway.pending_capture)
+        self.assertNotIn(("audio", True), serial.calls)
+        self.assertEqual(packets[-1]["status"], "audio-error")
+        self.assertLess(serial.calls.index(("play", "CHECKIN.WAV")), serial.calls.index(("accel", True, 33)))
+
+        gateway, serial, _now, _packets = self.setup_gateway()
+        gateway.assets["CHECKIN"] = 2
+        gateway.read_input = lambda: None
+        gateway.inputs.put_nowait(context())
+        gateway.inputs.put_nowait(None)
+        gateway.run()
+        play_index = serial.calls.index(("play", "CHECKIN.WAV"))
+        resume_index = next(index for index, call in enumerate(serial.calls)
+                            if index > play_index and call == ("accel", True, 33))
+        self.assertLess(resume_index, len(serial.calls) - 1)
+        self.assertEqual(serial.calls[-1], ("close",))
+        self.assertFalse(gateway.accel_paused)
+        self.assertNotIn(("audio", True), serial.calls)
+
+    def test_resume_failure_cannot_start_mic_or_claim_acquisition_resumed(self):
+        gateway, serial, now, packets = self.setup_gateway()
+        gateway.assets["CHECKIN"] = .1
+        gateway.command(context())
+        serial.fail_accel_resume = True
+        now[0] = .31
+        with self.assertRaises(RuntimeError):
+            gateway.audio_tick()
+        self.assertTrue(gateway.accel_paused)
+        self.assertFalse(any(packet.get("status") == "accel-resumed" for packet in packets))
+        self.assertNotIn(("audio", True), serial.calls)
+        self.assertIsNone(gateway.capture)
+
+    def test_pause_opt_out_preserves_stream_while_retaining_prompt_echo_guard(self):
+        gateway, serial, now, _packets = self.setup_gateway()
+        gateway.pause_accel_for_audio = False
+        gateway.assets["CHECKIN"] = .1
+        gateway.command(context())
+        self.assertFalse(any(call[0] == "accel" for call in serial.calls))
+        self.assertFalse(gateway.accel_paused)
+        now[0] = .2
+        gateway.audio_tick()
+        self.assertNotIn(("audio", True), serial.calls)
+        now[0] = .31
+        gateway.audio_tick()
+        self.assertTrue(gateway.audio_enabled)
+        self.assertFalse(any(call[0] == "accel" for call in serial.calls))
+
     def test_queued_commands_service_real_events_and_capture_deadlines_between_commands(self):
         gateway, serial, now, packets = self.setup_gateway()
+        gateway.pause_accel_for_audio = False
         gateway.assets["CHECKIN"] = .1
         gateway.read_input = lambda: None
         for packet in (context(), {"type": "clock.ping", "id": "during-capture"},

@@ -18,11 +18,13 @@ Run the backend with `npm start`. Keep the board connected by USB to the Mac. Ct
 - Speaker: seven cached 8 kHz mono PCM prompts uploaded into `/sounds`: check-in, help requested, accepted, en route, arrived, resolved and explicit-cancellation guidance. The preparation manifest records the actual generation source; local macOS speech is not an ElevenLabs demonstration.
 - Microphone: one bounded six-second capture after the check-in prompt, with local Whisper transcription. A positive or ambiguous transcript preserves the timer. A positive transcript asks for the green button; exact help requests escalate.
 
+Stock acceleration reporting pauses for the duration of spoken prompts to reduce playback load on the display processor, then resumes before microphone capture. Buttons remain enabled. The resulting measurement gap is retained and can appear as stale telemetry; it never establishes safety. This is a playback mitigation awaiting listening comparison, not proof of improved audio.
+
 Use the normal configurable check-in window (default 20 seconds) to rehearse playback, listening and recognition; measure whether that sequence completes before the deadline. The optional five-second demo policy can expire before it finishes. Playback-command acceptance does not prove audibility; prompt duration is an estimate used to exclude echo. Raw utterance audio is transient. The backend records the final transcript and policy decision with incident/check-in identity.
 
 ## Cached board voice
 
-For ElevenLabs preparation, set `ELEVENLABS_API_KEY` in the private `.env`. Optional `ELEVENLABS_VOICE_ID` and `ELEVENLABS_MODEL_ID` override the defaults (`JBFqnCBsd6RMkjVDRZzb` and `eleven_multilingual_v2`). Prepare before starting the stock bridge:
+For ElevenLabs preparation, set `ELEVENLABS_API_KEY` in the private `.env`. Optional `ELEVENLABS_VOICE_ID` and `ELEVENLABS_MODEL_ID` override the defaults (`JBFqnCBsd6RMkjVDRZzb` and `eleven_multilingual_v2`). Board delivery defaults to 0.85 speed; `ELEVENLABS_SPEED` can override it within 0.7–1.2. Prepare before starting the stock bridge:
 
 ```sh
 npm run prepare:wili:elevenlabs

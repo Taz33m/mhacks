@@ -5,7 +5,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pcm16Wav, readMonoPcm16Wav } from './audio.ts';
-import { DEFAULT_ELEVENLABS_MODEL_ID, DEFAULT_ELEVENLABS_VOICE_ID, prepareStockAudio, readStockVoiceManifest, STOCK_VOICE_PROMPTS, stockVoiceSelection } from './prepare-stock-audio.ts';
+import { DEFAULT_ELEVENLABS_MODEL_ID, DEFAULT_ELEVENLABS_VOICE_ID, DEFAULT_STOCK_ELEVENLABS_SPEED, prepareStockAudio, readStockVoiceManifest, STOCK_VOICE_PROMPTS, stockVoiceSelection, stockVoiceSpeed } from './prepare-stock-audio.ts';
 import type { StockVoiceAsset, StockVoiceName } from './prepare-stock-audio.ts';
 
 const names = Object.keys(STOCK_VOICE_PROMPTS);
@@ -29,6 +29,11 @@ test('stock voice defaults and explicit overrides are shared without API credent
   assert.deepEqual(stockVoiceSelection({ ELEVENLABS_VOICE_ID: ' custom_voice ', ELEVENLABS_MODEL_ID: ' eleven_flash_v2_5 ' }),
     { voiceId: 'custom_voice', modelId: 'eleven_flash_v2_5' });
   assert.throws(() => stockVoiceSelection({ ELEVENLABS_VOICE_ID: '../unsafe' }), /configuration/);
+  assert.equal(stockVoiceSpeed({}), DEFAULT_STOCK_ELEVENLABS_SPEED);
+  assert.equal(stockVoiceSpeed({ ELEVENLABS_SPEED: ' 0.7 ' }), 0.7);
+  assert.equal(stockVoiceSpeed({ ELEVENLABS_SPEED: '1.2' }), 1.2);
+  for (const value of ['0.69', '1.21', 'NaN', 'Infinity', 'slow'])
+    assert.throws(() => stockVoiceSpeed({ ELEVENLABS_SPEED: value }), /between 0.7 and 1.2/);
 });
 
 test('seven offline ElevenLabs requests produce verified canonical assets and a complete cache skips all requests', async t => {
@@ -41,6 +46,7 @@ test('seven offline ElevenLabs requests produce verified canonical assets and a 
     assert.equal(headers.get('accept'), 'audio/mpeg');
     const body = JSON.parse(String(init?.body));
     assert.equal(body.model_id, DEFAULT_ELEVENLABS_MODEL_ID); requested.push(body.text);
+    assert.deepEqual(body.voice_settings, { speed: 0.85 });
     return speechResponse();
   };
   const result = await prepareStockAudio(directory, { provider: 'elevenlabs', env, fetch: fetcher, convert });
@@ -48,6 +54,7 @@ test('seven offline ElevenLabs requests produce verified canonical assets and a 
   const manifest = await readStockVoiceManifest(directory);
   assert.deepEqual(manifest, result.manifest); assert.equal(manifest!.provider, 'elevenlabs');
   assert.equal(manifest!.source, 'ElevenLabs'); assert.equal(manifest!.schemaVersion, 2);
+  assert.equal(manifest!.speed, 0.85);
   assert.equal(JSON.stringify(manifest).includes(env.ELEVENLABS_API_KEY), false);
   for (const name of names) {
     const audio = await readFile(join(directory, `${name}.WAV`));
@@ -67,6 +74,7 @@ test('explicit local fallback has separate truthful provenance even with an Elev
   }, fetch: async () => { throw new Error('Local mode must not send.'); } });
   assert.equal(generated, 7); assert.equal(result.manifest.provider, 'local');
   assert.equal(result.manifest.source, 'macOS local speech'); assert.equal(result.manifest.voiceId, 'Samantha');
+  assert.equal(result.manifest.speed, null);
   assert.match(result.manifest.prompts.ACCEPTED, /not reported leaving/);
   assert.equal((await prepareStockAudio(directory, { provider: 'local', localSpeech: async () => { throw new Error('Must use cache.'); } })).cached, true);
 });
@@ -95,6 +103,25 @@ test('voice/model changes invalidate paid-input cache; returning to the previous
   assert.equal(requests, 14); assert.notEqual(changed.manifest.assets.CHECKIN.cacheKey, original.manifest.assets.CHECKIN.cacheKey);
   await prepareStockAudio(directory, { provider: 'elevenlabs', env, fetch: fetcher, convert });
   assert.equal(requests, 14);
+});
+
+test('board speed changes invalidate all seven inputs; manifest speed cannot be relabelled without new matching assets', async t => {
+  const directory = await temporary(t); const speeds: number[] = [];
+  const fetcher: typeof fetch = async (_input, init) => {
+    speeds.push(JSON.parse(String(init?.body)).voice_settings.speed); return speechResponse();
+  };
+  const original = await prepareStockAudio(directory, { provider: 'elevenlabs', env, fetch: fetcher, convert });
+  const slower = await prepareStockAudio(directory, { provider: 'elevenlabs', env: { ...env, ELEVENLABS_SPEED: '0.8' }, fetch: fetcher, convert });
+  assert.deepEqual(speeds, [...Array(7).fill(0.85), ...Array(7).fill(0.8)]);
+  assert.notEqual(slower.manifest.assets.CHECKIN.cacheKey, original.manifest.assets.CHECKIN.cacheKey);
+  const relabelled = structuredClone(slower.manifest); relabelled.speed = 0.85;
+  await writeFile(join(directory, 'manifest.json'), JSON.stringify(relabelled));
+  assert.equal(await readStockVoiceManifest(directory), null);
+  const restored = await prepareStockAudio(directory, { provider: 'elevenlabs', env, fetch: fetcher, convert });
+  assert.equal(speeds.length, 14); assert.equal(restored.manifest.speed, 0.85);
+  const before = await files(directory);
+  await assert.rejects(prepareStockAudio(directory, { provider: 'elevenlabs', env: { ...env, ELEVENLABS_SPEED: '2' }, fetch: fetcher, convert }), /ELEVENLABS_SPEED/);
+  assert.equal(speeds.length, 14); assert.deepEqual(await files(directory), before);
 });
 
 test('a corrupt or missing active clip cannot be treated as a complete cache, even when its private artifact can repair it offline', async t => {
