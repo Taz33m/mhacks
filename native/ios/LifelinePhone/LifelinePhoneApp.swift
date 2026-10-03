@@ -29,6 +29,9 @@ import AVFoundation
                     }.buttonStyle(.borderedProminent).controlSize(.large)
                     Text(model.status).fixedSize(horizontal: false, vertical: true)
                     Text(model.connectionStatus).font(.caption).fixedSize(horizontal: false, vertical: true)
+                    if let policy = model.demoPolicyExplanation {
+                        Text(policy).font(.caption).foregroundStyle(.orange)
+                    }
                     Text("Socket completed \(model.samples) frames · skipped \(model.dropped)")
                         .font(.caption.monospacedDigit())
                     Text(model.totalG.map { String(format: "Local acceleration: %.2f g", $0) } ?? "No motion sample available")
@@ -103,6 +106,12 @@ struct CheckinResponse: Decodable {
     let audioUrl: String?
     let serverTime: Double?
     let responders: [PhoneResponder]?
+    let policy: PhoneCheckinPolicy?
+}
+struct PhoneCheckinPolicy: Decodable {
+    let demoMode: Bool
+    let checkinMs: Double
+    let configuredCheckinMs: Double
 }
 struct PhoneResponder: Decodable { let id: String; let name: String }
 struct SpokenReplyResponse: Decodable { let decision: String }
@@ -139,6 +148,7 @@ struct PhoneIncident: Decodable {
     @Published var cancelling = false
     @Published var requestingHelp = false
     @Published var responders: [PhoneResponder] = []
+    @Published var checkinPolicy: PhoneCheckinPolicy?
     let voice = CheckinVoiceSession()
 
     private let motion = CMMotionManager()
@@ -185,6 +195,13 @@ struct PhoneIncident: Decodable {
     var ownerName: String {
         guard let owner = incident?.ownerId else { return "Not assigned" }
         return responders.first(where: { $0.id == owner })?.name ?? owner
+    }
+    var demoPolicyExplanation: String? {
+        guard checkinAvailable, let policy = checkinPolicy, policy.demoMode, policy.checkinMs.isFinite, policy.checkinMs > 0,
+              policy.configuredCheckinMs.isFinite, policy.configuredCheckinMs > 0 else { return nil }
+        let seconds = String(format: "%g", policy.checkinMs / 1000)
+        let configuredSeconds = String(format: "%g", policy.configuredCheckinMs / 1000)
+        return "Demo timeout accelerated from configurable policy value: \(seconds) seconds (configured window: \(configuredSeconds) seconds). Spoken replies never extend the active deadline."
     }
     var progressExplanation: String {
         switch incident?.phase {
@@ -461,6 +478,7 @@ struct PhoneIncident: Decodable {
             incident = checkin.incident
             checkinAvailable = true
             responders = checkin.responders ?? []
+            checkinPolicy = checkin.policy
             if let activeIdentity = voice.identity,
                checkin.incident?.phase != "CONFIRMING" || checkin.incident?.id != activeIdentity.incidentId
                 || checkin.incident?.checkinId != activeIdentity.checkinId {
@@ -481,7 +499,8 @@ struct PhoneIncident: Decodable {
                 if let path = checkin.audioUrl, path.hasPrefix("/"), !path.hasPrefix("//") {
                     audioRequest = authenticatedRequest(path)
                 } else { audioRequest = nil }
-                voice.begin(identity, deadline: requestStarted.addingTimeInterval(remaining), audioRequest: audioRequest)
+                voice.begin(identity, deadline: requestStarted.addingTimeInterval(remaining), audioRequest: audioRequest,
+                            demoMode: checkin.policy?.demoMode == true)
             }
         } catch {
             guard monitoring, monitoringEpoch == epoch else { return }
@@ -597,6 +616,7 @@ struct PhoneIncident: Decodable {
         voice.cancel(reason: "Monitoring stopped. Voice and microphone are off.")
         incident = nil
         checkinAvailable = false
+        checkinPolicy = nil
         UIApplication.shared.isIdleTimerDisabled = false
         status = "Stopped. Sensor unavailability does not resolve an incident."
         connectionStatus = "Relay socket stopped."

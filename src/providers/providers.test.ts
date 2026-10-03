@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Incident, ProviderInbound } from '../contracts.ts';
-import { CHECKIN_TEXT, FINCH_DEMO_URL, createProviders } from './index.ts';
+import { CHECKIN_TEXT, DEMO_CHECKIN_TEXT, FINCH_DEMO_URL, createProviders } from './index.ts';
 import { createPhotonAdapter, normalizePhoton, type PhotonClient, type PhotonMessage, type PhotonSpace } from './photon.ts';
 
 const incident: Incident = {
@@ -99,7 +99,7 @@ test('bounded Finch read rejects oversized and non-JSON bodies', async () => {
   }
 });
 
-test('bounded LLM ranks only known records; model medical prose is never rendered', async () => {
+test('AI composes an incident-grounded answer with selected source fields and unknowns, never medical prose', async () => {
   let requests = 0;
   const providers = createProviders({
     env: { LIFELINE_LLM_API_KEY: 'mock', LIFELINE_LLM_BASE_URL: 'https://model.example/v1', LIFELINE_LLM_MODEL: 'mock-model' },
@@ -110,7 +110,8 @@ test('bounded LLM ranks only known records; model medical prose is never rendere
       const body = JSON.parse(String(init?.body));
       assert.equal(body.tools, undefined);
       assert.match(body.messages[1].content, /allergy-1/);
-      return json({ choices: [{ message: { content: JSON.stringify({ recordIds: ['allergy-1'], answer: 'Invented diagnosis' }) } }] });
+      assert.match(body.messages[1].content, /Chest impact and waist posture change/);
+      return json({ choices: [{ message: { content: JSON.stringify({ facts: [{ recordId: 'allergy-1', fields: ['substance', 'reaction', 'severity'] }], incidentFields: [], unavailable: ['location'], answer: 'Invented diagnosis' }) } }] });
     }),
   });
   const health = await providers.loadHealth();
@@ -118,19 +119,60 @@ test('bounded LLM ranks only known records; model medical prose is never rendere
   assert.match(answer, /Penicillin/);
   assert.doesNotMatch(answer, /Invented diagnosis/);
   assert.doesNotMatch(answer, /Example medication/);
+  assert.match(answer, /AI-composed answer/);
+  assert.match(answer, /severity: not returned; unknown/);
+  assert.match(answer, /Unavailable information:\nLocation not provided/);
+  assert.match(providers.providerStatus().llm.detail, /AI answer generation verified/);
   const before = requests;
   assert.match(await providers.answerQuestion(incident, health, 'Should I administer a medicine?'), /cannot recommend treatment/);
   assert.equal(requests, before);
 });
 
-test('invented LLM record ID falls back to actual records', async () => {
+test('invented AI records or fields fall back visibly to actual records', async () => {
+  for (const facts of [[{ recordId: 'invented-record', fields: ['name'] }], [{ recordId: 'allergy-1', fields: ['inventedField'] }]]) {
   const providers = createProviders({
     env: { LIFELINE_LLM_API_KEY: 'mock', LIFELINE_LLM_BASE_URL: 'https://model.example/v1', LIFELINE_LLM_MODEL: 'mock' },
-    fetch: fetchStub((url) => url === FINCH_DEMO_URL ? json(fixture) : json({ choices: [{ message: { content: '{"recordIds":["invented-record"]}' } }] })),
+    fetch: fetchStub((url) => url === FINCH_DEMO_URL ? json(fixture) : json({ choices: [{ message: { content: JSON.stringify({ facts, incidentFields: [], unavailable: [] }) } }] })),
   });
   const answer = await providers.answerQuestion(incident, await providers.loadHealth(), 'What allergies are recorded?');
   assert.match(answer, /template fallback/);
   assert.doesNotMatch(answer, /invented-record/);
+  assert.match(providers.providerStatus().llm.detail, /AI demo requirement unmet/);
+  }
+});
+
+test('AI handoff uses physical incident context and produces source-cited facts with explicit unavailable information', async () => {
+  const providers = createProviders({
+    env: { LIFELINE_LLM_API_KEY: 'mock', LIFELINE_LLM_BASE_URL: 'https://model.example/v1', LIFELINE_LLM_MODEL: 'mock' },
+    fetch: fetchStub((url, init) => {
+      if (url === FINCH_DEMO_URL) return json(fixture);
+      const request = JSON.parse(String(init?.body));
+      assert.match(request.messages[0].content, /responder handoff/);
+      assert.match(request.messages[1].content, /Chest impact and waist posture change/);
+      return json({ choices: [{ message: { content: JSON.stringify({
+        facts: [{ recordId: 'allergy-1', fields: ['substance', 'reaction'] }, { recordId: 'med-1', fields: ['name', 'dosage'] }],
+        incidentFields: ['evidence'], unavailable: ['location', 'currentVitals', 'liveRecordFreshness'],
+      }) } }] });
+    }),
+  });
+  const handoff = await providers.buildHandoff(incident, await providers.loadHealth());
+  assert.match(handoff, /AI-composed synthetic health handoff/);
+  assert.match(handoff, /Penicillin; reaction: Fixture rash \[allergy-1\]/);
+  assert.match(handoff, /Current vital signs not provided/);
+  assert.doesNotMatch(handoff, /source template fallback/);
+  assert.match(providers.providerStatus().llm.detail, /AI handoff generation verified/);
+});
+
+test('demo voice prepares the short clip once to fit the accelerated silence check-in', async () => {
+  let calls = 0;
+  const providers = createProviders({ env: { ELEVENLABS_API_KEY: 'mock', ELEVENLABS_VOICE_ID: 'voice', LIFELINE_DEMO_MODE: '1' },
+    fetch: fetchStub((_url, init) => {
+      calls++; assert.equal(JSON.parse(String(init?.body)).text, DEMO_CHECKIN_TEXT);
+      return new Response(mp3, { headers: { 'Content-Type': 'audio/mpeg' } });
+    }),
+  });
+  await providers.prepareCheckinAudio(); await providers.prepareCheckinAudio();
+  assert.equal(calls, 1);
 });
 
 test('audio is cached and failures do not repeatedly generate clips', async () => {

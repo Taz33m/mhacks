@@ -9,7 +9,7 @@ The [PRD](PRD.md) defines the product scope, fixed decisions, demo requirements,
 - Backend: contracts, incident controller, SQLite, motion ingestion/alignment/detection, server, provider worker integration, tests, end-to-end verification.
 - Native clients: copied/adapted macOS AirPods app and build script; minimal SwiftUI iPhone motion producer and Xcode project/build script.
 - Dashboard: vanilla HTML/CSS/JS live traces, device health, phase/owner/outcome, explicitly labelled development controls.
-- Providers: Photon cloud adapter, FinchNode synthetic records, ElevenLabs audio and optional grounded model adapter; provider-level validation.
+- Providers: Photon cloud adapter, FinchNode synthetic records, ElevenLabs audio and required grounded AI handoff/Q&A for the judged demo.
 
 ## Milestones
 
@@ -28,6 +28,8 @@ Shared interfaces are defined in `src/contracts.ts` and `docs/interfaces.md`. Co
 The backend, native clients, dashboard, and provider adapters are implemented. Automated tests cover the incident loop, speech policy, authentication, raw motion protocol, and provider failures. `npm run setup:local` installs/pairs the Mac app and prepares network access; iPhone device installation uses the signing/device steps in [native setup](native-setup.md).
 
 Spoken check-ins use final on-device English transcripts. Help requests escalate; positive replies require the explicit cancel control; ambiguity preserves the deadline. The dashboard displays the recorded reply and actual source/configuration status.
+
+Positive replies now receive an acknowledgement that directs the wearer to the explicit cancellation control, through native speech or a persisted Photon wearer message. The explicit demo profile accelerates new silence check-ins to five seconds with labelled timing; spoken reply rehearsals use a sufficient normal configurable window. AI composes structured, source-cited handoffs/answers; failure remains a visibly degraded template and does not pass the AI demo gate.
 
 The wearer check-in also queues a Photon iMessage when configured with `LIFELINE_WEARER_PHONE`. Wearer replies share the same policy and deadline; a separate worker slot keeps a slow wearer send from delaying responder alerts. The dashboard distinguishes phone audio, wearer iMessage, and responder delivery. Actual iMessage receipt and replies remain part of the physical demo validation.
 

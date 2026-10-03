@@ -24,6 +24,8 @@ struct CheckinIdentity: Equatable {
     private let synthesizer = AVSpeechSynthesizer()
     private var player: AVAudioPlayer?
     private var utterance: AVSpeechUtterance?
+    private enum SpeechPurpose { case prompt, acknowledgement }
+    private var utterancePurpose: SpeechPurpose?
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private var permissionTask: Task<Bool, Never>?
@@ -38,6 +40,8 @@ struct CheckinIdentity: Equatable {
     private var suspended = false
     private let maximumAttempts = 2
     private let prompt = "I detected a possible fall. Do you need help? You can say I need help, or tap I don't need help to cancel."
+    private var sessionPrompt = ""
+    private let positiveAcknowledgement = "Glad you're okay. To close this check-in, tap 'I DON'T NEED HELP' on your phone."
 
     override init() {
         super.init()
@@ -89,11 +93,12 @@ struct CheckinIdentity: Equatable {
         identity == expected && !suspended && Date() < deadline
     }
 
-    func begin(_ expected: CheckinIdentity, deadline: Date, audioRequest: URLRequest?) {
+    func begin(_ expected: CheckinIdentity, deadline: Date, audioRequest: URLRequest?, demoMode: Bool = false) {
         cancel(reason: "Preparing the current check-in.")
         guard deadline.timeIntervalSinceNow > 0 else { status = "Check-in deadline passed; waiting for controller state."; return }
         identity = expected
         self.deadline = deadline
+        sessionPrompt = demoMode ? "I detected a possible fall. Are you okay?" : prompt
         transcript = ""
         transcriptIsFinal = false
         attempts = 0
@@ -144,9 +149,10 @@ struct CheckinIdentity: Equatable {
     private func playNativePrompt(_ expected: CheckinIdentity) {
         guard isCurrent(expected) else { return }
         status = "Development fallback: native iPhone prompt. Microphone is off."
-        let utterance = AVSpeechUtterance(string: prompt)
+        let utterance = AVSpeechUtterance(string: sessionPrompt)
         utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
         self.utterance = utterance
+        utterancePurpose = .prompt
         synthesizer.speak(utterance)
     }
 
@@ -154,6 +160,7 @@ struct CheckinIdentity: Equatable {
         guard let expected = identity, isCurrent(expected) else { return }
         player = nil
         utterance = nil
+        utterancePurpose = nil
         retryTask = Task { @MainActor [weak self] in
             // No audio input tap exists during either prompt. Let speaker tail
             // decay before installing the microphone tap.
@@ -245,10 +252,36 @@ struct CheckinIdentity: Equatable {
         switch decision {
         case "help_requested": cancel(reason: "The controller requested help. Waiting for responder updates.")
         case "confirmation_required":
-            status = "To cancel, tap I DON'T NEED HELP. Your spoken reply has not cleared this incident."
+            acknowledgePositiveReply(expected)
         default:
             retryIfPossible(expected, message: "The reply was ambiguous. The incident remains open.")
         }
+    }
+
+    private func acknowledgePositiveReply(_ expected: CheckinIdentity) {
+        guard isCurrent(expected) else { return }
+        // Remove the microphone tap and any queued retry before speaking. Keep
+        // identity, attempts, and the original deadline timer unchanged.
+        stopActivities()
+        guard isCurrent(expected) else { return }
+        do {
+            let audio = AVAudioSession.sharedInstance()
+            try audio.setCategory(.playback, mode: .spokenAudio)
+            try audio.setActive(true)
+        } catch {
+            status = "Native acknowledgement unavailable. Tap I DON'T NEED HELP to close this check-in; your spoken reply has not cancelled it."
+            return
+        }
+        guard isCurrent(expected) else {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            return
+        }
+        status = "Native iPhone acknowledgement. Microphone is off; explicit phone cancellation is still required."
+        let utterance = AVSpeechUtterance(string: positiveAcknowledgement)
+        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+        self.utterance = utterance
+        utterancePurpose = .acknowledgement
+        synthesizer.speak(utterance)
     }
 
     func submissionUnavailable(_ expected: CheckinIdentity) {
@@ -325,6 +358,7 @@ struct CheckinIdentity: Equatable {
         closeAttempt()
         player?.stop(); player = nil
         utterance = nil
+        utterancePurpose = nil
         synthesizer.stopSpeaking(at: .immediate)
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
@@ -348,14 +382,25 @@ extension CheckinVoiceSession: AVAudioPlayerDelegate, AVSpeechSynthesizerDelegat
     }
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         Task { @MainActor [weak self] in
-            guard let self, self.utterance === utterance else { return }
-            self.promptFinished()
+            guard let self, self.utterance === utterance, let expected = self.identity, self.isCurrent(expected) else { return }
+            switch self.utterancePurpose {
+            case .acknowledgement:
+                self.utterance = nil
+                self.utterancePurpose = nil
+                self.status = "Tap I DON'T NEED HELP to close this check-in. Your spoken reply has not cancelled it."
+                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            default: self.promptFinished()
+            }
         }
     }
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
         Task { @MainActor [weak self] in
             guard let self, self.utterance === utterance else { return }
-            self.cancel(reason: "Prompt was interrupted. Voice stopped; use the explicit controls.")
+            switch self.utterancePurpose {
+            case .acknowledgement:
+                self.cancel(reason: "Native acknowledgement interrupted. Use the explicit controls; no cancellation was confirmed.")
+            default: self.cancel(reason: "Prompt was interrupted. Voice stopped; use the explicit controls.")
+            }
         }
     }
 }

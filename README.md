@@ -16,6 +16,8 @@ npm start
 
 Open **http://127.0.0.1:8877**. The dashboard shows real source availability, incident state, provider configuration, and explicitly labelled development controls. Trigger a synthetic incident or manual help, accept as a development responder, report departure/arrival, and record an outcome. These controls simulate authenticated actors for development; they are not production identity verification.
 
+For the accelerated silence demo, use `npm run start:demo`. New check-ins use five seconds and display the acceleration from the normal configurable policy. Existing persisted deadlines stay intact. Rehearse spoken positive replies with a longer window; the phone acknowledges them without extending the deadline or cancelling the incident.
+
 The default backend is Node + SQLite, with persisted deadlines and an action outbox. Data, recordings, tokens, and native build products are ignored by Git. No keys or approved phones are configured by default. Unconfigured providers do not claim delivery. FinchNode uses its public synthetic demo.
 
 ## Native sensors
@@ -47,7 +49,7 @@ Copy `.env.example` to `.env` and configure only the integrations being used. Ph
 
 Set `LIFELINE_WEARER_PHONE` to the approved wearer's E.164 number to send a companion Photon iMessage: “I detected a possible fall. Are you okay?” It accompanies the phone's audible check-in and shares its deadline. The wearer can reply to that message with “I need help,” or send `I NEED HELP LF-XXXXXXXX` using the full current incident ID. Positive or ambiguous replies preserve the check-in; cancellation still requires the phone's explicit control. Wearer and responder numbers must differ. The dashboard tracks wearer iMessage configuration and the actual send outcome separately from phone audio.
 
-FinchNode handoffs retain synthetic source record IDs. Optional model calls select relevant existing records; model text cannot clear an incident, invent a clinical claim, or change ownership. ElevenLabs prepares one cached check-in clip. The iPhone has a labelled native speech fallback for development.
+FinchNode handoffs retain synthetic source record IDs. AI is required for the judged demo: it composes incident-relevant handoffs and answers through source-field selection and explicit unknowns. Application code renders the cited facts; AI cannot clear an incident, invent a clinical claim, or change ownership. Unconfigured/failed AI visibly degrades to templates and does not pass the AI demo gate. ElevenLabs prepares one cached check-in clip. The iPhone has a labelled native speech fallback for development.
 
 Details: [provider setup](docs/providers.md).
 

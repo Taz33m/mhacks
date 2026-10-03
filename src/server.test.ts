@@ -14,7 +14,7 @@ test('isolated HTTP/WS server accepts native packets, authenticates commands, an
   const dir = mkdtempSync(join(tmpdir(), 'lifeline-server-'));
   const child = spawn(process.execPath, ['--import', './src/test-helpers/offline.ts', './src/server.ts'], {
     cwd: process.cwd(), env: { ...process.env, LIFELINE_DATA_DIR: dir, LIFELINE_PORT: '0', LIFELINE_HOST: '127.0.0.1',
-      LIFELINE_CHECKIN_MS: '1000', SPECTRUM_PROJECT_ID: '', SPECTRUM_PROJECT_SECRET: '', ELEVENLABS_API_KEY: '', LIFELINE_LLM_API_KEY: '',
+      LIFELINE_DEMO_MODE: '0', LIFELINE_CHECKIN_MS: '1000', SPECTRUM_PROJECT_ID: '', SPECTRUM_PROJECT_SECRET: '', ELEVENLABS_API_KEY: '', LIFELINE_LLM_API_KEY: '',
       LIFELINE_WEARER_PHONE: '+12675550123',
       LIFELINE_RESPONDERS_JSON: JSON.stringify([{ id: 'maya', name: 'Maya', phone: null }, { id: 'jordan', name: 'Jordan', phone: null }]) },
     stdio: ['ignore', 'pipe', 'pipe']

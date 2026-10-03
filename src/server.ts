@@ -7,6 +7,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { networkInterfaces } from 'node:os';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Controller, PolicyError } from './controller.ts';
+import { parsePolicy } from './policy.ts';
 import { Motion, validSample } from './motion.ts';
 import { approvedResponder, phoneIdentity } from './identity.ts';
 import { handleWearerInbound } from './wearer.ts';
@@ -38,14 +39,9 @@ const wearerPhone = process.env.LIFELINE_WEARER_PHONE?.trim() || null;
 if (wearerPhone && !/^\+[1-9]\d{7,14}$/.test(wearerPhone)) throw new Error('LIFELINE_WEARER_PHONE must be an approved E.164 phone number.');
 if (wearerPhone && responders.some(r => r.phone && phoneIdentity(r.phone) === phoneIdentity(wearerPhone)))
   throw new Error('The wearer and responder phone numbers must be different.');
-function duration(name: string, fallback: number): number {
-  const n = Number(process.env[name] ?? fallback);
-  if (!Number.isFinite(n) || n < 1000 || n > 86_400_000) throw new Error(`Invalid duration: ${name}`);
-  return n;
-}
-const controller = new Controller(resolve(dataDir, 'lifeline.sqlite'), responders, Date.now, {
-  checkinMs: duration('LIFELINE_CHECKIN_MS', 20_000), acceptMs: duration('LIFELINE_ACCEPT_MS', 60_000), progressMs: duration('LIFELINE_PROGRESS_MS', 120_000)
-});
+const policyProfile = parsePolicy(process.env);
+const policy = { demoMode: policyProfile.demoMode, checkinMs: policyProfile.checkinMs, configuredCheckinMs: policyProfile.configuredCheckinMs };
+const controller = new Controller(resolve(dataDir, 'lifeline.sqlite'), responders, Date.now, policyProfile);
 const motion = new Motion();
 const trials = new Trials(resolve(dataDir, 'trials'));
 const trialPinged = new Set<Source>();
@@ -68,7 +64,7 @@ function snapshot(): Snapshot {
         : 'Wearer phone and Photon credentials configured; verify actual iMessage receipt and replies on the demo phone.' };
   return { serverTime: Date.now(), incident, responders: responders.map(r => ({ ...r, phone: r.phone ? 'configured' : null })),
     timeline: incident ? controller.events(incident.id) : [], actions: incident ? controller.actions(incident.id) : [],
-    sensors: motion.views(), providers, wearerMessaging, trial: trials.view() };
+    sensors: motion.views(), providers, wearerMessaging, trial: trials.view(), policy };
 }
 const live = new WebSocketServer({ noServer: true, maxPayload: 1024 });
 const ingest = new WebSocketServer({ noServer: true, maxPayload: 8192 });
@@ -97,9 +93,10 @@ async function providerWorker(channel: 'wearer' | 'responders'): Promise<void> {
   busyChannels.add(channel);
   try {
     const a = controller.claimAction(channel); if (!a) return;
-    const phone = a.type === 'wearer_checkin' ? wearerPhone : responders.find(r => r.id === a.recipientId)?.phone;
-    if (!phone) { controller.finishAction(a.id, 'failed', a.type === 'wearer_checkin'
-      ? 'No approved wearer phone configured; iMessage check-in was not sent.' : 'No approved phone configured; development simulation only.'); return; }
+    const wearerAction = a.type === 'wearer_checkin' || a.type === 'wearer_ack';
+    const phone = wearerAction ? wearerPhone : responders.find(r => r.id === a.recipientId)?.phone;
+    if (!phone) { controller.finishAction(a.id, 'failed', wearerAction
+      ? 'No approved wearer phone configured; wearer iMessage was not sent.' : 'No approved phone configured; development simulation only.'); return; }
     const result = await sendMessage(phone, a.text, () => !stopping && controller.actionPermitted(a));
     if (!stopping) controller.finishAction(a.id, result.status, result.detail, result.messageId);
   } catch { /* attempt remains attempting; startup recovery preserves an unknown outcome */ }
@@ -215,7 +212,7 @@ const server = createServer(async (req, res) => {
       const active = controller.active(); if (active) prepareIncident(active);
       const i = active ?? controller.latest();
       return json(res, 200, { incident: i, audioUrl: audio ? '/api/audio/checkin' : null,
-        serverTime: Date.now(), responders: responders.map(r => ({ id: r.id, name: r.name })) });
+        serverTime: Date.now(), responders: responders.map(r => ({ id: r.id, name: r.name })), policy });
     }
     if (url.pathname === '/api/checkin/reply' && req.method === 'POST') {
       if (!authorized(req)) return json(res, 401, { error: 'Pairing token required.' });

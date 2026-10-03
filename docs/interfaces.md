@@ -20,7 +20,9 @@ The phone can POST a final spoken reply to `/api/checkin/reply` with bearer auth
 
 Local `/api/setup` includes `lanEnabled` based on the actual listener address. Advertised addresses do not prove phone reachability.
 
-Snapshot `wearerMessaging:{configured,detail}` reports companion Photon configuration without exposing the wearer phone. `wearer_checkin` actions (null recipient) belong to the configured wearer; existing `checkin` actions are phone audio and never claimed by the messaging worker. Photon wearer replies are routed internally after full-phone and message/incident correlation, then recorded as `CHECKIN_REPLY` with actor `photon-imessage`. The native REST reply endpoint still accepts only `ios-on-device-speech`; it cannot impersonate Photon events. Both channels use the same incident/check-in deadline and explicit cancellation boundary.
+Snapshot `wearerMessaging:{configured,detail}` reports companion Photon configuration without exposing the wearer phone. `wearer_checkin` and `wearer_ack` actions (null recipient) belong to the configured wearer; existing `checkin` actions are phone audio and never claimed by the messaging worker. Photon wearer replies are routed internally after full-phone and message/incident correlation, then recorded as `CHECKIN_REPLY` with actor `photon-imessage`. Positive replies queue acknowledgements atomically with inbound dedupe, without cancelling or extending the check-in. The native REST reply endpoint still accepts only `ios-on-device-speech`; it cannot impersonate Photon events. The phone speaks a native positive acknowledgement. Both channels use the same incident/check-in deadline and explicit cancellation boundary.
+
+Snapshot and `/api/checkin` include `policy:{demoMode,checkinMs,configuredCheckinMs}`. The explicit demo profile accelerates new check-ins to five seconds; the metadata never replaces a persisted active incident deadline. The phone selects the short demo prompt and displays the acceleration when configured.
 
 ## Trial capture
 
@@ -36,8 +38,8 @@ Provider adapters live under `src/providers/`. Export from `src/providers/index.
 
 - `providerStatus(): Record<string,{configured:boolean,detail:string}>`
 - `loadHealth(): Promise<HealthContext>` (FinchNode keyless synthetic demo, errors explicitly unavailable)
-- `buildHandoff(incident: Incident, health: HealthContext): Promise<string>` (record-grounded template fallback; optional configured model)
-- `answerQuestion(incident: Incident, health: HealthContext, question: string): Promise<string>` (optional grounded model; unavailable rather than inventing medical conclusions)
+- `buildHandoff(incident: Incident, health: HealthContext): Promise<string>` (AI-composed source-grounded plan; visibly degraded template on failure)
+- `answerQuestion(incident: Incident, health: HealthContext, question: string): Promise<string>` (AI-composed source-grounded plan; explicit unknowns, no medical conclusions)
 - `sendMessage(phone: string, text: string, canSubmit?: () => boolean): Promise<ProviderResult>` (Photon cloud; missing credentials yields failed/unconfigured, ended authorization yields cancelled before submission)
 - `startPhotonListener(handler: (event: ProviderInbound) => Promise<void>): Promise<() => Promise<void>>`
 - `prepareCheckinAudio(): Promise<Uint8Array | null>` (ElevenLabs; no key yields null)

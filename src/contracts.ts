@@ -23,7 +23,7 @@ export interface Incident {
   handoff: string; outcome: string | null; resolutionActor: string | null;
 }
 export interface Responder { id: string; name: string; phone: string | null }
-export type ActionType = 'checkin' | 'wearer_checkin' | 'alert' | 'status' | 'handoff' | 'answer';
+export type ActionType = 'checkin' | 'wearer_checkin' | 'wearer_ack' | 'alert' | 'status' | 'handoff' | 'answer';
 export interface Action {
   id: string; incidentId: string; type: ActionType; recipientId: string | null;
   text: string; status: 'queued' | 'attempting' | 'provider_accepted' | 'failed' | 'unknown' | 'cancelled';
@@ -44,6 +44,7 @@ export interface SensorView {
 }
 export interface Snapshot {
   serverTime: number; incident: Incident | null; responders: Responder[];
+  policy: { demoMode: boolean; checkinMs: number; configuredCheckinMs: number };
   timeline: TimelineEvent[]; actions: Action[]; sensors: SensorView[];
   providers: Record<string, { configured: boolean; detail: string }>;
   wearerMessaging: { configured: boolean; detail: string };

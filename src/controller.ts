@@ -88,7 +88,7 @@ export class Controller {
     }
   }
   private requestHelp(i: StoredIncident, why: string): void {
-    this.stopPending(i, ['checkin', 'wearer_checkin']);
+    this.stopPending(i, ['checkin', 'wearer_checkin', 'wearer_ack']);
     i.ownerId = null; i.progressDeadline = this.now() + this.policy.acceptMs;
     this.phase(i, 'HELP_REQUESTED', 'policy', why);
     const eligible = this.responders.filter(r => !i.contacted.includes(r.id) && !i.declined.includes(r.id)).slice(0, 2);
@@ -152,6 +152,12 @@ export class Controller {
       this.event(i, 'CHECKIN_REPLY', source, JSON.stringify({ transcript, decision }));
       if (decision === 'help_requested') this.requestHelp(i, source === 'photon-imessage'
         ? 'Wearer requested help in the current Photon iMessage check-in.' : 'Subject requested help in the current spoken check-in.');
+      if (source === 'photon-imessage' && inboundId && decision === 'confirmation_required') {
+        const inserted = this.enqueue(i, 'wearer_ack', null,
+          "Glad you're okay. To close this check-in, tap 'I DON'T NEED HELP' on your phone.",
+          `${i.id}:${i.version}:wearer_ack:${JSON.stringify([i.checkinId, inboundId])}`);
+        if (!inserted) throw new Error('Wearer acknowledgement was not persisted; inbound ID remains unprocessed.');
+      }
       if (inboundId) this.rememberInbound(inboundId);
       return decision;
     });
@@ -272,7 +278,7 @@ export class Controller {
     const row = this.db.prepare('SELECT body FROM incidents WHERE id=?').get(a.incidentId);
     if (!row) return false;
     const i = JSON.parse(String(row.body)) as StoredIncident;
-    if (a.type === 'wearer_checkin') return i.phase === 'CONFIRMING' && this.now() < i.checkinDeadline;
+    if (a.type === 'wearer_checkin' || a.type === 'wearer_ack') return i.phase === 'CONFIRMING' && this.now() < i.checkinDeadline;
     if (!a.recipientId || !this.responders.some(r => r.id === a.recipientId) || !i.contacted.includes(a.recipientId)) return false;
     if (a.type === 'alert') return i.phase === 'HELP_REQUESTED' && !i.ownerId && !i.declined.includes(a.recipientId);
     if (a.type === 'handoff') return !terminal(i.phase) && !i.declined.includes(a.recipientId);
@@ -288,8 +294,8 @@ export class Controller {
       for (const row of this.db.prepare("SELECT body FROM actions WHERE status IN ('queued','failed') AND next_at<=? ORDER BY rowid").all(this.now())) {
         const a = JSON.parse(String(row.body)) as Action;
         if (a.type === 'checkin' || a.attempts >= 3) continue;
-        if (channel === 'wearer' && a.type !== 'wearer_checkin') continue;
-        if (channel === 'responders' && a.type === 'wearer_checkin') continue;
+        if (channel === 'wearer' && !['wearer_checkin', 'wearer_ack'].includes(a.type)) continue;
+        if (channel === 'responders' && ['wearer_checkin', 'wearer_ack'].includes(a.type)) continue;
         if (!this.actionPermitted(a)) {
           a.status = 'cancelled'; a.providerResult = 'Incident authorization ended; message was not submitted.'; this.saveAction(a); continue;
         }
@@ -322,7 +328,7 @@ export class Controller {
     if (!row) return null;
     const a = JSON.parse(String(row.body)) as Action; const i = this.active();
     return i && i.phase === 'CONFIRMING' && this.now() < i.checkinDeadline
-      && a.incidentId === i.id && a.recipientId === null && a.type === 'wearer_checkin' ? i : null;
+      && a.incidentId === i.id && a.recipientId === null && ['wearer_checkin', 'wearer_ack'].includes(a.type) ? i : null;
   }
   seenInbound(id: string): boolean { return Boolean(this.db.prepare('SELECT id FROM inbound WHERE id=?').get(id)); }
   rememberInbound(id: string): void { this.db.prepare('INSERT OR IGNORE INTO inbound VALUES(?)').run(id); }
