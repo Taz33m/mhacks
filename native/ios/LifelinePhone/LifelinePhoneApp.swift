@@ -24,6 +24,10 @@ import AVFoundation
                         SecureField("From the Mac's local dashboard", text: $model.token)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                     }.textFieldStyle(.roundedBorder).disabled(model.monitoring)
+                    if model.relayHost != model.host.trimmingCharacters(in: .whitespacesAndNewlines) {
+                        Text("Active developer connection: \(model.relayHost). Saved Wi-Fi address is unchanged.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     Button(model.monitoring ? "Stop monitoring" : "Start monitoring") {
                         if model.monitoring { model.stop() } else { model.start() }
                     }.buttonStyle(.borderedProminent).controlSize(.large)
@@ -81,6 +85,7 @@ import AVFoundation
                         .font(.caption).foregroundStyle(.secondary)
                 }.padding(24)
             }
+            .onAppear { model.startForDeveloperLaunchIfRequested() }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .background { model.stopForBackground() }
             }
@@ -181,6 +186,9 @@ struct PhoneIncident: Decodable {
     private var pollingId: UUID?
     private var playedCheckins = Set<String>()
     private var replyTask: Task<Void, Never>?
+#if DEBUG
+    private var developerLaunchHandled = false
+#endif
 
     override init() {
         super.init()
@@ -213,10 +221,29 @@ struct PhoneIncident: Decodable {
         }
     }
 
+    var relayHost: String {
+#if DEBUG
+        if let override = ProcessInfo.processInfo.environment["LIFELINE_RELAY_HOST"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !override.isEmpty {
+            return override
+        }
+#endif
+        return host.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func startForDeveloperLaunchIfRequested() {
+#if DEBUG
+        guard !developerLaunchHandled else { return }
+        developerLaunchHandled = true
+        if ProcessInfo.processInfo.environment["LIFELINE_START_MONITORING"] == "1" { start() }
+#endif
+    }
+
     private func url(_ scheme: String, path: String, producer: Bool = false) -> URL? {
         var components = URLComponents()
         components.scheme = scheme
-        components.host = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        let address = relayHost
+        components.host = address.contains(":") && !address.hasPrefix("[") ? "[\(address)]" : address
         components.port = 8877
         components.path = path
         if producer {
@@ -228,7 +255,7 @@ struct PhoneIncident: Decodable {
 
     func start() {
         guard !monitoring else { return }
-        guard !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+        guard !relayHost.isEmpty,
               !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               url("http", path: "/health") != nil else {
             status = "Enter a valid Mac hostname/IP and development pairing token."

@@ -238,11 +238,13 @@
 
   function renderActions() {
     const actions = snapshot.actions.filter((action) => action.incidentId === snapshot.incident?.id).slice().sort((a, b) => b.createdAt - a.createdAt);
+    const expanded = new Set([...$('#actions').querySelectorAll('details[open]')].map((message) => message.dataset.actionId));
     text('#action-count', actions.length);
     $('#actions').innerHTML = actions.length ? actions.map((action) => {
       const [label, color] = actionLabels[action.status] || [action.status, ''];
       const actionTitle = { wearer_checkin: 'Wearer iMessage', wearer_ack: 'Wearer iMessage acknowledgement', checkin: 'Phone audio check-in', answer: 'Responder answer' }[action.type] || action.type[0].toUpperCase() + action.type.slice(1);
-      return `<li class="action-item"><div class="action-head"><strong>${escaped(actionTitle)}${action.recipientId ? ` · ${escaped(nameFor(action.recipientId))}` : ''}</strong><span class="badge ${color}">${escaped(label)}</span></div><p>${escaped(action.providerResult || action.text || 'No provider result yet.')}</p><span class="action-meta">${escaped(time(action.createdAt))} · ${action.attempts} attempt${action.attempts === 1 ? '' : 's'}${action.providerMessageId ? ` · Message ${escaped(action.providerMessageId.slice(0, 18))}` : ''}</span></li>`;
+      const message = action.text ? `<details class="action-message" data-action-id="${escaped(action.id)}"${expanded.has(action.id) ? ' open' : ''}><summary>View message</summary><p>${escaped(action.text)}</p></details>` : '';
+      return `<li class="action-item"><div class="action-head"><strong>${escaped(actionTitle)}${action.recipientId ? ` · ${escaped(nameFor(action.recipientId))}` : ''}</strong><span class="badge ${color}">${escaped(label)}</span></div><p>${escaped(action.providerResult || 'No provider result yet.')}</p>${message}<span class="action-meta">${escaped(time(action.createdAt))} · ${action.attempts} attempt${action.attempts === 1 ? '' : 's'}${action.providerMessageId ? ` · Message ${escaped(action.providerMessageId.slice(0, 18))}` : ''}</span></li>`;
     }).join('') : '<li class="empty-list">No external actions queued.</li>';
   }
 

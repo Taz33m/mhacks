@@ -93,8 +93,13 @@ function renderPlan(plan: ContextPlan, incident: Incident): string {
   ].join('\n');
 }
 function clinicalQuestion(question: string): boolean {
-  return /\b(should|administer|treat|treatment|diagnos\w*|safe to|dosing|interact\w*)\b/i.test(question) ||
+  // Source-oriented handoff questions can contain "should" without requesting
+  // clinical advice. Other should clauses, including mixed requests, stay blocked.
+  const clinicalShould = question.replace(/\bwhat\s+should\s+(?:i|we)\s+(?:know|tell|report|share|mention)\b/gi, '');
+  return /\bshould\b/i.test(clinicalShould) ||
+    /\b(administer|treat|treatment|diagnos\w*|safe to|dosing|interact\w*)\b/i.test(question) ||
     /\b(can|could|may)\s+(i|we|they|he|she)\s+(give|take)\b/i.test(question) ||
+    /\b(tell|ask|advise|instruct)\b.{0,60}\bto\s+(give|take)\b/i.test(question) ||
     /\b(give|take)\b.{0,40}\b(now|instead|extra|to help)\b/i.test(question);
 }
 

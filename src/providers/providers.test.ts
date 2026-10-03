@@ -128,6 +128,57 @@ test('AI composes an incident-grounded answer with selected source fields and un
   assert.equal(requests, before);
 });
 
+test('contextual should questions reach grounded AI answers with source IDs and incident observations', async () => {
+  const questions = ['What should I know before I arrive?',
+    'What should I tell the responder about the recorded allergies?'];
+  const received: string[] = [];
+  const providers = createProviders({
+    env: { LIFELINE_LLM_API_KEY: 'mock', LIFELINE_LLM_BASE_URL: 'https://model.example/v1', LIFELINE_LLM_MODEL: 'mock' },
+    fetch: fetchStub((url, init) => {
+      if (url === FINCH_DEMO_URL) return json(fixture);
+      const body = JSON.parse(String(init?.body));
+      received.push(JSON.parse(body.messages[1].content).question);
+      return json({ choices: [{ message: { content: JSON.stringify({
+        facts: [{ recordId: 'allergy-1', fields: ['substance', 'reaction'] }],
+        incidentFields: ['evidence'], unavailable: ['location'],
+      }) } }] });
+    }),
+  });
+  const health = await providers.loadHealth();
+  for (const question of questions) {
+    const answer = await providers.answerQuestion(incident, health, question);
+    assert.match(answer, /AI-composed answer/);
+    assert.match(answer, /Penicillin; reaction: Fixture rash \[allergy-1\]/);
+    assert.match(answer, /Chest impact and waist posture change/);
+    assert.match(answer, /Location not provided/);
+    assert.doesNotMatch(answer, /cannot recommend treatment/);
+  }
+  assert.deepEqual(received, questions);
+});
+
+test('clinical and mixed contextual advice requests remain refused before any model call', async () => {
+  let modelCalls = 0;
+  const providers = createProviders({
+    env: { LIFELINE_LLM_API_KEY: 'mock', LIFELINE_LLM_BASE_URL: 'https://model.example/v1', LIFELINE_LLM_MODEL: 'mock' },
+    fetch: fetchStub(url => {
+      if (url === FINCH_DEMO_URL) return json(fixture);
+      modelCalls++;
+      throw new Error('Clinical advice must never reach the model');
+    }),
+  });
+  const health = await providers.loadHealth();
+  for (const question of ['Should I take the recorded medication?', 'Should I give aspirin?',
+    'Can I give a medication?', 'What treatment should we provide?', 'How should we diagnose this fall?',
+    'What should I tell the responder about dosing?', 'Should I administer medicine?',
+    'Do the listed medications interact?', 'Is it safe to move the wearer?',
+    'What should I tell the patient to take?',
+    'What should I know before I arrive, and should I give medication?',
+    'What should I know about the medication interactions?', 'Should I assume the wearer is fine?']) {
+    assert.match(await providers.answerQuestion(incident, health, question), /cannot recommend treatment or establish a diagnosis/, question);
+  }
+  assert.equal(modelCalls, 0);
+});
+
 test('invented AI records or fields fall back visibly to actual records', async () => {
   for (const facts of [[{ recordId: 'invented-record', fields: ['name'] }], [{ recordId: 'allergy-1', fields: ['inventedField'] }]]) {
   const providers = createProviders({

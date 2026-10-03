@@ -43,6 +43,12 @@ For phone-to-Mac access, run with `LIFELINE_HOST=0.0.0.0 npm start` on a trusted
 
 See [native setup](docs/native-setup.md) for off-ear acquisition, reporting-bud checks, audio routing, and device installation. Native apps never substitute simulated sensor input.
 
+For the wired demo with the paired Debug app installed, keep the iPhone unlocked
+and connected by USB, then run `npm run device:usb -- DEVICE_UDID` alongside the
+backend. This starts a foreground relay on the connected device's developer
+tunnel and launches monitoring without changing saved Wi-Fi pairing. Keep the
+cable and helper connected; reconnecting requires calibration again.
+
 ## Providers
 
 Copy `.env.example` to `.env` and configure only the integrations being used. Photon uses its cloud provider; responders must have approved phone numbers in `LIFELINE_RESPONDERS_JSON`. Approved phone identity and the alert's provider message ID determine who can accept. Exact incident-coded text commands are `ON IT`, `DEPART`, `ARRIVED`, `DECLINE`, or `RESOLVED`, followed by the full incident ID; resolution also requires an outcome. Removed reactions do not release ownership.
@@ -76,7 +82,7 @@ Tests cover deadlines/restart, stale and unauthorized acceptance, atomic ownersh
 
 ## Current boundary
 
-This is a working development foundation, not validated fall-detection accuracy. The initial detector uses tentative impact/tilt/stillness thresholds, preserves both streams, and requires bounded alignment for a cross-body candidate. Source failures remain explicit unknowns. Signed installation and launch passed on the physical iPhone 15. Physical trials, phone-to-Mac reachability, actual audio-route behavior, on-device recognition, and real provider sends still require device/configuration validation.
+This is a working development foundation, not validated fall-detection accuracy. The initial detector uses tentative impact/tilt/stillness thresholds, preserves both streams, and requires bounded alignment for a cross-body candidate. Source failures remain explicit unknowns. Signed installation and wired streaming passed on the physical iPhone 15: real chest motion was received at 100 Hz alongside roughly 46 Hz from the Right AirPod. Mounted movement trials, audio routing, on-device recognition, and real provider sends still require validation. Venue Wi-Fi reachability remains unresolved; the wired path is the tested development connection.
 
 Final on-device spoken replies are recorded against the current check-in. Exact help commands escalate immediately; positive replies ask the wearer to confirm using the cancel control; ambiguous replies leave the incident and deadline unchanged. Voice never resolves an incident. Stale replies and cancellation after the deadline are rejected.
 

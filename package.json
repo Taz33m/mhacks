@@ -17,7 +17,8 @@
     "build:ios": "zsh native/ios/build.sh",
     "build:ios:device": "zsh native/ios/build-device.sh",
     "install:ios": "zsh native/ios/install-device.sh",
-    "replay:motion": "node scripts/replay-motion.ts"
+    "replay:motion": "node scripts/replay-motion.ts",
+    "device:usb": "node scripts/connect-usb.ts"
   },
   "dependencies": {
     "@spectrum-ts/core": "^12.10.1",

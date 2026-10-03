@@ -83,6 +83,31 @@ credential storage. It is not printed to logs. Native relay traffic is plain
 HTTP/WebSocket with an explicit development ATS exemption supporting LAN and
 Tailscale IP addresses. Use a trusted development connection.
 
+### Wired connection for the demo
+
+The physical iPhone can reach the Mac through its connected Apple developer
+tunnel even when venue Wi-Fi requests time out. With the backend running and
+the paired Debug app already installed, keep the phone unlocked and connected
+by USB, then run:
+
+```sh
+npm run device:usb -- DEVICE_UDID
+```
+
+The foreground helper discovers the current tunnel and Mac IPv6 address,
+starts a relay only on that interface, and launches monitoring. Keep this
+process and the cable connected. Ctrl-C closes the relay; loss of the stream
+remains visible and requires calibration after reconnecting. The helper does
+not install the app, change saved Wi-Fi pairing, or create a background job.
+Localhost pairing setup stays unavailable through the relay.
+
+Debug builds accept `LIFELINE_RELAY_HOST` for a process-only address override
+and `LIFELINE_START_MONITORING=1` for a one-time start on launch. The screen
+shows an active override separately from the saved address. Ordinary launches
+keep the explicit Start control; returning from background does not restart
+monitoring. Release builds ignore these environment flags. IPv6 addresses are
+accepted with or without brackets.
+
 ## Waist setup inherited from Kinesthetic
 
 - Turn off Automatic Ear Detection for this AirPods pair in the device's
@@ -217,12 +242,19 @@ must remain visible and must not resolve the incident.
   pending Apple agreement was accepted. Signature and profile validation
   passed before installation; the app launched on the phone. Its private
   relay address and pairing token were copied into the app's preferences and
-  verified without displaying the token. Installation does not establish
-  phone-to-Mac reachability or physical motion/voice behavior.
+  verified without displaying the token. Wired phone-to-Mac streaming has
+  subsequently been observed at 100 Hz with receiver clock messages. Venue
+  Wi-Fi requests timed out; the cause has not been established.
 - Plists and Xcode project passed `plutil -lint`.
 - `KeepAlive.swift` matches the source file byte-for-byte.
-- The Mac app briefly acquired real Right AirPod samples through local setup,
-  observed around 38 Hz with roughly 6 ms clock uncertainty. The stream later
-  became stale/disconnected. Sustained off-ear continuity, waist mounting, and
-  calibration remain unvalidated. Physical chest-phone motion, on-device voice
-  recognition, and phone/Mac audio interaction remain unverified.
+- A 134-second connectivity recording captured 6,139 real Right AirPod samples
+  at a mean received cadence of 45.69 Hz. The maximum received gap was 233 ms;
+  this recording does not prove the detector's continuous quiet-window gate.
+  The chest phone subsequently streamed alongside the AirPod over the wired
+  tunnel. Mounting, calibration, fall-like movement, voice recognition, and
+  phone/Mac audio interaction still require physical validation.
+- A subsequent complete 120-second wired dual-source recording captured
+  12,019 chest samples at 100.14 Hz and 5,674 waist-source samples at 47.28 Hz.
+  Maximum received gaps were 81 ms and 127 ms. Sampled alignment uncertainty
+  stayed below 1 ms. Placement was unverified, sources were uncalibrated,
+  and no detection or voice result is established by this connectivity trial.

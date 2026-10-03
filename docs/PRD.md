@@ -157,7 +157,7 @@ Report detection-to-check-in, deadline-to-help-request, actual message receipt, 
 
 ## Current implementation and remaining work
 
-The repository implements the native producers, tentative detector, trial/replay tools, SQLite incident loop, console, final on-device reply policy, dual wearer check-in actions, grounded synthetic health, and provider adapters. The iPhone 15 app is signed, installed, and privately paired. A brief real AirPod acquisition and local phone motion were observed; sustained mounted sensing and phone-to-Mac streaming are not yet established.
+The repository implements the native producers, tentative detector, trial/replay tools, SQLite incident loop, console, final on-device reply policy, dual wearer check-in actions, grounded synthetic health, and provider adapters. The iPhone 15 app is signed, installed, and privately paired. A complete 120-second connectivity recording captured 12,019 real chest-phone samples at 100.14 Hz and 5,674 Right AirPod samples at 47.28 Hz through the wired development connection. Maximum received gaps were 81 ms and 127 ms respectively. Placement was unverified and neither source was calibrated, so this establishes simultaneous streaming rather than mounted detection. Mounted sensing and calibration are deferred until the user is ready.
 
 Responder alerts/updates include exact workflow commands. AI context generation, positive wearer acknowledgements, the demo profile, durable answers, and Photon recovery have credential-free software checks. Live model generation, physical voice behavior, and actual message receipt still need rehearsal. If Spectrum cleanup never completes, recovery reports the incomplete teardown and blocks replacement clients; it cannot forcibly cancel the SDK.
 
