@@ -42,6 +42,13 @@ test('isolated HTTP/WS server accepts native packets, authenticates commands, an
     assert.equal(setup.lanEnabled, false);
     const commands = async (body: unknown) => fetch(`${base}/api/commands`, { method: 'POST', headers: { Authorization: `Bearer ${setup.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const state = async () => await (await fetch(`${base}/api/state`)).json() as Snapshot;
+    const trialCommand = async (action: string, body: unknown = {}) => fetch(`${base}/api/trials/${action}`, { method: 'POST',
+      headers: { Authorization: `Bearer ${setup.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    assert.equal((await fetch(`${base}/api/trials/start`, { method: 'POST', body: '{}' })).status, 401);
+    assert.equal((await trialCommand('start', { label: '', scenario: 'other' })).status, 400);
+    const started = await trialCommand('start', { label: 'Isolated protocol trial — synthetic samples.', scenario: 'other' });
+    assert.equal(started.status, 200); const trial = await started.json();
+    assert.equal((await trialCommand('start', { label: 'duplicate', scenario: 'other' })).status, 400);
     for (const source of ['chest-phone', 'waist-airpod'] as Source[]) {
       const sessionId = randomUUID(); let sequence = 0;
       const ws = new WebSocket(`ws://127.0.0.1:${port}/motion?source=${source}&token=${setup.token}`); sockets.push(ws);
@@ -58,9 +65,21 @@ test('isolated HTTP/WS server accepts native packets, authenticates commands, an
     assert.equal((await commands({ type: 'calibrate' })).status, 200);
     const measured = await state();
     assert.equal(measured.sensors.every(s => s.fresh && s.calibrated && s.alignmentUncertaintyMs !== null), true);
+    assert.equal(measured.trial!.sampleCounts['chest-phone'] > 30, true);
+    assert.equal(measured.trial!.sampleCounts['waist-airpod'] > 30, true);
     assert.equal((await commands({ type: 'trigger', kind: 'synthetic', summary: 'Isolated protocol fixture; not a physical fall.' })).status, 200);
     const confirming = (await state()).incident!;
     assert.equal(confirming.phase, 'CONFIRMING');
+    assert.equal((await trialCommand('start', { label: 'incident active', scenario: 'other' })).status, 400);
+    assert.equal((await trialCommand('stop')).status, 200);
+    assert.equal((await state()).incident?.phase, 'CONFIRMING');
+    await new Promise(r => setTimeout(r, 30));
+    assert.equal((await fetch(`${base}/api/trials/${trial.id}/download`)).status, 401);
+    const recording = await fetch(`${base}/api/trials/${trial.id}/download`, { headers: { Authorization: `Bearer ${setup.token}` } });
+    assert.equal(recording.status, 200);
+    const records = (await recording.text()).trim().split('\n').map(line => JSON.parse(line));
+    for (const type of ['trial.start', 'motion.sample', 'clock.ping', 'clock.pong', 'calibration', 'assessment', 'trial.stop'])
+      assert.equal(records.some(record => record.type === type), true, type);
     const reply = async (transcript: string, checkinId = confirming.checkinId) => fetch(`${base}/api/checkin/reply`, {
       method: 'POST', headers: { Authorization: `Bearer ${setup.token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ incidentId: confirming.id, checkinId, transcript, source: 'ios-on-device-speech' })

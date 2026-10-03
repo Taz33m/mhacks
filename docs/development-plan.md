@@ -27,4 +27,6 @@ The backend, native clients, dashboard, and provider adapters are implemented. A
 
 Spoken check-ins use final on-device English transcripts. Help requests escalate; positive replies require the explicit cancel control; ambiguity preserves the deadline. The dashboard displays the recorded reply and actual source/configuration status.
 
+Trial capture and offline replay now preserve timing/calibration and compare combined sensing with each source alone. Synthetic detection fixtures exercise phone-only drops, sitting/bending, ongoing movement, sample gaps, stale clocks, and unstable calibration. These establish software behavior; physical recordings still need to establish whether the thresholds fit the mounted devices. See [motion trials](motion-trials.md).
+
 Remaining physical work: connect the real devices, select an Apple signing team, install on the iPhone, confirm the reporting bud, calibrate, and measure actual sensing/voice behavior. Live Photon/ElevenLabs need credentials in the private `.env` and an approved responder phone. Compilation and simulator installation do not establish physical sensing or recognition accuracy.

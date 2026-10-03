@@ -9,6 +9,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { Controller, PolicyError } from './controller.ts';
 import { Motion, validSample } from './motion.ts';
 import { approvedResponder } from './identity.ts';
+import { Trials } from './trials.ts';
 import type { CheckinReply, ClockPong, Command, Incident, ProviderInbound, Responder, Snapshot, Source } from './contracts.ts';
 import { providerStatus, loadHealth, buildHandoff, answerQuestion, sendMessage, startPhotonListener, prepareCheckinAudio } from './providers/index.ts';
 
@@ -40,6 +41,8 @@ const controller = new Controller(resolve(dataDir, 'lifeline.sqlite'), responder
   checkinMs: duration('LIFELINE_CHECKIN_MS', 20_000), acceptMs: duration('LIFELINE_ACCEPT_MS', 60_000), progressMs: duration('LIFELINE_PROGRESS_MS', 120_000)
 });
 const motion = new Motion();
+const trials = new Trials(resolve(dataDir, 'trials'));
+const trialPinged = new Set<Source>();
 const producers = new Map<Source, WebSocket>();
 const recorders = new Map<string, WriteStream>();
 let healthPromise = loadHealth();
@@ -54,7 +57,7 @@ function snapshot(): Snapshot {
   const incident = controller.latest();
   return { serverTime: Date.now(), incident, responders: responders.map(r => ({ ...r, phone: r.phone ? 'configured' : null })),
     timeline: incident ? controller.events(incident.id) : [], actions: incident ? controller.actions(incident.id) : [],
-    sensors: motion.views(), providers: providerStatus() };
+    sensors: motion.views(), providers: providerStatus(), trial: trials.view() };
 }
 const live = new WebSocketServer({ noServer: true, maxPayload: 1024 });
 const ingest = new WebSocketServer({ noServer: true, maxPayload: 8192 });
@@ -145,9 +148,11 @@ function execute(c: Command): void {
     case 'decline': controller.decline(c.incidentId, c.responderId); break;
     case 'resolve': controller.resolve(c.incidentId, c.responderId, c.outcome); break;
     case 'calibrate': {
-      if (!motion.calibrate().length) throw new PolicyError('Calibration requires at least five fresh real samples while standing still.'); break;
+      const sources = motion.calibrate();
+      if (!sources.length) throw new PolicyError('Calibration requires one second of continuous still samples; stop moving and try again.');
+      trials.record('calibration', { sources }); break;
     }
-    case 'reset': controller.reset(); motion.reset(); handoffIncident = null; break;
+    case 'reset': controller.reset(); motion.reset(); trials.record('motion.reset', { clocks: false, cooldown: true }); handoffIncident = null; break;
     default: throw new PolicyError('Unsupported command.');
   }
 }
@@ -170,6 +175,28 @@ const server = createServer(async (req, res) => {
     if (url.pathname === '/api/commands' && req.method === 'POST') {
       if (!authorized(req)) return json(res, 401, { error: 'Operator/pairing token required.' });
       execute(await commandBody(req)); broadcast(); return json(res, 200, { ok: true });
+    }
+    if (url.pathname === '/api/trials/start' && req.method === 'POST') {
+      if (!authorized(req)) return json(res, 401, { error: 'Operator token required.' });
+      const body = await requestBody(req) as { label?: unknown; scenario?: unknown };
+      if (!body || typeof body !== 'object') throw new PolicyError('Invalid trial request.');
+      if (controller.active()) throw new PolicyError('Finish the active incident before starting a trial.');
+      const view = trials.start(body.label, body.scenario, motion.views().filter(s => s.connected).map(s => s.source));
+      motion.reset({ clocks: true, cooldown: false }); trialPinged.clear();
+      broadcast(); return json(res, 200, view);
+    }
+    if (url.pathname === '/api/trials/stop' && req.method === 'POST') {
+      if (!authorized(req)) return json(res, 401, { error: 'Operator token required.' });
+      const view = trials.stop(); broadcast(); return json(res, 200, view);
+    }
+    const trialDownload = url.pathname.match(/^\/api\/trials\/([0-9a-f-]+)\/download$/i);
+    if (trialDownload && req.method === 'GET') {
+      if (!authorized(req)) return json(res, 401, { error: 'Operator token required.' });
+      const file = trials.download(trialDownload[1]);
+      res.on('close', () => file.destroy());
+      file.on('error', () => { if (!res.headersSent) json(res, 500, { error: 'Recording could not be read.' }); else res.destroy(); });
+      res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Content-Disposition': `attachment; filename="trial-${trialDownload[1]}.jsonl"`, 'Cache-Control': 'no-store' });
+      file.pipe(res); return;
     }
     if (url.pathname === '/api/checkin' && req.method === 'GET') {
       if (!authorized(req)) return json(res, 401, { error: 'Pairing token required.' });
@@ -208,16 +235,23 @@ server.on('upgrade', (req, socket, head) => {
     socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); socket.destroy(); return;
   }
   ingest.handleUpgrade(req, socket, head, ws => {
-    producers.set(source, ws); motion.connected(source); let session: string | null = null;
-    const ping = () => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(motion.ping(source))); };
+    producers.set(source, ws); motion.connected(source); trials.record('source.connected', undefined, source); let session: string | null = null;
+    const ping = () => {
+      if (ws.readyState === WebSocket.OPEN) { const p = motion.ping(source); trials.record('clock.ping', p, source, p.serverSentMs); ws.send(JSON.stringify(p)); }
+    };
     const timer = setInterval(ping, 2000); ping();
     ws.on('error', () => ws.close());
     ws.on('message', bytes => {
       try {
         const p: unknown = JSON.parse(bytes.toString());
-        if (p && typeof p === 'object' && (p as ClockPong).type === 'clock.pong') { motion.pong(source, p as ClockPong); return; }
+        const receivedMs = performance.now();
+        if (p && typeof p === 'object' && (p as ClockPong).type === 'clock.pong') {
+          if (motion.pong(source, p as ClockPong, receivedMs)) trials.record('clock.pong', p, source, receivedMs); return;
+        }
         if (!validSample(p, source) || (session && p.sessionId !== session)) return;
-        if (!motion.sample(source, p)) return; session = p.sessionId;
+        if (!motion.sample(source, p, receivedMs)) return; session = p.sessionId;
+        trials.record('motion.sample', p, source, receivedMs);
+        if (trials.recording && !trialPinged.has(source)) { trialPinged.add(source); ping(); }
         const key = `${source}-${session}`;
         if (!recorders.has(key)) {
           const recorder = createWriteStream(resolve(dataDir, 'recordings', `${key}.jsonl`), { flags: 'a', mode: 0o600 });
@@ -226,12 +260,18 @@ server.on('upgrade', (req, socket, head) => {
         recorders.get(key)!.write(JSON.stringify({ ...p, receivedAt: Date.now(), hostMonotonicMs: performance.now() }) + '\n');
       } catch { /* invalid packets never become evidence */ }
     });
-    ws.on('close', () => { clearInterval(timer); if (producers.get(source) === ws) { producers.delete(source); motion.disconnected(source); broadcast(); } });
+    ws.on('close', () => {
+      clearInterval(timer);
+      if (session) { const key = `${source}-${session}`; recorders.get(key)?.end(); recorders.delete(key); }
+      if (producers.get(source) === ws) { producers.delete(source); motion.disconnected(source); trials.record('source.disconnected', undefined, source); trialPinged.delete(source); broadcast(); }
+    });
   });
 });
 live.on('connection', ws => ws.on('error', () => ws.close()));
 const heartbeat = setInterval(() => {
-  controller.tick(); const evidence = motion.candidate(); if (evidence) prepareIncident(controller.trigger(evidence));
+  controller.tick(); const assessedAt = performance.now(); const evidence = motion.candidate();
+  trials.record('assessment', { candidate: evidence }, undefined, assessedAt);
+  if (evidence) prepareIncident(controller.trigger(evidence));
   broadcast(); void providerWorker();
 }, 100);
 
@@ -249,6 +289,7 @@ async function shutdown(): Promise<void> {
   if (stopping) return; stopping = true; clearInterval(heartbeat);
   for (const ws of [...live.clients, ...ingest.clients, ...producers.values()]) ws.terminate();
   for (const recorder of recorders.values()) recorder.end();
+  if (trials.recording) trials.stop('Backend stopped; capture ended.');
   await stopPhoton?.().catch(() => {});
   // A send in progress is left recoverable as unknown if interrupted.
   server.close(); controller.close();

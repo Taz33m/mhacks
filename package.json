@@ -15,7 +15,8 @@
     "build:airpods": "zsh native/macos/build.sh",
     "build:ios": "zsh native/ios/build.sh",
     "build:ios:device": "zsh native/ios/build-device.sh",
-    "install:ios": "zsh native/ios/install-device.sh"
+    "install:ios": "zsh native/ios/install-device.sh",
+    "replay:motion": "node scripts/replay-motion.ts"
   },
   "dependencies": {
     "@spectrum-ts/core": "^12.10.1",

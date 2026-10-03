@@ -46,6 +46,16 @@ export interface Snapshot {
   serverTime: number; incident: Incident | null; responders: Responder[];
   timeline: TimelineEvent[]; actions: Action[]; sensors: SensorView[];
   providers: Record<string, { configured: boolean; detail: string }>;
+  trial: TrialView | null;
+}
+export type TrialScenario = 'standing' | 'phone-drop' | 'sit' | 'bend' | 'staged-fall' | 'other';
+export interface TrialView {
+  id: string; label: string; scenario: TrialScenario; status: 'recording' | 'stopping' | 'stopped' | 'error';
+  startedAt: number; endedAt: number | null; sampleCounts: Record<Source, number>; reason: string | null;
+}
+export interface TrialRecord {
+  type: 'trial.start' | 'source.connected' | 'source.disconnected' | 'clock.ping' | 'clock.pong' | 'motion.sample' | 'calibration' | 'motion.reset' | 'assessment' | 'trial.stop';
+  atMs: number; at: number; source?: Source; payload?: unknown;
 }
 export type Command =
   | { type: 'trigger'; kind: 'synthetic' | 'manual'; summary?: string }

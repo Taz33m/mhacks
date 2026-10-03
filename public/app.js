@@ -28,6 +28,7 @@
   let lastStateReceived = null;
   let responderSignature = '';
   let nativeSetup = null;
+  let trialBusy = false;
 
   const escaped = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
   const text = (selector, value, scope = document) => { $(selector, scope).textContent = value; };
@@ -62,6 +63,7 @@
     renderReadiness();
     renderTimeline();
     renderActions();
+    renderTrial();
     updateControls();
     updateTime();
   }
@@ -227,6 +229,7 @@
   }
 
   function updateTime() {
+    updateTrialTime();
     if (lastStateReceived) text('#last-update', `State received ${time(lastStateReceived)}${online ? '' : ' · connection interrupted'}`);
     if (!online && lastStateReceived) snapshot?.sensors.forEach((sensor) => {
       const card = document.getElementById(sensor.source);
@@ -265,6 +268,12 @@
     $('#resolve').disabled = !ready || !isOwner || incident?.phase !== 'ON_SCENE' || $('#outcome-input').value.trim().length < 5;
     $('#calibrate').disabled = !ready || !snapshot.sensors.some((sensor) => sensor.connected && sensor.fresh);
     $('#reset').disabled = !ready;
+    const recording = ['recording', 'stopping'].includes(snapshot?.trial?.status);
+    $('#trial-start').disabled = !ready || trialBusy || active || recording || !$('#trial-label').value.trim() || $('#trial-label').value.trim().length > 80;
+    $('#trial-stop').disabled = !ready || trialBusy || snapshot?.trial?.status !== 'recording';
+    $('#trial-download').disabled = !token || trialBusy || snapshot?.trial?.status !== 'stopped';
+    $('#trial-label').disabled = trialBusy || recording;
+    $('#trial-scenario').disabled = trialBusy || recording;
   }
 
   function setToken(value, local = false) {
@@ -294,6 +303,83 @@
       text('#command-message', error.name === 'TimeoutError' ? 'Request timed out. Check incident state before repeating the command.' : error.message || 'Command failed.');
     } finally {
       busy = false;
+      updateControls();
+    }
+  }
+
+  function renderTrial() {
+    const trial = snapshot?.trial;
+    const labels = { recording: 'RECORDING', stopping: 'STOPPING', stopped: 'STOPPED', error: 'ERROR' };
+    text('#trial-status', trial ? labels[trial.status] || trial.status : 'NO RECORDING');
+    $('#trial-status').className = `badge ${trial?.status === 'recording' ? 'good' : trial?.status === 'stopping' ? 'warning' : trial?.status === 'error' ? 'bad' : ''}`;
+    const chestCount = trial?.sampleCounts?.['chest-phone'], waistCount = trial?.sampleCounts?.['waist-airpod'];
+    text('#trial-chest-count', finite(chestCount) ? chestCount.toLocaleString() : '—');
+    text('#trial-waist-count', finite(waistCount) ? waistCount.toLocaleString() : '—');
+    text('#trial-summary', trial ? `${trial.label} · ${trial.scenario} · ID ${trial.id}${trial.reason ? ` · ${trial.reason}` : ''}` : 'No trial has been recorded.');
+    updateTrialTime();
+  }
+
+  function updateTrialTime() {
+    const trial = snapshot?.trial;
+    if (!trial || !finite(trial.startedAt)) { text('#trial-elapsed', '—'); return; }
+    const end = finite(trial.endedAt) ? trial.endedAt : online && ['recording', 'stopping'].includes(trial.status) ? Date.now() + clockOffset : snapshot.serverTime;
+    const seconds = Math.max(0, Math.floor((end - trial.startedAt) / 1000));
+    text('#trial-elapsed', `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}${!online && !finite(trial.endedAt) ? ' · last state offline' : ''}`);
+  }
+
+  async function trialRequest(operation) {
+    if (!token || trialBusy) return;
+    const label = $('#trial-label').value.trim();
+    if (operation === 'start' && (!label || label.length > 80)) return;
+    trialBusy = true;
+    updateControls();
+    $('#trial-message').classList.remove('error');
+    text('#trial-message', operation === 'start' ? 'Starting recording…' : 'Stopping recording…');
+    try {
+      const body = operation === 'start' ? { label, scenario: $('#trial-scenario').value } : {};
+      const response = await fetch(`/api/trials/${operation}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(body), signal: AbortSignal.timeout(12000) });
+      const result = await response.json();
+      if (!response.ok || result.error) throw new Error(result.error || `Recording request failed (${response.status})`);
+      if (snapshot) snapshot.trial = result;
+      renderTrial();
+      text('#trial-message', operation === 'start' ? 'Recording started. Mount both sensors, stand still, then calibrate.' : 'Stop requested. Monitoring and incident response remain active.');
+      await loadState().catch(() => {});
+    } catch (error) {
+      $('#trial-message').classList.add('error');
+      text('#trial-message', error.name === 'TimeoutError' ? 'Request timed out. Check recording status before repeating it.' : error.message || 'Recording request failed.');
+    } finally {
+      trialBusy = false;
+      updateControls();
+    }
+  }
+
+  async function downloadTrial() {
+    const trial = snapshot?.trial;
+    if (!token || trialBusy || trial?.status !== 'stopped') return;
+    trialBusy = true;
+    updateControls();
+    $('#trial-message').classList.remove('error');
+    text('#trial-message', 'Preparing recorded JSONL…');
+    try {
+      const response = await fetch(`/api/trials/${encodeURIComponent(trial.id)}/download`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store', signal: AbortSignal.timeout(30000) });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        throw new Error(result.error || `Download unavailable (${response.status})`);
+      }
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `lifeline-trial-${String(trial.id).replace(/[^a-zA-Z0-9_-]/g, '_')}.jsonl`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      text('#trial-message', 'JSONL download requested. Scenario remains an operator-supplied label.');
+    } catch (error) {
+      $('#trial-message').classList.add('error');
+      text('#trial-message', error.message || 'Could not download this recording.');
+    } finally {
+      trialBusy = false;
       updateControls();
     }
   }
@@ -329,6 +415,10 @@
   });
   $('#responder').addEventListener('change', updateControls);
   $('#outcome-input').addEventListener('input', updateControls);
+  $('#trial-label').addEventListener('input', updateControls);
+  $('#trial-start').addEventListener('click', () => trialRequest('start'));
+  $('#trial-stop').addEventListener('click', () => trialRequest('stop'));
+  $('#trial-download').addEventListener('click', downloadTrial);
   $('#trigger').addEventListener('click', () => command({ type: 'trigger', kind: 'synthetic', summary: 'Operator-triggered development simulation. No physical fall evidence asserted.' }));
   $('#manual-help').addEventListener('click', () => command({ type: 'trigger', kind: 'manual', summary: 'Operator-simulated manual request for help.' }));
   $('#cancel').addEventListener('click', () => { const incident = snapshot?.incident; if (incident) command({ type: 'cancel', incidentId: incident.id, checkinId: incident.checkinId }); });

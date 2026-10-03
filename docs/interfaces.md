@@ -20,6 +20,14 @@ The phone can POST a final spoken reply to `/api/checkin/reply` with bearer auth
 
 Local `/api/setup` includes `lanEnabled` based on the actual listener address. Advertised addresses do not prove phone reachability.
 
+## Trial capture
+
+Authenticated `POST /api/trials/start` accepts `{label,scenario}` and returns `TrialView`. Labels are 1–80 characters; scenarios are `standing`, `phone-drop`, `sit`, `bend`, `staged-fall`, or `other`. Start requires no active incident or recording. It resets detector calibration, buffers, clock estimates, and cooldown, then requests a fresh clock exchange after the first accepted sample from each source. Mount and calibrate after starting.
+
+Authenticated `POST /api/trials/stop` flushes capture; `TrialView.status` changes through `stopping` to `stopped`. Monitoring remains active. Authenticated `GET /api/trials/:id/download` returns raw JSONL; the current trial must be stopped. Snapshot includes the current trial's status, counts, elapsed timestamps, and stop/error reason. Files remain in private ignored `data/trials/`; the current trial view is process-local. Historical files may be incomplete after an interrupted capture; replay requires a final `trial.stop` marker.
+
+Each `TrialRecord` contains host monotonic `atMs`, wall-clock `at`, event `type`, optional `source`, and optional `payload`. The version-1 header identifies the trial and initially connected sources. Events preserve accepted motion packets, sent pings/accepted pongs, successful calibration sources, detector resets, connections, assessment calls/results, and stop reason. Capture is limited to ten minutes or 100 MB; storage failures or backpressure end capture explicitly. Replays run offline and never issue incident commands.
+
 ## Providers
 
 Provider adapters live under `src/providers/`. Export from `src/providers/index.ts`:

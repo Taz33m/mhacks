@@ -49,6 +49,18 @@ FinchNode handoffs retain synthetic source record IDs. Optional model calls sele
 
 Details: [provider setup](docs/providers.md).
 
+## Motion trials
+
+Use **Motion trials** on the dashboard to record a labelled trial. Begin recording before calibration, mount both sensors, stand still for at least one continuous second, calibrate, perform the controlled movement, then stop and download JSONL. The capture preserves accepted samples, clock exchanges, calibration/reset events, assessments, and disconnects. Stopping capture leaves incident response running.
+
+Compare the same capture offline:
+
+```sh
+npm run replay:motion -- data/trials/trial-ID.jsonl
+```
+
+Replay evaluates combined, chest-only, and waist-only modes without connecting to the live backend or sending alerts. Scenario labels are operator annotations. Candidate counts do not establish fall-detection accuracy. See [trial procedure and replay output](docs/motion-trials.md).
+
 ## Verify
 
 ```sh
@@ -56,7 +68,7 @@ npm run typecheck
 npm test
 ```
 
-Tests cover deadlines/restart, stale and unauthorized acceptance, atomic ownership, explicit cancellation, sourced resolution, retries versus unknown sends, motion validity/calibration, clock uncertainty, and offline provider behavior.
+Tests cover deadlines/restart, stale and unauthorized acceptance, atomic ownership, explicit cancellation, sourced resolution, retries versus unknown sends, motion validity/calibration, clock uncertainty, controlled detection fixtures, trial capture/replay, and offline provider behavior.
 
 ## Current boundary
 
