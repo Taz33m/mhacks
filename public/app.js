@@ -377,7 +377,22 @@
   function renderTimeline() {
     const events = snapshot.timeline.filter((event) => event.incidentId === snapshot.incident?.id).slice().sort((a, b) => b.at - a.at);
     text('#event-count', events.length);
-    $('#timeline').innerHTML = events.length ? events.map((event) => `<li class="event-item"><div class="event-head"><strong>${escaped(event.type.replaceAll('_', ' '))}</strong><time>${escaped(time(event.at))}</time></div><p>${escaped(event.detail)}</p><span class="event-actor">${escaped(nameFor(event.actor))}</span></li>`).join('') : '<li class="empty-list">Events will appear as the incident progresses.</li>';
+    $('#timeline').innerHTML = events.length ? events.map((event) => `<li class="event-item"><div class="event-head"><strong>${escaped(event.type.replaceAll('_', ' '))}</strong><time>${escaped(time(event.at))}</time></div><p>${escaped(timelineDetail(event))}</p><span class="event-actor">${escaped(nameFor(event.actor))}</span></li>`).join('') : '<li class="empty-list">Events will appear as the incident progresses.</li>';
+  }
+
+  function timelineDetail(event) {
+    try {
+      const detail = JSON.parse(event.detail);
+      if (event.type === 'ANSWER_QUEUED' && detail?.source === 'photon-imessage' && typeof detail.question === 'string') {
+        return `Question: ${detail.question}\nAnswer queued · ${generationFor(detail.generation)[0].toLowerCase()}. Delivery is not yet established.`;
+      }
+      if (event.type === 'CHECKIN_REPLY' && typeof detail?.transcript === 'string') {
+        const decisions = { help_requested: 'Help requested', confirmation_required: 'Explicit cancellation still required', unresolved: 'Incident remains unresolved' };
+        const decision = typeof detail.decision === 'string' && Object.hasOwn(decisions, detail.decision) ? decisions[detail.decision] : 'Reply recorded';
+        return `Wearer reply: ${detail.transcript}\n${decision}.`;
+      }
+    } catch { /* Preserve older plain text audit entries. */ }
+    return event.detail;
   }
 
   function renderActions() {
