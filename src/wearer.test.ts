@@ -228,6 +228,8 @@ test('cancellation and escalation stop queued wearer acknowledgements', t => {
     else if (ending === 'deadline') { setNow(incident.checkinDeadline); controller.tick(); }
     else handleWearerInbound(inbound('I need help', target, 'later-help'), phone, controller);
     assert.equal(acknowledgements(controller, incident)[0].status, 'cancelled', ending);
+    const update = controller.claimAction('wearer')!;
+    assert.equal(update.type, 'wearer_status', ending);
     assert.equal(controller.claimAction('wearer'), null, ending);
   }
 });

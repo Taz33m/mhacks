@@ -75,7 +75,9 @@ test('expired queued and phase-ended failed wearer actions are never claimed', t
   const failed = setup(t); const cancelled = failed.c.trigger({ kind: 'synthetic', summary: 'Phase-ended failure fixture.' });
   const action = failed.c.claimAction()!; failed.c.finishAction(action.id, 'failed', 'Confirmed rejection.');
   failed.c.cancel(cancelled.id, cancelled.checkinId); failed.advance(10_000);
-  assert.equal(failed.c.claimAction(), null); assert.equal(failed.c.actions(cancelled.id).find(a => a.id === action.id)?.status, 'cancelled');
+  const closure = failed.c.claimAction('wearer')!;
+  assert.equal(closure.type, 'wearer_status'); assert.match(closure.text, /explicitly cancelled/);
+  assert.equal(failed.c.claimAction('wearer'), null); assert.equal(failed.c.actions(cancelled.id).find(a => a.id === action.id)?.status, 'cancelled');
 });
 
 test('a slow wearer send cannot block the responder lane, and lanes never claim each other’s actions', t => {
@@ -84,7 +86,8 @@ test('a slow wearer send cannot block the responder lane, and lanes never claim 
   const wearer = c.claimAction('wearer')!; assert.equal(wearer.type, 'wearer_checkin');
   advance(policy.checkinMs); c.tick(); assert.equal(c.active()?.phase, 'HELP_REQUESTED');
   assert.equal(c.actions(i.id).find(a => a.id === wearer.id)?.status, 'attempting');
-  assert.equal(c.claimAction('wearer'), null);
+  const escalation = c.claimAction('wearer')!;
+  assert.equal(escalation.type, 'wearer_status'); assert.match(escalation.text, /No responder has accepted/);
   const alert = c.claimAction('responders')!; assert.equal(alert.type, 'alert');
   assert.equal(c.actions(i.id).find(a => a.id === wearer.id)?.status, 'attempting');
   const expired = setup(t); expired.c.trigger({ kind: 'synthetic', summary: 'Expired wearer lane fixture.' });

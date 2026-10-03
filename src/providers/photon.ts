@@ -1,4 +1,10 @@
 import type { ProviderInbound, ProviderResult } from '../contracts.ts';
+import { phoneIdentity } from '../identity.ts';
+
+/** Native Spectrum identities; `phone` can be the SDK's literal shared line. */
+export interface PhotonChannel { id?: string; phone?: string; type?: string }
+export interface PhotonSentMessage { id: string; space?: PhotonChannel }
+export interface PhotonSendOptions { replyToMessageId?: string; chatId?: string; lineId?: string }
 
 export interface PhotonMessage {
   id: string;
@@ -7,11 +13,18 @@ export interface PhotonMessage {
   sender?: { id: string; kind?: string };
   content: unknown;
   reactionRecord?: { selected?: boolean };
+  space?: PhotonChannel;
+  timestamp?: Date;
+  reply?(text: string): Promise<PhotonSentMessage | undefined>;
 }
-export interface PhotonSpace { send(text: string): Promise<{ id: string } | undefined> }
+export interface PhotonSpace extends PhotonChannel {
+  send(text: string): Promise<PhotonSentMessage | undefined>;
+  getMessage?(id: string): Promise<PhotonMessage | undefined>;
+}
 export interface PhotonClient {
   messages: AsyncIterable<readonly [unknown, PhotonMessage]>;
   openDm(phone: string): Promise<PhotonSpace | undefined>;
+  openSpace?(chatId: string, lineId: string): Promise<PhotonSpace | undefined>;
   stop(): Promise<void>;
 }
 export type PhotonFactory = (projectId: string, projectSecret: string) => Promise<PhotonClient>;
@@ -28,6 +41,7 @@ export const createCloudPhoton: PhotonFactory = async (projectId, projectSecret)
   return {
     messages: app.messages,
     openDm: async (phone) => im.space.create(await im.user(phone)),
+    openSpace: async (chatId, lineId) => im.space.get(chatId, { phone: lineId }),
     stop: () => app.stop(),
   };
 };
@@ -39,6 +53,12 @@ function targetId(content: Record<string, unknown>): string | undefined {
   const id = object(content.target)?.id;
   return typeof id === 'string' && id.length > 0 ? id : undefined;
 }
+function channel(space?: PhotonChannel): { chatId?: string; lineId?: string } {
+  return {
+    ...(typeof space?.id === 'string' && space.id ? { chatId: space.id } : {}),
+    ...(typeof space?.phone === 'string' && space.phone ? { lineId: space.phone } : {}),
+  };
+}
 
 /** Preserve provider identities and targets; authorization belongs to the controller. */
 export function normalizePhoton(message: PhotonMessage): ProviderInbound | null {
@@ -46,7 +66,10 @@ export function normalizePhoton(message: PhotonMessage): ProviderInbound | null 
       !message.id || !message.sender?.id || message.sender.kind === 'agent') return null;
   const content = object(message.content);
   if (!content) return null;
-  const base = { messageId: message.id, sender: message.sender.id };
+  const at = message.timestamp instanceof Date ? message.timestamp.getTime() : NaN;
+  const base = { messageId: message.id, sender: message.sender.id, ...channel(message.space),
+    ...(Number.isFinite(at) ? { providerTimestamp: at } : {}),
+  };
   if (content.type === 'text' && typeof content.text === 'string') {
     return { ...base, kind: 'text', text: content.text };
   }
@@ -162,32 +185,66 @@ export function createPhotonAdapter(options: {
   };
   return {
     status: () => ({ configured, detail: listenerDetail ? `${listenerDetail}; ${detail}` : detail }),
-    async sendMessage(phone: string, text: string, canSubmit?: () => boolean): Promise<ProviderResult> {
+    async sendMessage(phone: string, text: string, canSubmit?: () => boolean, transport?: PhotonSendOptions): Promise<ProviderResult> {
       if (!configured) return { status: 'failed', detail };
       if (shutdown) return { status: 'failed', detail: 'Photon adapter stopped; no message sent' };
       if (!/^\+[1-9]\d{7,14}$/.test(phone) || !text.trim() || text.length > 6_000) {
         return { status: 'failed', detail: 'Invalid recipient or message; no send attempted' };
       }
+      const bound = transport?.replyToMessageId !== undefined || transport?.chatId !== undefined || transport?.lineId !== undefined;
+      if (bound && (!transport?.chatId || !transport.lineId
+        || !/^any;-;.+$/.test(transport.chatId)
+        || phoneIdentity(transport.chatId.slice('any;-;'.length)) !== phoneIdentity(phone)
+        || !transport.lineId.trim() || transport.lineId !== transport.lineId.trim()
+        || (transport.replyToMessageId !== undefined && !transport.replyToMessageId.trim()))) {
+        return { status: 'failed', detail: 'Invalid or incomplete bound DM/reply identities; no send attempted' };
+      }
       let space: PhotonSpace | undefined;
+      let replyTarget: PhotonMessage | undefined;
       try {
         const client = await withDeadline(getClient(), timeoutMs);
-        space = await withDeadline(client.openDm(phone), timeoutMs);
+        if (bound) {
+          if (!client.openSpace) throw new Error('bound conversation lookup unavailable');
+          space = await withDeadline(client.openSpace(transport!.chatId!, transport!.lineId!), timeoutMs);
+          if (!space || space.id !== transport!.chatId || space.phone !== transport!.lineId || space.type === 'group')
+            throw new Error('conversation identity mismatch');
+          if (transport!.replyToMessageId !== undefined) {
+            if (!space.getMessage) throw new Error('target lookup unavailable');
+            replyTarget = await withDeadline(space.getMessage(transport!.replyToMessageId), timeoutMs);
+            // The original normalized inbound event supplies trusted persisted
+            // chat/line provenance. On cache misses Spectrum rebuilds the target
+            // using that chat hint; reject every contradictory returned identity.
+            if (!replyTarget || replyTarget.id !== transport!.replyToMessageId
+              || replyTarget.platform !== 'imessage' || replyTarget.direction !== 'inbound'
+              || replyTarget.sender?.kind === 'agent'
+              || !replyTarget.sender?.id || phoneIdentity(replyTarget.sender.id) !== phoneIdentity(phone)
+              || !replyTarget.space || replyTarget.space.id !== transport!.chatId || replyTarget.space.phone !== transport!.lineId
+              || replyTarget.space.type === 'group' || !replyTarget.reply)
+              throw new Error('reply target identity mismatch');
+          }
+        } else space = await withDeadline(client.openDm(phone), timeoutMs);
         if (!space) throw new Error('no DM');
       } catch {
-        detail = 'Photon connection/DM unavailable before message send';
+        detail = bound ? 'Photon bound conversation/reply target unavailable or mismatched; no send attempted'
+          : 'Photon connection/DM unavailable before message send';
         return { status: 'failed', detail };
       }
       if (shutdown || (canSubmit && !canSubmit())) {
         return { status: 'cancelled', detail: 'Incident authorization ended before submission; no message sent.' };
       }
       try {
-        const sent = await withDeadline(space.send(text), timeoutMs);
+        const sent = await withDeadline(replyTarget ? replyTarget.reply!(text) : space.send(text), timeoutMs);
         if (!sent?.id) {
           detail = 'Send returned no message ID; delivery outcome unknown';
           return { status: 'unknown', detail };
         }
+        const identities = { ...channel(space), ...channel(sent.space) };
+        if (bound && (identities.chatId !== transport!.chatId || identities.lineId !== transport!.lineId)) {
+          detail = 'Submitted message returned different conversation identities; outcome unknown, reconcile before retry';
+          return { status: 'unknown', messageId: sent.id, ...identities, detail };
+        }
         detail = 'Cloud accepted a message; recipient delivery is not established';
-        return { status: 'provider_accepted', messageId: sent.id, detail };
+        return { status: 'provider_accepted', messageId: sent.id, ...identities, detail };
       } catch {
         detail = 'Send failed or timed out after submission; outcome unknown, reconcile before retry';
         return { status: 'unknown', detail };

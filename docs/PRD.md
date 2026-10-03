@@ -6,13 +6,13 @@ Updated: October 3, 2026. Primary track: **Actually Intelligent (AI)**.
 
 LIFELINE follows a suspected physical incident from motion evidence through a wearer check-in, approved responder coordination, and a recorded outcome. The product promise is follow-through: someone explicitly accepts responsibility, reports progress, and records what happened.
 
-LIFELINE is an incident-response product. Fall-like motion is the prototype trigger for a broader response loop. Detection supplies evidence that something may have happened; verification, explicit responder ownership, and recorded resolution are the core product responsibilities.
+LIFELINE is a care-coordination companion. Read-only Finch records answer what is documented; Photon lets approved people ask questions and report what happens next. Fall-like motion is the first intended trigger for the incident loop. New observations, responder reports and outcomes remain in LIFELINE’s care log and a downloadable brief, separately attributed from hospital records.
 
 **AI handles unstructured information; deterministic software handles the safety policy.** AI selects incident-relevant source facts, composes a grounded handoff, and answers responder questions while distinguishing known facts from unavailable information. Only authenticated, explicit actions and configured deadlines change incident state.
 
 The target hackathon prototype uses **FREE-WILi for primary wearable acceleration and spoken interaction**, a **waist-mounted AirPod Pro**, and a nearby Mac. The **iPhone is the texting/communication channel**; it supplies no sensor, camera, or speech evidence in the target design. The two motion streams provide different body-placement evidence. Whether they improve detection over either sensor alone is a hypothesis to evaluate using recorded trials.
 
-The existing runtime still contains the earlier iPhone motion/audio implementation. The [device and patient-record migration plan](device-and-record-migration.md) defines the replacement and its hardware validation gates. Camera work is removed from scope; no implemented camera path was found.
+The iPhone app now handles communication only. Structured synthetic records, immutable incident revisions, record Q&A and care-brief export are implemented. WILi acceleration acquisition and explicit button routing have offline checks, but physical firmware, board-specific detection and audio remain pending. The [migration plan](device-and-record-migration.md) defines those validation gates. Camera work is removed from scope.
 
 ## Users and decisions
 
@@ -39,14 +39,16 @@ The prototype serves one wearer and one active incident, with a configured respo
 | AI | Required for the judged AI demo: model composes structured handoffs and answers by selecting incident facts, record IDs/fields, and unavailable information. Application code renders source values and citations. Degraded templates keep response running on failure but do not satisfy the AI demo gate. |
 | Deferred | Spacetime migration, Fetch/ASI:One entry point, automatic emergency calling, production patient enrollment, and multiple wearers. Camera perception is out of scope. |
 
-Photon, FinchNode, and ElevenLabs each have a concrete role in this same incident. Submission claims must reflect the integrations actually demonstrated. No prize stacking or award amounts are assumed by this PRD.
+Photon and FinchNode connect clinical context to human follow-through. Finch’s read-only boundary is compatible with the [sponsor criterion](https://safe-banon-80d.notion.site/Tracks-Prizes-3ed24ca0c81b80579aeff03edfa88af5): a working synthetic-record integration that helps patients, clinicians or care teams; writeback is not required. ElevenLabs supports the intended board voice path. Submission claims must reflect the integrations actually demonstrated. No prize stacking or award amounts are assumed by this PRD.
 
 ## Core experience
+
+Before an incident, the operator can read the protected synthetic patient view and ask questions against the displayed revision. This currently runs in the dashboard; an explicit Record context selector switches between the current read and the immutable incident snapshot. Photon record Q&A is implemented for approved contacted responders during an incident; a standalone longitudinal wearer conversation is a later step. After an incident, export the clinical snapshot and separately sourced app reports as a care brief for a clinician or caregiver. No automatic hospital writeback or care-plan change is implied.
 
 1. Both mounted sources stream to the Mac. The operator verifies freshness, reporting AirPod, calibration, and clock alignment.
 2. A qualifying motion candidate opens one suspected incident. The evidence states whether it is cross-body, single-source, manual, or synthetic.
 3. FREE-WILi speaks its check-in. Photon sends the wearer: **“I detected a possible fall. Are you okay?”** with the incident code and help/cancellation instructions.
-4. Both channels share one check-in identity and deadline. Exact help requests escalate immediately. Silence, positive language, and ambiguity preserve the unresolved incident until the deadline. A positive reply directs the wearer to the explicitly labelled **I DON'T NEED HELP** control on FREE-WILi. Board playback or a Photon acknowledgement does not reset the timer. Existing phone-specific prompts must migrate with the board controls.
+4. Both channels share one check-in identity and deadline. Exact help requests escalate immediately. Silence, positive language, and ambiguity preserve the unresolved incident until the deadline. A positive reply directs the wearer to the explicitly labelled **I DON'T NEED HELP** control on FREE-WILi. Board playback or a Photon acknowledgement does not reset the timer. Phone controls are communication actions; board playback/transcription still requires implementation.
 5. Before escalation, the wearer can explicitly activate **I DON'T NEED HELP** for the current check-in. A typed or spoken “I'm okay” cannot cancel it.
 6. On escalation, the controller contacts approved responders according to policy. Their messages include the handoff and exact commands needed to continue.
 7. An approved, contacted responder accepts the correlated alert. First acceptance wins atomically. The wearer and console see that acceptance; departure remains unconfirmed.
@@ -128,7 +130,7 @@ Use the full current incident code, for example `LF-1234ABCD`.
 | On-scene owner | `RESOLVED LF-1234ABCD <concrete outcome>` | Record outcome and close. |
 | Current eligible contacted responder | Record question in the current conversation | Queue a source-grounded reply; stale explicit targets/codes cannot refer to a different incident. |
 
-General natural-language ETAs or declines are outside this version. A model is not allowed to turn an inferred intent into acceptance, departure, arrival, or closure.
+Exact replies to a current bound alert/status also support “on it”/“I can help,” “on my way”/“I’m leaving,” “I’m here”/“arrived,” “I can’t help,” and “resolved: <outcome>.” An explicit stale reply target remains invalid even with a current incident code. Broader language, future plans, negated statements and ETAs do not change state. A model cannot infer authority or perform these transitions.
 
 ## Failure behavior and data
 
@@ -161,13 +163,13 @@ Report detection-to-check-in, deadline-to-help-request, actual message receipt, 
 
 ## Current implementation and remaining work
 
-The repository implements the earlier iPhone/AirPod producers, tentative detector, trial/replay tools, SQLite incident loop, console, reply policy, dual wearer check-in actions, grounded synthetic health, and provider adapters. FREE-WILi acquisition/audio and the structured patient view remain migration work. The earlier iPhone 15 app is signed, installed, and privately paired. A complete 120-second connectivity recording captured 12,019 real chest-phone samples at 100.14 Hz and 5,674 Right AirPod samples at 47.28 Hz through the wired development connection. Maximum received gaps were 81 ms and 127 ms respectively. These remain historical iPhone acquisition results, not WILi evidence. Placement was unverified and neither source was calibrated. Mounted sensing and calibration are deferred until the user is ready.
+Implemented: the existing waist-AirPod acquisition and unchanged route keeper; a separate WILi acceleration contract, clock/quality checks, recording and explicit help/cancel routing; communication-only iPhone client; deterministic SQLite incident loop and outbox; native Photon chat/line binding and threaded replies; constrained owner progress and wearer status updates; structured Finch synthetic record view; persisted immutable incident clinical revisions; grounded Q&A before and during incidents; per-handoff generation provenance; and a care-brief export separating hospital records from local reports.
 
-Responder alerts/updates include exact workflow commands. AI context generation, positive wearer acknowledgements, the demo profile, durable answers, and Photon recovery have automated checks. Local Qwen2.5 3B inference has produced a validated handoff covering medications, conditions, and allergies with source IDs, and a focused allergy answer in the running console. Schema-constrained plans and application validation reject invented fields and omitted available categories. Physical voice behavior and actual message receipt still need rehearsal. If Spectrum cleanup never completes, recovery reports the incomplete teardown and blocks replacement clients; it cannot forcibly cancel the SDK.
+The default runtime disables chest-phone ingestion and phone speech. WILi acquisition quality is visible but does not trigger a fall assessment yet. Its custom transport requires compatible board firmware. Physical sensor trials, board playback/transcription, actual Photon receipt/replies and sandbox Connect subject binding remain live-demo gates. Calibration is deferred. Historical iPhone/AirPod recordings and the legacy detector remain source-correct reference data behind an explicit legacy flag, not evidence for the new device setup.
 
-The console now displays readable handoffs and pairs each recorded responder question with its answer, generation provenance, and delivery result. Its authenticated local AI preview uses the same generation adapter without sending a message or changing incident history. The updated wearer app shows check-in progress, responder ownership, outcomes, and explicit last-known status when disconnected. Photon wearer/responder receipt, reactions and replies, and ElevenLabs playback still require configuration and direct validation; local AI previews do not establish responder receipt. A configured flag is not a demo pass.
+Local AI rehearsal and automated provider fixtures validate grounding and workflow behavior; they do not establish phone receipt. The fictional Finch subject is visibly separate from the real wearer. Persisted synthetic revisions do not establish production consent, revocation or retention behavior.
 
-The concept is fixed. Development priority is the visible live chain:
+Development priority is the visible live chain:
 
 1. A real Photon check-in reaches the wearer.
 2. A physical trigger starts the incident.

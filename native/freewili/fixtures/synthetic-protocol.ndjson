@@ -1,0 +1,6 @@
+{"type":"device.hello","protocolVersion":1,"source":"body-wili","sessionId":"synthetic-og-boot-1","deviceModel":"freewili-og","fullScaleG":8,"capabilities":{"accelerometer":true,"speaker":true,"microphone":true,"buttons":true}}
+{"type":"accel.sample","source":"body-wili","sessionId":"synthetic-og-boot-1","sequence":0,"sensorTime":101,"captureClock":"device-monotonic","accelerationG":[0,0,1],"fullScaleG":8,"fresh":true,"saturated":false,"quality":"measured"}
+{"type":"clock.pong","id":"synthetic-clock-1","sessionId":"synthetic-og-boot-1","deviceReceivedMs":101000,"deviceSentMs":101000}
+{"type":"accel.sample","source":"body-wili","sessionId":"synthetic-og-boot-1","sequence":1,"sensorTime":101.01,"captureClock":"device-monotonic","accelerationG":[0,0,2.8],"fullScaleG":8,"fresh":true,"saturated":false,"quality":"measured"}
+{"type":"button.press","source":"body-wili","sessionId":"synthetic-og-boot-1","eventId":"synthetic-help-1","action":"help","incidentId":"LF-SYNTHETIC","checkinId":"synthetic-checkin"}
+{"type":"audio.ack","source":"body-wili","sessionId":"synthetic-og-boot-1","eventId":"synthetic-audio-finished-1","commandId":"synthetic-play-1","incidentId":"LF-SYNTHETIC","checkinId":"synthetic-checkin","status":"finished"}

@@ -1,9 +1,11 @@
-# Native sensors: chest iPhone + waist AirPod
+# Native setup: FREE-WILi + waist AirPod + communication iPhone
 
-Both apps send real Core Motion readings to the LIFELINE server on **8877**.
-They never generate fake sensor readings. The Mac AirPods acquisition and
-off-ear keepalive are incorporated directly from Kinesthetic; see
-`native/PROVENANCE.md`.
+The Mac waist app retains real AirPod CoreMotion acquisition and the unchanged
+Kinesthetic off-ear keepalive; see `native/PROVENANCE.md`. The iPhone app is a
+communication/check-in companion, not a motion or voice source. FREE-WILi
+has a separate custom acquisition bridge on **8877**; compatible firmware,
+physical sampling, fall detection, speaker playback and microphone/STT still
+need implementation or board validation. See [FREE-WILi setup](../native/freewili/README.md).
 
 ## Build
 
@@ -59,38 +61,36 @@ before retrying. That account restriction prevents certificate/profile creation.
 
 ## Connect
 
-1. Run `npm run setup:local` for the local Mac setup, then open the local
-   dashboard. Setup installs/privately pairs the Mac motion app. Obtain the
-   persistent development pairing token through the localhost setup for the
-   iPhone; no token needs to be printed in logs.
-2. Open the Mac waist app, enter the host (`127.0.0.1` when the backend is on
-   this Mac) and token, and press **Start motion**.
-3. Open **Connection and device details** in the chest iPhone app, enter the
-   Mac LAN/Tailscale hostname or IP and the same token, then press **Start monitoring**.
-   Missing pairing values expand this section automatically. The field accepts a hostname/IP,
-   not an entire URL. Port 8877 is fixed.
-4. Keep the iPhone app foregrounded. It disables screen sleep while monitoring
-   and explicitly stops when backgrounded. Check-in polling continues when a
-   device has no motion support, but it emits no fabricated motion.
-   Grant Microphone and Speech Recognition during setup. If either is denied,
-   or on-device English recognition is unsupported, use the explicit controls.
-   Enable denied permissions in Settings and stop/start monitoring to refresh.
-5. With both sources mounted and stable for at least one second, tap
-   **Calibrate sensors** in the iPhone app or above the console's sensor cards.
-   The phone reports whether both sources or only one was calibrated. Repeat
-   after reconnecting, changing the reporting bud, or remounting.
+1. Run `npm run setup:local`, then open the local Mac dashboard. Setup
+   privately pairs the Mac waist app. Obtain the persistent development
+   pairing token through localhost setup for the communication iPhone.
+2. Pair the AirPods to the Mac, open the waist app, enter the host
+   (`127.0.0.1` for a backend on this Mac) and token, then press **Start motion**.
+3. Open **Connection and device details** in the iPhone companion, enter the
+   Mac LAN/Tailscale hostname or IP and token, then press **Start communication**.
+   Missing values expand this section. Enter a hostname/IP, not a URL; port
+   8877 is fixed. Existing app bundle identity and pairing preferences remain.
+4. Keep the companion foregrounded. It disables screen sleep while the
+   communication session is active and stops communication when backgrounded.
+   It has no motion, microphone, speech-recognition or audio permission path.
+5. Use the **Mac dashboard** for sensor calibration. The retained CoreMotion
+   calibration does not establish calibration or detection for WILi's separate
+   acceleration protocol. Verify the mounted waist reporting bud before use.
+6. Follow the FREE-WILi bridge instructions only with compatible custom firmware
+   and an identified serial port. Synthetic protocol fixtures are offline tests,
+   not proof of a connected board.
 
-The wearer screen keeps the current incident, assigned responder, reported
-progress, and recorded outcome above setup details. Lost polling shows explicitly
-labelled last-known context and removes the stale cancellation control. Start/stop
-monitoring, manual help, and explicit calibration remain available; connection
-details and frame diagnostics are grouped below them.
+The companion shows current incident, assigned responder, reported progress,
+and recorded outcome above connection details. Lost polling labels retained
+context as last known and removes stale cancellation controls. Start/stop
+communication and explicit help/cancel remain available. Stopping this session
+neither stops wearable acquisition nor resolves the controller's incident.
 
 The token is saved in each development app's own UserDefaults so setup
 persists. This is development pairing, not production enrollment or secure
-credential storage. It is not printed to logs. Native relay traffic is plain
-HTTP/WebSocket with an explicit development ATS exemption supporting LAN and
-Tailscale IP addresses. Use a trusted development connection.
+credential storage. It is not printed to logs. The companion uses plain HTTP
+with an explicit development ATS exemption for LAN/Tailscale addresses; the
+waist and board bridges use WebSocket. Use a trusted development connection.
 
 ### Wired connection for the demo
 
@@ -104,17 +104,18 @@ npm run device:usb -- DEVICE_UDID
 ```
 
 The foreground helper discovers the current tunnel and Mac IPv6 address,
-starts a relay only on that interface, and launches monitoring. Keep this
-process and the cable connected. Ctrl-C closes the relay; loss of the stream
-remains visible and requires calibration after reconnecting. The helper does
-not install the app, change saved Wi-Fi pairing, or create a background job.
+starts a relay only on that interface, and launches the communication session.
+Keep this process and the cable connected. Ctrl-C closes the relay; incident
+updates become unavailable without changing sensor calibration or safety state.
+The helper does not install the app, change saved Wi-Fi pairing, or create a background job.
 Localhost pairing setup stays unavailable through the relay.
 
 Debug builds accept `LIFELINE_RELAY_HOST` for a process-only address override
-and `LIFELINE_START_MONITORING=1` for a one-time start on launch. The screen
+and the retained `LIFELINE_START_MONITORING=1` flag for a one-time communication
+start on launch. The screen
 shows an active override separately from the saved address. Ordinary launches
 keep the explicit Start control; returning from background does not restart
-monitoring. Release builds ignore these environment flags. IPv6 addresses are
+communication. Release builds ignore these environment flags. IPv6 addresses are
 accepted with or without brackets.
 
 ## Waist setup inherited from Kinesthetic
@@ -140,128 +141,80 @@ detection accuracy.
 
 ## Contracts and behavior
 
-- `/motion?source=chest-phone&token=…` and
-  `/motion?source=waist-airpod&token=…` transmit the shared `MotionSample`.
-- Quaternion order is **x,y,z,w**, rotation rate **rad/s**, gravity and user
-  acceleration **g**, and `sensorTime` is the original Core Motion timestamp
-  in **seconds**. Never mix linear acceleration with gravity-inclusive
-  impact thresholds.
-- Each connection gets a new UUID session. Sequences increase; invalid,
-  non-finite, non-increasing, or delayed callbacks are discarded. A changed
-  AirPod reporting source forces a new session. Outstanding sends cause
-  explicitly counted skips rather than invented continuity.
-- Both apps receive `clock.ping` and reply with its ID, their current session,
-  and monotonic device uptime receipt/send stamps in **milliseconds**. The
-  backend owns clock alignment and uncertainty.
-- The Mac verifies `/health` and recent `motionSources` rather than a game
-  relay's player list. The dashboard is the authority for freshness,
-  calibration, alignment, and measured cadence.
-- iPhone requests a 100 Hz interval; delivered/transmitted cadence needs
-  measurement. Local acceleration is distinct from socket send completion
-  and dashboard receipt. A socket waits for the handshake before sending;
-  a five-second handshake, three-second pending send, or seven-second missing
-  receiver clock causes a disconnect and retry after two seconds. Static
-  network error codes help diagnose reachability without exposing request
-  URLs or tokens. It polls authenticated `/api/checkin` every second while
-  monitoring and plays each current `checkinId` once per monitoring session.
-  The response includes `serverTime` and responder names. A conservative local
-  voice deadline is derived from server time and local request-start time.
-- Explicit cancellation sends `type: cancel`, the current `incidentId`, and
-  `checkinId` with bearer authentication. The server must reject stale IDs
-  and phases. A failed/unknown request never locally resolves an incident.
-- Provider audio must be a relative authenticated URL (normally
-  `/api/audio/checkin`). If unavailable, the UI explicitly identifies native
-  iPhone speech as a development fallback. The prompt is:
-  “I detected a possible fall. Do you need help? You can say I need help, or
-  tap I don't need help to cancel.”
+- `/motion?source=waist-airpod&token=…` transmits `MotionSample`: quaternion
+  **x,y,z,w**, rotation **rad/s**, gravity and user acceleration **g**, and original
+  CoreMotion `sensorTime` in **seconds**. Reporting bud identity is retained.
+- The waist bridge receives `clock.ping` and replies with ID/session and device
+  monotonic receipt/send stamps in **milliseconds**. Reconnection starts a new
+  session; missing/backpressured samples do not fabricate continuity. The Mac
+  verifies `/health` and recent CoreMotion `motionSources` rather than game state.
+- WILi connects separately at `/motion?source=body-wili&token=…`, with a validated
+  hello, gravity-inclusive acceleration/range/saturation, clock replies, and
+  explicit button events. Its acquisition/freshness appears in the separate
+  dashboard card; these values do not establish a fall. The current server
+  issues no WILi audio commands and has no microphone/STT transport.
+- The legacy chest-phone producer/detector path is gated by
+  `LIFELINE_LEGACY_PHONE=1`. The current iPhone app never emits motion packets,
+  plays check-in audio or submits speech, regardless of that backend setting.
+- The iPhone polls authenticated `/api/checkin` every second while communication
+  is active, with bounded HTTP requests and session guards against stale results.
+  It shows responder names, acceptance/departure/arrival, deadlines and outcome.
+  Static network diagnostics never expose authenticated URLs or pairing tokens.
+- **I NEED HELP** posts the manual trigger. **I DON'T NEED HELP** posts explicit
+  `cancel` with current incident/check-in IDs. Rejected or unknown results never
+  locally close an incident. Calibration is controlled from the Mac dashboard.
 
-## Spoken replies and responder progress
+## Messages and responder progress
 
-The microphone tap is absent during the prompt. Capture starts only after the
-provider player or native synthesizer reports completion and a 450 ms pause.
-The iPhone prefers its built-in microphone and speaker, with no Bluetooth
-recording route requested, so the waist bud remains a Mac sensor. This audio
-arrangement still requires physical validation.
+Configure Photon wearer and approved responder phones separately from local
+pairing. Wearer check-ins, acknowledgements and phase status use a dedicated
+persisted message lane. A positive text reply asks for explicit phone
+cancellation; it never cancels or extends the deadline. The companion's local
+controls and Photon replies operate on the same controller incident.
 
-Recognition uses Apple's `SFSpeechRecognizer` for `en-US`. It checks
-`supportsOnDeviceRecognition`, recognition availability, and both permissions;
-each request sets `requiresOnDeviceRecognition = true`. It has **no cloud
-speech fallback**. See Apple's [support check](https://developer.apple.com/documentation/speech/sfspeechrecognizer/supportsondevicerecognition)
-and [request requirement](https://developer.apple.com/documentation/speech/sfspeechrecognitionrequest/requiresondevicerecognition).
-
-Partial words appear as “not submitted.” Only a final result posts, with bearer
-authentication, to `/api/checkin/reply`:
-
-```json
-{
-  "incidentId": "current incident ID",
-  "checkinId": "current check-in ID",
-  "transcript": "final on-device recognition result",
-  "source": "ios-on-device-speech"
-}
-```
-
-The server classifies the reply:
-
-- `help_requested`: stop voice and wait for responder updates.
-- `confirmation_required`: ask the wearer to tap **I DON'T NEED HELP**; voice
-  has not cancelled anything.
-- `unresolved`: keep the incident open, with at most one additional capture
-  attempt if time remains.
-
-There are at most two capture attempts per voice session. Each listens for at
-most six seconds, followed by up to 1.3 seconds for a final result. The check-in
-deadline takes precedence. Capture and pending callbacks are invalidated on a
-phase/ID change, deadline, button command, or backgrounding. A lost check-in
-connection suspends capture and pending replies while preserving the original
-identity, attempt count, and deadline. Recovery of that same confirming
-check-in resumes listening without replaying the prompt, within the original
-budget. A changed check-in never resumes the old session.
-Capture UUIDs, incident/check-in IDs, and monitoring epochs
-reject stale callbacks. The server remains authoritative if a final reply and
-an explicit button race. Failed submissions never establish safety and are
-not silently retried as successful actions.
-
-**I NEED HELP** posts the existing manual trigger command and immediately
-requests help through the controller. The app shows assigned responder name,
-acceptance versus departure versus arrival, the next progress deadline, and
-the recorded outcome when returned by the controller.
+Native 👍 acceptance requires the current persisted alert and approved sender
+in its accepted chat/line. Constrained phrases such as `leaving` and `arrived`
+need a current message target or the exact incident code; only the assigned
+owner updates progress. Arrival does not resolve the incident: an on-scene
+owner must record a concrete outcome. Q&A responses use native threaded replies
+bound to the original source message/chat/line. Receipt and live interaction
+still require phone verification; configured credentials alone prove neither.
 
 ## First physical checks
 
-Check live traces and source identities on both devices before rehearsing a
-trigger. Then validate speaker audibility while the Mac holds the AirPod,
-phone-to-Mac networking, clock uncertainty, unplug/reconnect recovery,
-background behavior, spoken help, safe phrases requiring the button,
-ambiguous speech, permission-denial recovery, and current check-in cancellation. Sensor disconnects
-must remain visible and must not resolve the incident.
+Verify the actual WILi family, firmware and serial port before calling board
+samples live. Bench-check fresh acceleration, range/saturation, clock alignment,
+source/session ordering and unplug behavior. Confirm the physical mounted AirPod
+matches the reported bud. Board playback, microphone/STT and the new fall
+assessment need separate implementation and physical validation; the iPhone
+cannot substitute for them. Verify companion connectivity, background behavior,
+current-ID help/cancel and Photon responder ownership/progress. Disconnects must
+stay visible and never resolve an incident.
 
 ## Build verification in this workspace
 
 - Mac: `zsh native/macos/build.sh` passed; arm64 macOS 14 target, ad-hoc signed.
 - iOS: `zsh native/ios/build.sh` passed with Xcode 27.0 / simulator SDK 27.0
   for arm64 and x86_64, minimum iOS 17.
-- Unsigned physical target: `zsh native/ios/build-device.sh` passed for arm64
-  with iPhone SDK 27.0. This is compilation, not physical installation.
-- Simulator app installation/launch and initial-screen visual inspection
-  passed on the simulated iPhone 18 Pro. This does not verify real motion,
-  microphone capture, on-device recognition, or phone/Mac audio interaction.
-- Signed physical installation passed on the iPhone 15 running iOS 26.6.2.
-  Automatic signing created the development certificate/profile after the
-  pending Apple agreement was accepted. Signature and profile validation
-  passed before installation; the app launched on the phone. Its private
-  relay address and pairing token were copied into the app's preferences and
-  verified without displaying the token. Wired phone-to-Mac streaming has
-  subsequently been observed at 100 Hz with receiver clock messages. Venue
-  Wi-Fi requests timed out; the cause has not been established.
+- The current communication-only iOS app compiled successfully after removal
+  of its sensor/voice code. This build was not installed or launched on a
+  physical phone; earlier installed phone-sensor builds do not verify it.
+- Earlier unsigned/device/simulator builds and signed iPhone 15 installation
+  belonged to the legacy sensor/voice app. Those results are historical, not
+  proof of FREE-WILi acquisition, board audio or the current companion UI.
 - Plists and Xcode project passed `plutil -lint`.
 - `KeepAlive.swift` matches the source file byte-for-byte.
+
+### Historical legacy-source connectivity
+
+These recordings used the retired chest-phone architecture. They establish
+connectivity/cadence only, not the current WILi detector or board voice loop.
+
 - A 134-second connectivity recording captured 6,139 real Right AirPod samples
   at a mean received cadence of 45.69 Hz. The maximum received gap was 233 ms;
   this recording does not prove the detector's continuous quiet-window gate.
   The chest phone subsequently streamed alongside the AirPod over the wired
-  tunnel. Mounting, calibration, fall-like movement, voice recognition, and
-  phone/Mac audio interaction still require physical validation.
+  tunnel. Placement and detector accuracy were not established by this recording.
 - A subsequent complete 120-second wired dual-source recording captured
   12,019 chest samples at 100.14 Hz and 5,674 waist-source samples at 47.28 Hz.
   Maximum received gaps were 81 ms and 127 ms. Sampled alignment uncertainty

@@ -74,4 +74,4 @@ if not expiry or expiry <= datetime.datetime.now(datetime.timezone.utc).replace(
     sys.exit('Provisioning profile expired; refusing installation.')
 PY
 xcrun devicectl device install app --device "$lifeline_device" "$lifeline_app" --timeout 60
-print -- 'Signed app installation completed. Open LIFELINE Chest on the iPhone and accept requested permissions.'
+print -- 'Signed app installation completed. Open LIFELINE on the iPhone and start the communication session.'

@@ -9,12 +9,15 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { Controller, PolicyError } from './controller.ts';
 import { parsePolicy } from './policy.ts';
 import { Motion, validSample } from './motion.ts';
+import { FreeWili } from './freewili.ts';
+import { WiliDeviceProtocol } from '../native/freewili/protocol.ts';
 import { approvedResponder, phoneIdentity } from './identity.ts';
 import { handleWearerInbound } from './wearer.ts';
 import { handleResponderQuestion } from './responder-questions.ts';
+import { handleResponderProgress } from './responder.ts';
 import { Trials } from './trials.ts';
-import type { CheckinReply, ClockPong, Command, Incident, ProviderInbound, Responder, Snapshot, Source } from './contracts.ts';
-import { providerStatus, loadHealth, buildHandoff, answerQuestionDetailed, sendMessage, startPhotonListener, prepareCheckinAudio } from './providers/index.ts';
+import type { CheckinReply, ClockPong, Command, HealthContext, Incident, ProviderInbound, Responder, Snapshot, Source } from './contracts.ts';
+import { providerStatus, loadHealth, buildHandoffDetailed, answerQuestionDetailed, answerPatientQuestionDetailed, sendMessage, startPhotonListener, prepareCheckinAudio } from './providers/index.ts';
 
 const port = Number(process.env.LIFELINE_PORT ?? 8877);
 const host = process.env.LIFELINE_HOST ?? '127.0.0.1';
@@ -43,11 +46,14 @@ const policyProfile = parsePolicy(process.env);
 const policy = { demoMode: policyProfile.demoMode, checkinMs: policyProfile.checkinMs, configuredCheckinMs: policyProfile.configuredCheckinMs };
 const controller = new Controller(resolve(dataDir, 'lifeline.sqlite'), responders, Date.now, policyProfile);
 const motion = new Motion();
+const wili = new FreeWili();
+const legacyPhone = process.env.LIFELINE_LEGACY_PHONE === '1';
 const trials = new Trials(resolve(dataDir, 'trials'));
 const trialPinged = new Set<Source>();
-const producers = new Map<Source, WebSocket>();
+const producers = new Map<string, WebSocket>();
 const recorders = new Map<string, WriteStream>();
 let healthPromise = loadHealth();
+const incidentHealth = new Map<string, Promise<HealthContext>>();
 let audio: Uint8Array | null = null;
 let audioPreparing = false;
 const busyChannels = new Set<'wearer' | 'responders'>();
@@ -64,8 +70,22 @@ function snapshot(): Snapshot {
       : !providers.photon?.configured ? 'Wearer phone configured; Photon credentials are required for iMessage check-in.'
         : 'Wearer phone and Photon credentials configured; verify actual iMessage receipt and replies on the demo phone.' };
   return { serverTime: Date.now(), incident, responders: responders.map(r => ({ ...r, phone: r.phone ? 'configured' : null })),
-    timeline: incident ? controller.events(incident.id) : [], actions: incident ? controller.actions(incident.id) : [],
-    sensors: motion.views(), providers, wearerMessaging, trial: trials.view(), policy };
+    timeline: incident ? controller.events(incident.id) : [], actions: incident ? controller.actions(incident.id).map(action => {
+      const { providerChatId, providerLineId, replyChatId, replyLineId, ...visible } = action;
+      return visible;
+    }) : [],
+    sensors: motion.views().filter(s => legacyPhone || s.source !== 'chest-phone'),
+    wili: wili.view(), providers, wearerMessaging, trial: trials.view(), policy };
+}
+function healthForIncident(i: Incident): Promise<HealthContext> {
+  const stored = controller.healthContext(i.id); if (stored) return Promise.resolve(stored);
+  let pending = incidentHealth.get(i.id);
+  if (!pending) {
+    const patientAtDetection = healthPromise;
+    pending = patientAtDetection.then(h => controller.bindHealthContext(i.id, h));
+    incidentHealth.set(i.id, pending);
+  }
+  return pending;
 }
 const live = new WebSocketServer({ noServer: true, maxPayload: 1024 });
 const ingest = new WebSocketServer({ noServer: true, maxPayload: 8192 });
@@ -77,9 +97,10 @@ function broadcast(): void {
 function prepareIncident(i: Incident): void {
   if (handoffIncident !== i.id) {
     handoffIncident = i.id;
-    void healthPromise.then(h => buildHandoff(i, h)).then(text => {
-      if (!stopping && controller.active()?.id === i.id) { controller.setHandoff(i.id, text); broadcast(); }
-    }).catch(() => { if (!stopping && controller.active()?.id === i.id) controller.setHandoff(i.id, 'Synthetic health record unavailable. Response continues.'); });
+    void healthForIncident(i).then(h => buildHandoffDetailed(i, h)).then(handoff => {
+      if (!stopping && controller.active()?.id === i.id) { controller.setHandoff(i.id, handoff.text, handoff); broadcast(); }
+    }).catch(() => { if (!stopping && controller.active()?.id === i.id)
+      controller.setHandoff(i.id, 'Synthetic health record unavailable. Response continues.', { generation: 'degraded' }); });
   }
   prepareAudio();
 }
@@ -94,36 +115,34 @@ async function providerWorker(channel: 'wearer' | 'responders'): Promise<void> {
   busyChannels.add(channel);
   try {
     const a = controller.claimAction(channel); if (!a) return;
-    const wearerAction = a.type === 'wearer_checkin' || a.type === 'wearer_ack';
+    const wearerAction = ['wearer_checkin', 'wearer_ack', 'wearer_status'].includes(a.type);
     const phone = wearerAction ? wearerPhone : responders.find(r => r.id === a.recipientId)?.phone;
     if (!phone) { controller.finishAction(a.id, 'failed', wearerAction
       ? 'No approved wearer phone configured; wearer iMessage was not sent.' : 'No approved phone configured; development simulation only.'); return; }
-    const result = await sendMessage(phone, a.text, () => !stopping && controller.actionPermitted(a));
-    if (!stopping) controller.finishAction(a.id, result.status, result.detail, result.messageId);
+    const result = await sendMessage(phone, a.text, () => !stopping && controller.actionPermitted(a), a.replyToMessageId
+      ? { replyToMessageId: a.replyToMessageId, chatId: a.replyChatId, lineId: a.replyLineId } : undefined);
+    if (!stopping) controller.finishAction(a.id, result.status, result.detail, result.messageId, result);
   } catch { /* attempt remains attempting; startup recovery preserves an unknown outcome */ }
   finally { busyChannels.delete(channel); if (!stopping) broadcast(); }
 }
 async function inbound(e: ProviderInbound): Promise<void> {
   if (stopping || controller.seenInbound(e.messageId)) return;
   try {
-    if (handleWearerInbound(e, wearerPhone, controller)) return;
-    const r = approvedResponder(e.sender, responders);
-    const i = controller.active(); if (!r || !i || e.removed) return;
-    const target = e.targetMessageId ? controller.incidentForMessage(e.targetMessageId, r.id) : null;
-    if (e.kind === 'reaction') {
-      if (target && ['like', '👍'].includes(e.reaction ?? '')) controller.accept(target.id, r.id, e.messageId);
+    // Cloud input without persisted exact-channel provenance cannot operate the incident.
+    if (!e.chatId || !e.lineId) return;
+    if (wearerPhone && phoneIdentity(e.sender) === phoneIdentity(wearerPhone)) {
+      if (controller.matchesConversation(e, null)) handleWearerInbound(e, wearerPhone, controller);
       return;
     }
+    const r = approvedResponder(e.sender, responders);
+    const i = controller.active(); if (!r || !i || e.removed || !controller.matchesConversation(e, r.id)) return;
+    if (handleResponderProgress(e, controller)) return;
+    if (e.kind !== 'text') return;
     if (e.targetMessageId !== undefined
       && (!e.targetMessageId || !controller.responderIncidentForMessage(e.targetMessageId, r.id))) return;
     const text = (e.text ?? '').trim();
-    if (text === `ON IT ${i.id}` || (target && text === 'ON IT')) controller.accept(i.id, r.id, e.messageId);
-    else if (text === `DEPART ${i.id}`) { controller.progress(i.id, r.id, 'depart'); controller.rememberInbound(e.messageId); }
-    else if (text === `ARRIVED ${i.id}`) { controller.progress(i.id, r.id, 'arrive'); controller.rememberInbound(e.messageId); }
-    else if (text === `DECLINE ${i.id}`) { controller.decline(i.id, r.id); controller.rememberInbound(e.messageId); }
-    else if (text.startsWith(`RESOLVED ${i.id} `)) { controller.resolve(i.id, r.id, text.slice(`RESOLVED ${i.id} `.length)); controller.rememberInbound(e.messageId); }
-    else if (text) await handleResponderQuestion(e, controller,
-      async (incident, question) => answerQuestionDetailed(incident, await healthPromise, question), () => !stopping);
+    if (text) await handleResponderQuestion(e, controller,
+      async (incident, question) => answerQuestionDetailed(incident, await healthForIncident(incident), question), () => !stopping);
   } catch (error) {
     if (!(error instanceof PolicyError)) console.error('Provider processing failed; incident remains unresolved.');
   } finally { if (!stopping) broadcast(); }
@@ -170,7 +189,9 @@ const mime: Record<string, string> = { '.html': 'text/html', '.css': 'text/css',
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url ?? '/', 'http://localhost');
-    if (url.pathname === '/health' && req.method === 'GET') return json(res, 200, { status: 'ok', motionSources: motion.views().filter(v => v.fresh).map(v => v.source) });
+    if (url.pathname === '/health' && req.method === 'GET') return json(res, 200, { status: 'ok',
+      motionSources: [...motion.views().filter(v => v.fresh && (legacyPhone || v.source !== 'chest-phone')).map(v => v.source),
+        ...(wili.view().fresh ? ['body-wili'] : [])] });
     if (url.pathname === '/api/state' && req.method === 'GET') return json(res, 200, snapshot());
     if (url.pathname === '/api/setup' && req.method === 'GET') {
       const origin = req.headers.origin;
@@ -186,6 +207,54 @@ const server = createServer(async (req, res) => {
       if (!authorized(req)) return json(res, 401, { error: 'Operator/pairing token required.' });
       execute(await commandBody(req)); broadcast(); return json(res, 200, { ok: true });
     }
+    if (url.pathname === '/api/patient-record' && req.method === 'GET') {
+      if (!authorized(req)) return json(res, 401, { error: 'Patient record access requires the operator token.' });
+      const id = url.searchParams.get('incidentId');
+      const health = id ? controller.healthContext(id) : await healthPromise;
+      if (!health?.patientRecord) return json(res, id ? 404 : 503, { error: 'Patient record snapshot unavailable.' });
+      return json(res, 200, health.patientRecord);
+    }
+    if (url.pathname === '/api/patient-record/refresh' && req.method === 'POST') {
+      if (!authorized(req)) return json(res, 401, { error: 'Patient record access requires the operator token.' });
+      healthPromise = loadHealth();
+      const h = await healthPromise;
+      return h.patientRecord ? json(res, 200, h.patientRecord) : json(res, 503, { error: 'Patient record unavailable.' });
+    }
+    if (url.pathname === '/api/patient-record/question' && req.method === 'POST') {
+      if (!authorized(req)) return json(res, 401, { error: 'Patient record access requires the operator token.' });
+      const body = await requestBody(req) as { question?: unknown; revision?: unknown; incidentId?: unknown };
+      if (!body || typeof body.question !== 'string' || !body.question.trim() || body.question.length > 2000
+        || typeof body.revision !== 'string' || (body.incidentId !== undefined && typeof body.incidentId !== 'string'))
+        throw new PolicyError('Provide a question, the displayed record revision, and optional incident ID.');
+      const health = body.incidentId ? controller.healthContext(String(body.incidentId)) : await healthPromise;
+      if (!health?.patientRecord) return json(res, 503, { error: 'Patient record unavailable.' });
+      if (health.patientRecord.revision !== body.revision) return json(res, 409, { error: 'The patient context changed. Refresh and ask again.' });
+      if (contextPreviewBusy) return json(res, 409, { error: 'Another answer is being prepared.' });
+      contextPreviewBusy = true;
+      try {
+        const answer = await answerPatientQuestionDetailed(health, body.question.trim());
+        if (stopping || res.destroyed) return;
+        if (!body.incidentId && (await healthPromise).patientRecord?.revision !== body.revision)
+          return json(res, 409, { error: 'The patient context changed while preparing the answer.' });
+        return json(res, 200, { answer: answer.text, generation: answer.generation, revision: health.patientRecord.revision });
+      } finally { contextPreviewBusy = false; }
+    }
+    const careBrief = url.pathname.match(/^\/api\/incidents\/(LF-[A-Z0-9-]+)\/brief$/);
+    if (careBrief && req.method === 'GET') {
+      if (!authorized(req)) return json(res, 401, { error: 'Care brief access requires the operator token.' });
+      const i = controller.incident(careBrief[1]);
+      if (!i) return json(res, 404, { error: 'Unknown incident.' });
+      const h = controller.healthContext(i.id);
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store',
+        'Content-Disposition': `attachment; filename="${i.id}-care-brief.json"` });
+      return res.end(JSON.stringify({ schemaVersion: 1, kind: 'LIFELINE care brief', exportedAt: new Date().toISOString(),
+        hospitalRecords: { source: 'FinchNode read-only synthetic demo', snapshot: h?.patientRecord ?? null },
+        lifelineObservations: { source: 'LIFELINE local incident log; not hospital EHR entries',
+          incident: i, timeline: controller.events(i.id),
+          limitations: 'Motion evidence is a possible incident, not a diagnosis. Responder progress and outcome are reports. Older sensor-or-operator events have unspecified origin.' },
+        summary: { text: i.handoff, clinicalRevision: i.healthRevision ?? null, generation: i.handoffGeneration ?? 'unavailable' },
+      }, null, 2));
+    }
     if (url.pathname === '/api/context/question' && req.method === 'POST') {
       if (!authorized(req)) return json(res, 401, { error: 'Operator token required for local AI rehearsal.' });
       const body = await requestBody(req) as { incidentId?: unknown; question?: unknown };
@@ -198,7 +267,7 @@ const server = createServer(async (req, res) => {
       if (contextPreviewBusy) return json(res, 409, { error: 'An answer is already being prepared. Wait for it to finish.' });
       contextPreviewBusy = true;
       try {
-        const answer = await answerQuestionDetailed(incident, await healthPromise, body.question.trim());
+        const answer = await answerQuestionDetailed(incident, await healthForIncident(incident), body.question.trim());
         if (stopping || res.destroyed) return;
         const current = controller.latest();
         if (!current || current.id !== incident.id || current.version !== incident.version)
@@ -240,6 +309,7 @@ const server = createServer(async (req, res) => {
     }
     if (url.pathname === '/api/checkin/reply' && req.method === 'POST') {
       if (!authorized(req)) return json(res, 401, { error: 'Pairing token required.' });
+      if (!legacyPhone) return json(res, 410, { error: 'Phone speech acquisition is disabled. Use the communication controls.' });
       const body = await requestBody(req);
       if (!body || typeof body !== 'object') throw new PolicyError('Invalid check-in reply.');
       const decision = controller.recordCheckinReply(body as CheckinReply);
@@ -264,8 +334,66 @@ server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url ?? '/', 'http://localhost');
   if (url.pathname === '/live') { live.handleUpgrade(req, socket, head, ws => { live.emit('connection', ws); ws.send(JSON.stringify(snapshot())); }); return; }
   const source = url.searchParams.get('source') as Source;
-  if (url.pathname !== '/motion' || !['chest-phone', 'waist-airpod'].includes(source) || !sameToken(url.searchParams.get('token') ?? '') || producers.has(source)) {
+  const sourceName = url.searchParams.get('source');
+  const allowedSource = sourceName === 'body-wili' || sourceName === 'waist-airpod' || (legacyPhone && sourceName === 'chest-phone');
+  if (url.pathname !== '/motion' || !allowedSource || !sameToken(url.searchParams.get('token') ?? '') || producers.has(sourceName!)) {
     socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); socket.destroy(); return;
+  }
+  if (sourceName === 'body-wili') {
+    ingest.handleUpgrade(req, socket, head, ws => {
+      producers.set('body-wili', ws); wili.connected();
+      const protocol = new WiliDeviceProtocol();
+      let recorder: WriteStream | null = null;
+      let contextSignature = '';
+      const sendContext = () => {
+        if (!protocol.hello || ws.readyState !== WebSocket.OPEN) return;
+        const i = controller.active();
+        const signature = `${i?.id ?? ''}:${i?.version ?? ''}`;
+        if (signature === contextSignature) return;
+        contextSignature = signature;
+        ws.send(JSON.stringify({ type: 'incident.context', sessionId: protocol.hello.sessionId,
+          incidentId: i?.id ?? null, checkinId: i?.checkinId ?? null, phase: i?.phase ?? null,
+          checkinDeadline: i?.checkinDeadline ?? null, serverTime: Date.now() }));
+      };
+      const ping = () => {
+        if (ws.readyState === WebSocket.OPEN && protocol.hello) ws.send(JSON.stringify(wili.ping()));
+      };
+      const timer = setInterval(() => { ping(); sendContext(); }, 2000);
+      ws.on('error', () => ws.close());
+      ws.on('message', bytes => {
+        try {
+          const packet = protocol.accept(JSON.parse(bytes.toString()));
+          if (packet.type === 'device.hello') { ping(); sendContext(); return; }
+          const at = performance.now();
+          if (packet.type === 'clock.pong') { wili.pong(packet, at); return; }
+          if (packet.type === 'accel.sample') {
+            const firstSample = wili.view().sessionId !== packet.sessionId;
+            if (!wili.sample(packet, at)) return;
+            if (firstSample) ping();
+            if (!recorder) {
+              recorder = createWriteStream(resolve(dataDir, 'recordings', `body-wili-${packet.sessionId}.jsonl`), { flags: 'a', mode: 0o600 });
+              recorder.on('error', () => console.error('WILi recording unavailable.'));
+            }
+            recorder.write(JSON.stringify({ ...packet, receivedAt: Date.now(), hostMonotonicMs: at }) + '\n');
+            return;
+          }
+          if (packet.type === 'button.press') {
+            const i = controller.boardButton(packet.action, packet.incidentId, packet.checkinId, `${packet.sessionId}:${packet.eventId}`);
+            if (i && controller.active()?.id === i.id) prepareIncident(i);
+            sendContext(); broadcast(); return;
+          }
+          if (packet.type === 'audio.ack') throw new Error('No audio command has been issued for this session.');
+          if (packet.type === 'device.status') { wili.disconnected(); ws.close(1008, 'Acquisition unavailable; reconnect with fresh device session.'); }
+        } catch (error) {
+          if (!(error instanceof PolicyError)) { wili.disconnected(); ws.close(1008, 'Invalid acquisition packet.'); }
+        }
+      });
+      ws.on('close', () => {
+        clearInterval(timer); recorder?.end();
+        if (producers.get('body-wili') === ws) { producers.delete('body-wili'); wili.disconnected(); broadcast(); }
+      });
+    });
+    return;
   }
   ingest.handleUpgrade(req, socket, head, ws => {
     producers.set(source, ws); motion.connected(source); trials.record('source.connected', undefined, source); let session: string | null = null;
@@ -302,7 +430,7 @@ server.on('upgrade', (req, socket, head) => {
 });
 live.on('connection', ws => ws.on('error', () => ws.close()));
 const heartbeat = setInterval(() => {
-  controller.tick(); const assessedAt = performance.now(); const evidence = motion.candidate();
+  controller.tick(); const assessedAt = performance.now(); const evidence = legacyPhone ? motion.candidate() : null;
   trials.record('assessment', { candidate: evidence }, undefined, assessedAt);
   if (evidence) prepareIncident(controller.trigger(evidence));
   broadcast(); void providerWorker('wearer'); void providerWorker('responders');

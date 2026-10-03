@@ -14,7 +14,7 @@ test('isolated HTTP/WS server accepts native packets, authenticates commands, an
   const dir = mkdtempSync(join(tmpdir(), 'lifeline-server-'));
   const child = spawn(process.execPath, ['--import', './src/test-helpers/offline.ts', './src/server.ts'], {
     cwd: process.cwd(), env: { ...process.env, LIFELINE_DATA_DIR: dir, LIFELINE_PORT: '0', LIFELINE_HOST: '127.0.0.1',
-      LIFELINE_DEMO_MODE: '0', LIFELINE_CHECKIN_MS: '1000', SPECTRUM_PROJECT_ID: '', SPECTRUM_PROJECT_SECRET: '', ELEVENLABS_API_KEY: '', LIFELINE_LLM_API_KEY: '',
+      LIFELINE_DEMO_MODE: '0', LIFELINE_LEGACY_PHONE: '1', LIFELINE_CHECKIN_MS: '1000', SPECTRUM_PROJECT_ID: '', SPECTRUM_PROJECT_SECRET: '', ELEVENLABS_API_KEY: '', LIFELINE_LLM_API_KEY: '',
       LIFELINE_WEARER_PHONE: '+12675550123',
       LIFELINE_RESPONDERS_JSON: JSON.stringify([{ id: 'maya', name: 'Maya', phone: null }, { id: 'jordan', name: 'Jordan', phone: null }]) },
     stdio: ['ignore', 'pipe', 'pipe']
@@ -48,6 +48,9 @@ test('isolated HTTP/WS server accepts native packets, authenticates commands, an
       body: JSON.stringify({ incidentId, question }),
     });
     assert.equal((await fetch(`${base}/api/context/question`, { method: 'POST', body: '{}' })).status, 401);
+    assert.equal((await fetch(`${base}/api/patient-record`)).status, 401);
+    assert.equal((await fetch(`${base}/api/patient-record/question`, { method: 'POST', body: '{}' })).status, 401);
+    assert.equal((await fetch(`${base}/api/patient-record/refresh`, { method: 'POST', body: '{}' })).status, 401);
     assert.equal((await preview('not-created', 'What is recorded?')).status, 400);
     const trialCommand = async (action: string, body: unknown = {}) => fetch(`${base}/api/trials/${action}`, { method: 'POST',
       headers: { Authorization: `Bearer ${setup.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -76,6 +79,13 @@ test('isolated HTTP/WS server accepts native packets, authenticates commands, an
     assert.equal(measured.trial!.sampleCounts['waist-airpod'] > 30, true);
     assert.equal((await commands({ type: 'trigger', kind: 'synthetic', summary: 'Isolated protocol fixture; not a physical fall.' })).status, 200);
     const confirming = (await state()).incident!;
+    assert.equal((await fetch(`${base}/api/incidents/${confirming.id}/brief`)).status, 401);
+    const brief = await fetch(`${base}/api/incidents/${confirming.id}/brief`, { headers: { Authorization: `Bearer ${setup.token}` } });
+    assert.equal(brief.status, 200);
+    assert.equal(brief.headers.get('cache-control'), 'no-store');
+    const care = await brief.json();
+    assert.equal(care.lifelineObservations.incident.id, confirming.id);
+    assert.match(care.lifelineObservations.source, /not hospital EHR entries/);
     assert.equal(confirming.phase, 'CONFIRMING');
     const companion = await state();
     assert.equal(companion.actions.filter(a => a.type === 'wearer_checkin').length, 1);

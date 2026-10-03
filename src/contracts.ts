@@ -1,3 +1,6 @@
+import type { PatientRecordSnapshot } from './patient-record.ts';
+import type { BodyWiliView } from './freewili.ts';
+
 export type Source = 'chest-phone' | 'waist-airpod';
 export type Vec3 = [number, number, number];
 export type Phase = 'DETECTED' | 'CONFIRMING' | 'HELP_REQUESTED' | 'ACKNOWLEDGED' | 'RESPONDER_EN_ROUTE' | 'ON_SCENE' | 'RESOLVED' | 'CANCELLED_FALSE_ALARM';
@@ -21,14 +24,18 @@ export interface Incident {
   evidence: Evidence; checkinId: string; checkinDeadline: number;
   progressDeadline: number | null; ownerId: string | null;
   handoff: string; outcome: string | null; resolutionActor: string | null;
+  healthRevision?: string;
+  handoffGeneration?: 'ai' | 'degraded';
 }
 export interface Responder { id: string; name: string; phone: string | null }
-export type ActionType = 'checkin' | 'wearer_checkin' | 'wearer_ack' | 'alert' | 'status' | 'handoff' | 'answer';
+export type ActionType = 'checkin' | 'wearer_checkin' | 'wearer_ack' | 'wearer_status' | 'alert' | 'status' | 'handoff' | 'answer';
 export interface Action {
   id: string; incidentId: string; type: ActionType; recipientId: string | null;
   text: string; status: 'queued' | 'attempting' | 'provider_accepted' | 'failed' | 'unknown' | 'cancelled';
   attempts: number; providerMessageId: string | null; providerResult: string | null;
   nextAttemptAt: number; createdAt: number;
+  providerChatId?: string; providerLineId?: string;
+  replyToMessageId?: string; replyChatId?: string; replyLineId?: string;
 }
 export interface TimelineEvent { id: string; incidentId: string; type: string; actor: string; at: number; detail: string }
 export type CheckinDecision = 'help_requested' | 'confirmation_required' | 'unresolved';
@@ -49,6 +56,7 @@ export interface Snapshot {
   providers: Record<string, { configured: boolean; detail: string }>;
   wearerMessaging: { configured: boolean; detail: string };
   trial: TrialView | null;
+  wili?: BodyWiliView;
 }
 export type TrialScenario = 'standing' | 'phone-drop' | 'sit' | 'bend' | 'staged-fall' | 'other';
 export interface TrialView {
@@ -68,6 +76,10 @@ export type Command =
 export interface ProviderInbound {
   messageId: string; sender: string; targetMessageId?: string;
   kind: 'reaction' | 'text'; text?: string; reaction?: string; removed?: boolean;
+  chatId?: string; lineId?: string; providerTimestamp?: number;
 }
-export interface ProviderResult { status: 'provider_accepted' | 'failed' | 'unknown' | 'cancelled'; messageId?: string; detail: string }
-export interface HealthContext { summary: string; recordIds: string[]; retrievedAt: number; available: boolean }
+export interface ProviderResult {
+  status: 'provider_accepted' | 'failed' | 'unknown' | 'cancelled'; messageId?: string; detail: string;
+  chatId?: string; lineId?: string;
+}
+export interface HealthContext { summary: string; recordIds: string[]; retrievedAt: number; available: boolean; patientRecord?: PatientRecordSnapshot }

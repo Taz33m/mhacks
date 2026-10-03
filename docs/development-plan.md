@@ -4,7 +4,7 @@ Main track: Actually Intelligent (AI). Target hardware: FREE-WILi for primary we
 
 The [PRD](PRD.md) defines the product scope, fixed decisions, demo requirements, and acceptance evidence.
 
-The [workshop-grounded migration plan](device-and-record-migration.md) defines the structured Finch patient view and FREE-WILi bridge. Existing phone motion/audio code is the pre-migration implementation; it does not establish board support.
+The [workshop-grounded migration plan](device-and-record-migration.md) defines the structured Finch patient view and FREE-WILi bridge. The iPhone client is now communication only. WILi acquisition has a separate contract and custom host bridge; physical firmware, board-specific detection and audio remain pending.
 
 ## Implementation areas
 
@@ -25,9 +25,15 @@ Node 24 + SQLite are the runtime/backend. Avoid additional app frameworks. Space
 
 Shared interfaces are defined in `src/contracts.ts` and `docs/interfaces.md`. Components use separate directories and one shared root package manifest.
 
-## Existing pre-migration progress
+## Current progress
 
-The following describes the earlier phone/AirPod implementation and its validation history. New board sensing/audio and the structured Finch view remain pending; do not reuse phone measurements as board evidence.
+Implemented: five-category synthetic Finch patient view and local record Q&A, persisted immutable incident context, handoff/answer provenance, source-separated care-brief export, native Photon chat/line binding and threaded replies, constrained owner progress, wearer updates, communication-only iPhone build, and WILi acceleration transport/quality/clock/recording/button checks. Default acquisition rejects chest-phone motion and phone speech. Board samples do not autonomously trigger incidents until a board-specific assessment is implemented.
+
+Next: compatible physical board firmware, detector and voice integration; approved-phone live rehearsal; sandbox Connect subject binding. Calibration remains deferred.
+
+## Historical phone prototype
+
+The following describes the earlier phone/AirPod implementation and its validation history. Phone motion/audio are retired from the default runtime; do not reuse phone measurements as board evidence.
 
 The backend, native clients, dashboard, and provider adapters are implemented. Automated tests cover the incident loop, speech policy, authentication, raw motion protocol, and provider failures. `npm run setup:local` installs/pairs the Mac app and prepares network access; iPhone device installation uses the signing/device steps in [native setup](native-setup.md).
 

@@ -105,7 +105,7 @@ test('AI composes an incident-grounded answer with selected source fields and un
     env: { LIFELINE_LLM_API_KEY: 'mock', LIFELINE_LLM_BASE_URL: 'https://model.example/v1', LIFELINE_LLM_MODEL: 'mock-model' },
     fetch: fetchStub((url, init) => {
       if (url === FINCH_DEMO_URL) return json({ ...fixture, data: { ...fixture.data,
-        allergies: [{ ...fixture.data.allergies[0], codes: [{ code: 'hidden-raw-code' }], details: 'hidden-raw-detail' }],
+        allergies: [{ ...fixture.data.allergies[0], codes: [{ code: 'hidden-raw-code' }], details: [{ label: 'Note', value: 'hidden-raw-detail' }] }],
       } });
       requests++;
       assert.equal(url, 'https://model.example/v1/chat/completions');
@@ -212,7 +212,7 @@ test('contextual should questions reach grounded AI answers with source IDs and 
   for (const question of questions) {
     const answer = await providers.answerQuestion(incident, health, question);
     assert.match(answer, /AI-composed answer/);
-    assert.match(answer, /Penicillin; reaction: Fixture rash \[allergy-1\]/);
+    assert.match(answer, /Penicillin; reaction: Fixture rash; status: active \[allergy-1\]/);
     assert.match(answer, /Chest impact and waist posture change/);
     assert.match(answer, /Location not provided/);
     assert.doesNotMatch(answer, /cannot recommend treatment/);
@@ -354,7 +354,7 @@ test('AI handoff uses physical incident context and produces source-cited facts 
   });
   const handoff = await providers.buildHandoff(incident, await providers.loadHealth());
   assert.match(handoff, /AI-composed synthetic health handoff/);
-  assert.match(handoff, /Penicillin; reaction: Fixture rash \[allergy-1\]/);
+  assert.match(handoff, /Penicillin; reaction: Fixture rash; status: active \[allergy-1\]/);
   assert.match(handoff, /Current vital signs not provided/);
   assert.doesNotMatch(handoff, /source template fallback/);
   assert.match(providers.providerStatus().llm.detail, /AI handoff generation verified/);

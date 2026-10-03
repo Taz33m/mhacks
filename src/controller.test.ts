@@ -53,11 +53,11 @@ test('lost owner triggers reassignment; missing progress does not resolve', () =
 });
 test('confirmed failures retry but unknown outcomes do not', () => {
   const { c, advance } = setup(); const i = c.trigger({ kind: 'manual', summary: 'help' });
-  const a = c.claimAction()!; assert.equal(a.type, 'alert'); c.finishAction(a.id, 'failed', 'Confirmed rejection');
-  const b = c.claimAction()!; c.finishAction(b.id, 'unknown', 'Timed out after sending'); advance(10_001);
-  const retry = c.claimAction()!; assert.equal(retry.id, a.id); assert.equal(retry.attempts, 2);
+  const a = c.claimAction('responders')!; assert.equal(a.type, 'alert'); c.finishAction(a.id, 'failed', 'Confirmed rejection');
+  const b = c.claimAction('responders')!; c.finishAction(b.id, 'unknown', 'Timed out after sending'); advance(10_001);
+  const retry = c.claimAction('responders')!; assert.equal(retry.id, a.id); assert.equal(retry.attempts, 2);
   c.finishAction(retry.id, 'provider_accepted', 'Accepted', 'provider-1');
-  assert.equal(c.claimAction(), null); assert.equal(c.incidentForMessage('provider-1', a.recipientId!)?.id, i.id);
+  assert.equal(c.claimAction('responders'), null); assert.equal(c.incidentForMessage('provider-1', a.recipientId!)?.id, i.id);
   assert.equal(c.incidentForMessage('provider-1', 'stranger'), null); c.close();
 });
 test('persisted deadline recovers and interrupted send remains unknown after restart', () => {

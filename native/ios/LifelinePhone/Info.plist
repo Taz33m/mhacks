@@ -2,7 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-<key>CFBundleName</key><string>LIFELINE Chest</string>
+<key>CFBundleName</key><string>LIFELINE</string>
+<key>CFBundleDisplayName</key><string>LIFELINE</string>
 <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>
@@ -10,12 +11,9 @@
 <key>LSRequiresIPhoneOS</key><true/>
 <key>UILaunchScreen</key><dict/>
 <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string></array>
-<key>NSMotionUsageDescription</key><string>LIFELINE reads real chest-mounted iPhone motion to assess a possible incident.</string>
-<key>NSMicrophoneUsageDescription</key><string>LIFELINE listens for your response after a fall check-in finishes speaking.</string>
-<key>NSSpeechRecognitionUsageDescription</key><string>LIFELINE recognizes your check-in response on this iPhone. A spoken response cannot cancel an incident.</string>
-<key>NSLocalNetworkUsageDescription</key><string>LIFELINE sends motion to your Mac and receives current check-ins from it.</string>
+<key>NSLocalNetworkUsageDescription</key><string>LIFELINE receives incident updates from your Mac and sends explicit help or check-in cancellation requests.</string>
 <key>NSAppTransportSecurity</key><dict>
-<!-- Development relay supports LAN/Tailscale IPs over plain HTTP/WebSocket. -->
+<!-- Development relay supports LAN/Tailscale IPs over plain HTTP. -->
 <key>NSAllowsArbitraryLoads</key><true/>
 </dict>
 </dict></plist>

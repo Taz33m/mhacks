@@ -14,6 +14,7 @@ export async function handleResponderQuestion(
   const responder = approvedResponder(event.sender, controller.responders);
   const incident = controller.active();
   if (!responder || !incident || !incident.contacted.includes(responder.id) || incident.declined.includes(responder.id)) return false;
+  if ((event.chatId !== undefined || event.lineId !== undefined) && !controller.matchesConversation(event, responder.id)) return false;
   const question = event.text.trim();
   // A stale command is never reinterpreted as a question about a newer incident.
   if (/^(ON IT|DEPART|ARRIVED|DECLINE|RESOLVED)(?:\s|$)/i.test(question)) return false;
@@ -21,6 +22,7 @@ export async function handleResponderQuestion(
   if (codes.some(code => code.toUpperCase() !== incident.id)) return false;
   if (event.targetMessageId !== undefined
     && (!event.targetMessageId || controller.responderIncidentForMessage(event.targetMessageId, responder.id)?.id !== incident.id)) return false;
+  if (event.targetMessageId && event.chatId && !controller.messageMatchesConversation(event.targetMessageId, event)) return false;
 
   const answer = await generate(incident, question);
   if (!canQueue()) return false;
@@ -30,7 +32,7 @@ export async function handleResponderQuestion(
   try {
     // Authorization, version, dedupe, audit, and the outbox commit together.
     return controller.queueAnswer(incident.id, incident.version, responder.id, event.messageId, boundedText,
-      { question, generation: text.length > 6000 ? 'degraded' : typeof answer === 'string' ? undefined : answer.generation });
+      { question, event, generation: text.length > 6000 ? 'degraded' : typeof answer === 'string' ? undefined : answer.generation });
   } catch (error) {
     if (error instanceof PolicyError) return false;
     throw error;

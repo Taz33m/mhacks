@@ -1,6 +1,6 @@
 # FREE-WILi and FinchNode implementation plan
 
-Updated October 3, 2026 after the supplied MHacks workshops. This is the target design; the current runtime still uses the legacy iPhone motion/audio client and the three-category Finch demo adapter. Hardware migration and the structured patient view are not implemented yet. The primary track remains Actually Intelligent (AI).
+Updated October 3, 2026 after the supplied MHacks workshops. Structured Finch records, protected record Q&A, persisted incident revisions, care-brief export and the communication-only iPhone client are implemented. WILi acceleration transport, clock/quality validation, recording and explicit buttons have offline coverage. Physical board firmware, board-specific assessment and audio remain pending. The primary track remains Actually Intelligent (AI).
 
 ## Device roles
 
@@ -62,7 +62,7 @@ Record rows should preserve `id`, consent category and section/resource type, so
 
 The full patient view and the concise handoff have different purposes. Keep historical values out of claims about current vitals; include them only with their measurement dates when requested. Preserve record status when selecting clinical facts, and cite the clinical snapshot revision for each AI artifact.
 
-The current provider extracts only medications, conditions and allergies into text. It omits medication administration/dispense sidecars, structured rows, and completeness metadata. `server.ts` holds one startup health promise for all incidents; the raw source cache is process-local. Replace this with explicit wearer/Finch subject mapping, a current patient context, and immutable synthetic context revisions attached to each incident/handoff. New reads must not silently change an older handoff's meaning. Keep high-rate raw motion out of the clinical record list; refer to an incident evidence attachment instead.
+The provider now normalizes the five requested categories, medication administration/dispense sidecars and returned completeness metadata. The protected view exposes the current synthetic context; each incident binds one immutable context in SQLite, with its revision on the handoff and Q&A audit. Refresh affects the current record, not an older incident. Patient questions can run without fabricating an incident. Explicit wearer/Finch subject mapping through sandbox Connect remains pending. Keep high-rate motion outside the clinical record list; the export separates hospital records from the local incident log.
 
 Use the keyless synthetic fixture to build the structured view immediately. Keep fictional patient identity separate from the real demo wearer's identity. Full sandbox Connect is the next integration step, using a server-only `FINCHNODE_API_KEY`:
 
@@ -73,13 +73,16 @@ Use the keyless synthetic fixture to build the structured view immediately. Keep
 
 Use Connect rather than TEFCA for this structured ongoing-record workflow. No production patient access is needed for the hackathon. Authenticated snapshots are private/no-store; do not treat a local cached copy as ongoing authorization. Revocation/scope errors stop clinical disclosure and invalidate pending clinical replies while the incident response continues with health context unavailable. Production retention/deletion and authorized access require a separate implementation; synthetic persisted demo revisions do not establish that behavior.
 
-## Implementation order
+## Implementation status and next steps
 
-1. Add normalized patient-record contracts and adapter validation, including medication sidecars and historical vitals; add an authenticated structured-record route/view. Preserve the existing safe AI and incident-policy boundaries.
-2. Bind incident handoffs to synthetic clinical revisions; add per-handoff provenance and a frozen motion evidence attachment. Label operator reports separately from Photon and board events.
-3. Once the board arrives, verify model/firmware and capture wider-range raw acceleration over the appropriate transport. Add the honest accelerometer packet type, device health, alignment and calibration without changing the AirPod route keeper.
-4. Implement explicit board help/cancel controls and incident-state display. Remove iPhone motion/audio/speech acquisition from the active build, old phone-specific prompt text, and active setup instructions; retain historic recordings as evidence of the old prototype only.
-5. Add host-mediated board playback/transcription and test simultaneous audio/motion; then rehearse physical trigger → spoken check-in → Photon alert → ownership → sourced patient context → outcome.
-6. Add sandbox Connect and verify subject binding, partial categories, empty records, revoked consent and unavailable sources with the official scenarios.
+Completed: normalized demo record adapter/view, immutable incident context and handoff provenance, communication-only iPhone build, threaded Photon replies, source-separated brief export, WILi custom host transport and explicit button routing. WILi samples are acquisition only; no autonomous board fall assessment is enabled.
+
+Remaining order:
+
+1. Verify the actual WILi model/firmware and capture wider-range raw acceleration through the custom protocol. Preserve real source identity, clocks, freshness, gaps and saturation.
+2. Implement and validate an accelerometer-specific assessment alongside the existing waist stream, with frozen incident evidence. Do not reuse unsupported phone fields or claim cross-body improvement before comparisons.
+3. Add board display, host-mediated playback and transcription. Validate simultaneous audio/motion, explicit controls and the complete incident loop.
+4. Configure approved Photon phones and rehearse real check-in, contextual Q&A, ownership, progress and outcome. Native cards can follow once this chain works.
+5. Add sandbox Connect and verify subject binding, partial/empty records, revoked consent and unavailable sources. Keep newly reported information in LIFELINE’s care log and export; do not promise hospital writeback.
 
 Acceptance requires real board samples and audio, source-correct clinical rows, dated historical vitals, consistent incident/clinical revisions, and unchanged deterministic ownership/deadline behavior. Neither slide support nor a compiled bridge establishes a working physical demo.

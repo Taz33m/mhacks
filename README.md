@@ -1,8 +1,8 @@
 # LIFELINE
 
-MHacks 2026 — Actually Intelligent (AI). FREE-WILi + waist AirPod evidence will start a policy-controlled incident, followed through responder acceptance, progress, and a recorded outcome. The iPhone is the Photon/iMessage communication channel. The [product requirements](docs/PRD.md) define the demo scope, policy, and acceptance gates.
+MHacks 2026 — Actually Intelligent (AI). LIFELINE combines read-only patient records, conversational coordination, and an incident loop followed through responder acceptance, progress, and a recorded outcome. Falls are the first intended physical trigger. The iPhone is the Photon/iMessage communication channel. The [product requirements](docs/PRD.md) define the demo scope, policy, and acceptance gates.
 
-**Migration in progress:** the current runtime still contains the earlier iPhone motion/audio client and summary-only Finch adapter. The [device and patient-record plan](docs/device-and-record-migration.md) defines board acquisition/audio, honest accelerometer capabilities and structured clinical data. Phone setup/USB/voice instructions below document the old prototype; they are not the target device workflow. Camera work is out of scope, and no camera implementation exists.
+**Current implementation:** structured Finch synthetic records, record questions, immutable incident context, threaded Photon replies, wearer updates, and source-separated care-brief export are implemented. The iPhone app is communication only. FREE-WILi has a custom acceleration transport, quality checks, recording and explicit help/cancel protocol; physical firmware, fall assessment and audio still require the board. See the [migration plan](docs/device-and-record-migration.md). Camera work is out of scope.
 
 ## Start
 
@@ -18,7 +18,7 @@ npm start
 
 Open **http://127.0.0.1:8877**. The dashboard shows real source availability, incident state, provider configuration, and explicitly labelled development controls. Trigger a synthetic incident or manual help, accept as a development responder, report departure/arrival, and record an outcome. These controls simulate authenticated actors for development; they are not production identity verification.
 
-For the accelerated silence demo, use `npm run start:demo`. New check-ins use five seconds and display the acceleration from the normal configurable policy. Existing persisted deadlines stay intact. Rehearse spoken positive replies with a longer window; the phone acknowledges them without extending the deadline or cancelling the incident.
+For the accelerated silence demo, use `npm run start:demo`. New check-ins use five seconds and display the acceleration from the normal configurable policy. Existing persisted deadlines stay intact. Positive or ambiguous wearer messages preserve the existing deadline; only the explicit current-check-in control cancels before escalation.
 
 The default backend is Node + SQLite, with persisted deadlines and an action outbox. Data, recordings, tokens, and native build products are ignored by Git. No keys or approved phones are configured by default. Unconfigured providers do not claim delivery. FinchNode uses its public synthetic demo.
 
@@ -41,23 +41,27 @@ npm run install:ios -- TEAM_ID DEVICE_UDID
 
 `npm run build:ios:device` checks the physical target without signing; it cannot install on a real iPhone.
 
-For phone-to-Mac access, run with `LIFELINE_HOST=0.0.0.0 npm start` on a trusted development network. Visit the dashboard from this Mac to obtain the pairing token and LAN address, then enter them in the native apps. The server's default binding is local-only. Test venue connectivity before relying on it. Keep the phone app foregrounded. Mount the phone at the chest and the reporting AirPod at the waist; calibrate while standing still after both sources are fresh. Disconnects, source changes, and remounts require calibration again.
+For phone-to-Mac access, run with `LIFELINE_HOST=0.0.0.0 npm start` on a trusted development network. Visit the dashboard from this Mac to obtain the pairing token and LAN address, then enter them in the native apps. The server's default binding is local-only. Test venue connectivity before relying on it. Keep the phone app foregrounded. The reporting AirPod is mounted at the waist. FREE-WILi is the primary body sensor; its placement and firmware must be verified when the board arrives. The phone supplies no motion or audio. Calibration is deferred; the current calibration button applies only to the existing AirPod/legacy motion adapter.
 
 See [native setup](docs/native-setup.md) for off-ear acquisition, reporting-bud checks, audio routing, and device installation. Native apps never substitute simulated sensor input.
 
 For the wired demo with the paired Debug app installed, keep the iPhone unlocked
 and connected by USB, then run `npm run device:usb -- DEVICE_UDID` alongside the
 backend. This starts a foreground relay on the connected device's developer
-tunnel and launches monitoring without changing saved Wi-Fi pairing. Keep the
-cable and helper connected; reconnecting requires calibration again.
+tunnel and launches the communication companion without changing saved Wi-Fi pairing. Keep the
+cable and helper connected for status access.
 
 ## Providers
 
-Copy `.env.example` to `.env` and configure only the integrations being used. Photon uses its cloud provider; responders must have approved phone numbers in `LIFELINE_RESPONDERS_JSON`. Approved phone identity and the alert's provider message ID determine who can accept. Exact incident-coded text commands are `ON IT`, `DEPART`, `ARRIVED`, `DECLINE`, or `RESOLVED`, followed by the full incident ID; resolution also requires an outcome. Removed reactions do not release ownership.
+Copy `.env.example` to `.env` and configure only the integrations being used. Photon uses its cloud provider; responders must have approved phone numbers in `LIFELINE_RESPONDERS_JSON`. Approved phone identity, the persisted native chat/line and the alert's provider message ID determine who can accept. Exact incident-coded text commands are `ON IT`, `DEPART`, `ARRIVED`, `DECLINE`, or `RESOLVED`, followed by the full incident ID; resolution also requires an outcome. Removed reactions do not release ownership.
 
-Set `LIFELINE_WEARER_PHONE` to the approved wearer's E.164 number to send a companion Photon iMessage: “I detected a possible fall. Are you okay?” It accompanies the phone's audible check-in and shares its deadline. The wearer can reply to that message with “I need help,” or send `I NEED HELP LF-XXXXXXXX` using the full current incident ID. Positive or ambiguous replies preserve the check-in; cancellation still requires the phone's explicit control. Wearer and responder numbers must differ. The dashboard tracks wearer iMessage configuration and the actual send outcome separately from phone audio.
+Set `LIFELINE_WEARER_PHONE` to the approved wearer's E.164 number to send a companion Photon iMessage: “I detected a possible fall. Are you okay?” It shares the incident deadline. Audible interaction belongs to the planned WILi audio path; the phone does not speak or listen. The wearer can reply to that message with “I need help,” or send `I NEED HELP LF-XXXXXXXX` using the full current incident ID. Positive or ambiguous replies preserve the check-in; cancellation still requires the phone's explicit control. Wearer and responder numbers must differ. The dashboard tracks wearer iMessage configuration and the actual send outcome.
 
-FinchNode handoffs retain synthetic source record IDs. AI is required for the judged demo: it composes incident-relevant handoffs and answers through source-field selection and explicit unknowns. Application code renders the cited facts; AI cannot clear an incident, invent a clinical claim, or change ownership. Unconfigured/failed AI visibly degrades to templates and does not pass the AI demo gate. ElevenLabs prepares one cached check-in clip. The iPhone has a labelled native speech fallback for development.
+FinchNode handoffs retain synthetic source record IDs. AI is required for the judged demo: it composes incident-relevant handoffs and answers through source-field selection and explicit unknowns. Application code renders the cited facts; AI cannot clear an incident, invent a clinical claim, or change ownership. Unconfigured/failed AI visibly degrades to templates and does not pass the AI demo gate. ElevenLabs can prepare a cached check-in clip; board playback and microphone transcription remain pending.
+
+Replies to the current bound alert/status may use exact phrases such as “on my way,” “I’m here,” and “resolved: <outcome>.” The owner and phase rules still apply; broader inferred intent and ETAs do not change state.
+
+The protected **Patient record** view shows demographics, medications, conditions, allergies and dated historical vitals. Ask record questions before an incident or against its immutable revision. Use Record context to switch between the current patient record and the saved incident snapshot. Refresh changes the current record only. **Download care brief** exports Finch facts separately from LIFELINE observations and responder reports; it does not write to a hospital EHR.
 
 Details: [provider setup](docs/providers.md).
 
@@ -67,7 +71,7 @@ Local AI can run through Ollama with `npm run ai:local`; see [local model config
 
 ## Motion trials
 
-Use **Motion trials** on the dashboard to record a labelled trial. Begin recording before calibration, mount both sensors, stand still for at least one continuous second, calibrate, perform the controlled movement, then stop and download JSONL. The capture preserves accepted samples, clock exchanges, calibration/reset events, assessments, and disconnects. Stopping capture leaves incident response running.
+The **Legacy / waist recorder** preserves the existing motion capture/replay format. WILi acquisition is separately recorded under its actual source identity; it is not included in legacy trial replay or autonomous assessment yet. Calibration and physical movement trials are deferred. Stopping capture leaves incident response running.
 
 Compare the same capture offline:
 
@@ -88,8 +92,7 @@ Tests cover deadlines/restart, stale and unauthorized acceptance, atomic ownersh
 
 ## Current boundary
 
-This is a working development foundation, not validated fall-detection accuracy. The initial detector uses tentative impact/tilt/stillness thresholds, preserves both streams, and requires bounded alignment for a cross-body candidate. Source failures remain explicit unknowns. Signed installation and wired streaming passed on the physical iPhone 15: real chest motion was received at 100 Hz alongside roughly 46 Hz from the Right AirPod. Mounted movement trials, audio routing, on-device recognition, and real provider sends still require validation. Venue Wi-Fi reachability remains unresolved; the wired path is the tested development connection.
+The default runtime accepts WILi and waist-AirPod acquisition, and rejects chest-phone motion and phone speech. WILi usability currently means acquisition quality only; samples do not autonomously create incidents until a board-specific assessment is implemented and validated. The old iPhone detector and replay fixtures remain available explicitly with `LIFELINE_LEGACY_PHONE=1`, preserving historical source labels.
 
-Final on-device spoken replies are recorded against the current check-in. Exact help commands escalate immediately; positive replies ask the wearer to confirm using the cancel control; ambiguous replies leave the incident and deadline unchanged. Voice never resolves an incident. Stale replies and cancellation after the deadline are rejected.
-
+Automated tests and simulator compilation do not establish physical board sensing/audio or actual Photon receipt. Approved wearer/responder numbers and a live rehearsal are still needed. The patient view uses a fictional Finch synthetic subject, explicitly separate from the real wearer; sandbox Connect and real-patient authorization are pending.
 The controller, native clients, dashboard, and providers use the shared [interfaces](docs/interfaces.md). See the [development plan](docs/development-plan.md) and [reference architecture](docs/LIFELINE-reference-architecture.md).
