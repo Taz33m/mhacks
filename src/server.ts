@@ -10,7 +10,9 @@ import { Controller, PolicyError } from './controller.ts';
 import { parsePolicy } from './policy.ts';
 import { Motion, validSample } from './motion.ts';
 import { FreeWili } from './freewili.ts';
+import { WiliAssessment } from './wili-assessment.ts';
 import { WiliDeviceProtocol } from '../native/freewili/protocol.ts';
+import { readStockVoiceManifest } from '../native/freewili/prepare-stock-audio.ts';
 import { approvedResponder, phoneIdentity } from './identity.ts';
 import { handleWearerInbound } from './wearer.ts';
 import { handleResponderQuestion } from './responder-questions.ts';
@@ -47,6 +49,7 @@ const policy = { demoMode: policyProfile.demoMode, checkinMs: policyProfile.chec
 const controller = new Controller(resolve(dataDir, 'lifeline.sqlite'), responders, Date.now, policyProfile);
 const motion = new Motion();
 const wili = new FreeWili();
+const wiliAssessment = new WiliAssessment();
 const legacyPhone = process.env.LIFELINE_LEGACY_PHONE === '1';
 const trials = new Trials(resolve(dataDir, 'trials'));
 const trialPinged = new Set<Source>();
@@ -61,10 +64,25 @@ let stopPhoton: (() => Promise<void>) | null = null;
 let handoffIncident: string | null = null;
 let stopping = false;
 let contextPreviewBusy = false;
+let boardVoice = { configured: false, detail: 'No complete verified WILi voice cache found.' };
+let voiceCacheReading = false;
+async function refreshVoiceCache(): Promise<void> {
+  if (stopping || voiceCacheReading) return;
+  voiceCacheReading = true;
+  try {
+    const manifest = await readStockVoiceManifest(resolve(process.env.LIFELINE_WILI_AUDIO_DIR ?? 'output/freewili-audio'));
+    boardVoice = manifest
+      ? { configured: true, detail: `${manifest.source}: seven wearable prompts prepared${manifest.provider === 'local' ? ' (local fallback)' : ''}.` }
+      : { configured: false, detail: 'No complete verified WILi voice cache found.' };
+  } finally { voiceCacheReading = false; }
+}
+await refreshVoiceCache();
+const voiceCacheTimer = setInterval(() => void refreshVoiceCache(), 5000);
+voiceCacheTimer.unref();
 
 function snapshot(): Snapshot {
   const incident = controller.latest();
-  const providers = providerStatus();
+  const providers = { ...providerStatus(), wiliVoice: boardVoice };
   const wearerMessaging = { configured: Boolean(wearerPhone && providers.photon?.configured),
     detail: !wearerPhone ? 'Set LIFELINE_WEARER_PHONE to the approved wearer phone for the companion iMessage check-in.'
       : !providers.photon?.configured ? 'Wearer phone configured; Photon credentials are required for iMessage check-in.'
@@ -105,7 +123,7 @@ function prepareIncident(i: Incident): void {
   prepareAudio();
 }
 function prepareAudio(): void {
-  if (!audio && !audioPreparing) {
+  if (legacyPhone && !audio && !audioPreparing) {
     audioPreparing = true;
     void prepareCheckinAudio().then(bytes => { audio = bytes; }).catch(() => {}).finally(() => { audioPreparing = false; });
   }
@@ -181,7 +199,7 @@ function execute(c: Command): void {
       if (!sources.length) throw new PolicyError('Calibration requires one second of continuous still samples; stop moving and try again.');
       trials.record('calibration', { sources }); break;
     }
-    case 'reset': controller.reset(); motion.reset(); trials.record('motion.reset', { clocks: false, cooldown: true }); handoffIncident = null; break;
+    case 'reset': controller.reset(); motion.reset(); wiliAssessment.reset(); trials.record('motion.reset', { clocks: false, cooldown: true }); handoffIncident = null; break;
     default: throw new PolicyError('Unsupported command.');
   }
 }
@@ -347,18 +365,33 @@ server.on('upgrade', (req, socket, head) => {
       let contextSignature = '';
       const sendContext = () => {
         if (!protocol.hello || ws.readyState !== WebSocket.OPEN) return;
-        const i = controller.active();
+        const i = controller.latest();
         const signature = `${i?.id ?? ''}:${i?.version ?? ''}`;
         if (signature === contextSignature) return;
         contextSignature = signature;
+        const ownerName = responders.find(r => r.id === i?.ownerId)?.name ?? null;
+        const screens: Record<string, string> = {
+          CONFIRMING: 'CHECKING ON YOU\nGREEN: I AM OKAY\nRED: I NEED HELP',
+          HELP_REQUESTED: 'HELP REQUESTED\nWAITING FOR RESPONDER',
+          ACKNOWLEDGED: `${ownerName ?? 'RESPONDER'} ACCEPTED\nDEPARTURE NOT REPORTED`,
+          RESPONDER_EN_ROUTE: `${ownerName ?? 'RESPONDER'} EN ROUTE`,
+          ON_SCENE: `${ownerName ?? 'RESPONDER'} ON SCENE`,
+          RESOLVED: 'RESOLVED\nOUTCOME RECORDED',
+          CANCELLED_FALSE_ALARM: 'CHECK-IN CLOSED\nGREEN BUTTON CONFIRMED',
+        };
+        const voices: Record<string, string> = { CONFIRMING: 'CHECKIN', HELP_REQUESTED: 'HELP', ACKNOWLEDGED: 'ACCEPTED',
+          RESPONDER_EN_ROUTE: 'ENROUTE', ON_SCENE: 'ARRIVED', RESOLVED: 'RESOLVED' };
         ws.send(JSON.stringify({ type: 'incident.context', sessionId: protocol.hello.sessionId,
           incidentId: i?.id ?? null, checkinId: i?.checkinId ?? null, phase: i?.phase ?? null,
-          checkinDeadline: i?.checkinDeadline ?? null, serverTime: Date.now() }));
+          checkinDeadline: i?.checkinDeadline ?? null, serverTime: Date.now(), ownerName,
+          statusText: `LIFELINE\n${i ? screens[i.phase] ?? i.phase : 'READY\nGREEN: OKAY\nRED: HELP'}`.slice(0,300),
+          voiceAsset: i ? voices[i.phase] ?? null : null }));
       };
       const ping = () => {
         if (ws.readyState === WebSocket.OPEN && protocol.hello) ws.send(JSON.stringify(wili.ping()));
       };
       const timer = setInterval(() => { ping(); sendContext(); }, 2000);
+      const contextTimer = setInterval(sendContext, 100);
       ws.on('error', () => ws.close());
       ws.on('message', bytes => {
         try {
@@ -369,7 +402,7 @@ server.on('upgrade', (req, socket, head) => {
           if (packet.type === 'accel.sample') {
             const firstSample = wili.view().sessionId !== packet.sessionId;
             if (!wili.sample(packet, at)) return;
-            if (firstSample) ping();
+            if (firstSample || wili.view().alignmentUncertaintyMs === null) ping();
             if (!recorder) {
               recorder = createWriteStream(resolve(dataDir, 'recordings', `body-wili-${packet.sessionId}.jsonl`), { flags: 'a', mode: 0o600 });
               recorder.on('error', () => console.error('WILi recording unavailable.'));
@@ -382,6 +415,14 @@ server.on('upgrade', (req, socket, head) => {
             if (i && controller.active()?.id === i.id) prepareIncident(i);
             sendContext(); broadcast(); return;
           }
+          if (packet.type === 'checkin.reply') {
+            const decision = controller.recordCheckinReply({ incidentId: packet.incidentId, checkinId: packet.checkinId,
+              transcript: packet.transcript, source: 'freewili-local-speech' });
+            if (decision === 'confirmation_required') ws.send(JSON.stringify({ type: 'audio.command', sessionId: packet.sessionId,
+              commandId: `speech-${packet.eventId}`, incidentId: packet.incidentId, checkinId: packet.checkinId,
+              action: 'play', asset: 'safe-confirmation' }));
+            sendContext(); broadcast(); return;
+          }
           if (packet.type === 'audio.ack') throw new Error('No audio command has been issued for this session.');
           if (packet.type === 'device.status') { wili.disconnected(); ws.close(1008, 'Acquisition unavailable; reconnect with fresh device session.'); }
         } catch (error) {
@@ -389,7 +430,7 @@ server.on('upgrade', (req, socket, head) => {
         }
       });
       ws.on('close', () => {
-        clearInterval(timer); recorder?.end();
+        clearInterval(timer); clearInterval(contextTimer); recorder?.end();
         if (producers.get('body-wili') === ws) { producers.delete('body-wili'); wili.disconnected(); broadcast(); }
       });
     });
@@ -430,7 +471,8 @@ server.on('upgrade', (req, socket, head) => {
 });
 live.on('connection', ws => ws.on('error', () => ws.close()));
 const heartbeat = setInterval(() => {
-  controller.tick(); const assessedAt = performance.now(); const evidence = legacyPhone ? motion.candidate() : null;
+  controller.tick(); const assessedAt = performance.now(); const evidence = controller.active() ? null
+    : legacyPhone ? motion.candidate() : wiliAssessment.candidate(wili, motion);
   trials.record('assessment', { candidate: evidence }, undefined, assessedAt);
   if (evidence) prepareIncident(controller.trigger(evidence));
   broadcast(); void providerWorker('wearer'); void providerWorker('responders');
@@ -447,7 +489,7 @@ server.listen(port, host, () => {
 });
 server.on('error', error => { console.error(error.message); process.exitCode = 1; void shutdown(); });
 async function shutdown(): Promise<void> {
-  if (stopping) return; stopping = true; clearInterval(heartbeat);
+  if (stopping) return; stopping = true; clearInterval(heartbeat); clearInterval(voiceCacheTimer);
   for (const ws of [...live.clients, ...ingest.clients, ...producers.values()]) ws.terminate();
   for (const recorder of recorders.values()) recorder.end();
   if (trials.recording) trials.stop('Backend stopped; capture ended.');

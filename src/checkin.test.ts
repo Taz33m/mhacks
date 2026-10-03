@@ -44,7 +44,7 @@ test('invalid or stale replies and late cancellation cannot alter state', () => 
     const reply: CheckinReply = { incidentId: i.id, checkinId: i.checkinId,
       transcript: 'I need help', source: 'ios-on-device-speech' };
     assert.throws(() => c.recordCheckinReply({ ...reply, checkinId: 'old' }), /current check-in/);
-    assert.throws(() => c.recordCheckinReply({ ...reply, source: 'model' } as unknown as CheckinReply), /on-device/);
+    assert.throws(() => c.recordCheckinReply({ ...reply, source: 'model' } as unknown as CheckinReply), /device transcript/);
     assert.throws(() => c.recordCheckinReply({ ...reply, transcript: 'x'.repeat(501) }), /1–500/);
     assert.equal(c.events(i.id).some(e => e.type === 'CHECKIN_REPLY'), false);
     now = i.checkinDeadline;

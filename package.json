@@ -10,7 +10,7 @@
     "start": "node --env-file-if-exists=.env src/server.ts",
     "start:demo": "LIFELINE_DEMO_MODE=1 node --env-file-if-exists=.env src/server.ts",
     "ai:local": "zsh scripts/start-local-ai.sh",
-    "test": "node --test src/*.test.ts src/providers/*.test.ts",
+    "test": "node --test src/*.test.ts src/providers/*.test.ts native/freewili/*.test.ts",
     "typecheck": "tsc --noEmit",
     "setup:local": "node --env-file-if-exists=.env scripts/setup-local.ts",
     "install:airpods": "zsh native/macos/install.sh --open",
@@ -19,7 +19,11 @@
     "build:ios:device": "zsh native/ios/build-device.sh",
     "install:ios": "zsh native/ios/install-device.sh",
     "replay:motion": "node scripts/replay-motion.ts",
-    "device:usb": "node scripts/connect-usb.ts"
+    "device:usb": "node scripts/connect-usb.ts",
+    "setup:freewili": "zsh native/freewili/setup.sh",
+    "device:freewili": "node --env-file-if-exists=.env native/freewili/stock-bridge.ts",
+    "prepare:wili:local": "node native/freewili/prepare-stock-audio.ts --provider local",
+    "prepare:wili:elevenlabs": "node --env-file-if-exists=.env native/freewili/prepare-stock-audio.ts --provider elevenlabs"
   },
   "dependencies": {
     "@spectrum-ts/core": "^12.10.1",

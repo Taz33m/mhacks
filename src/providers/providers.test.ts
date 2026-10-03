@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import type { Incident, ProviderInbound } from '../contracts.ts';
 import { CHECKIN_TEXT, DEMO_CHECKIN_TEXT, FINCH_DEMO_URL, answerQuestionDetailed, createProviders, type DetailedAnswer } from './index.ts';
 import { createPhotonAdapter, normalizePhoton, type PhotonClient, type PhotonMessage, type PhotonSpace } from './photon.ts';
+import { DEFAULT_ELEVENLABS_VOICE_ID } from '../../native/freewili/prepare-stock-audio.ts';
 
 const incident: Incident = {
   id: 'A17', phase: 'HELP_REQUESTED', version: 1, createdAt: 1_000, updatedAt: 1_020,
@@ -358,6 +359,21 @@ test('AI handoff uses physical incident context and produces source-cited facts 
   assert.match(handoff, /Current vital signs not provided/);
   assert.doesNotMatch(handoff, /source template fallback/);
   assert.match(providers.providerStatus().llm.detail, /AI handoff generation verified/);
+});
+
+test('ElevenLabs key alone selects the shared default voice and honors the model override', async () => {
+  let calls = 0;
+  const providers = createProviders({ env: { ELEVENLABS_API_KEY: 'mock', ELEVENLABS_MODEL_ID: 'eleven_turbo_v2_5' },
+    fetch: fetchStub((url, init) => {
+      calls++;
+      assert.equal(url, `https://api.elevenlabs.io/v1/text-to-speech/${DEFAULT_ELEVENLABS_VOICE_ID}?output_format=mp3_44100_128`);
+      assert.equal(JSON.parse(String(init?.body)).model_id, 'eleven_turbo_v2_5');
+      return new Response(mp3, { headers: { 'Content-Type': 'audio/mpeg' } });
+    }),
+  });
+  assert.equal(providers.providerStatus().elevenlabs.configured, true);
+  assert.deepEqual(await providers.prepareCheckinAudio(), mp3);
+  assert.equal(calls, 1);
 });
 
 test('demo voice prepares the short clip once to fit the accelerated silence check-in', async () => {

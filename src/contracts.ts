@@ -1,5 +1,6 @@
 import type { PatientRecordSnapshot } from './patient-record.ts';
 import type { BodyWiliView } from './freewili.ts';
+import type { WiliAssessmentFeatures } from './wili-assessment.ts';
 
 export type Source = 'chest-phone' | 'waist-airpod';
 export type Vec3 = [number, number, number];
@@ -17,7 +18,8 @@ export interface ClockPong {
 }
 export interface Evidence {
   kind: 'manual' | 'synthetic' | 'single-source' | 'cross-body';
-  summary: string; sourceSessions?: Partial<Record<Source, string>>;
+  summary: string; sourceSessions?: Partial<Record<Source | 'body-wili', string>>;
+  assessment?: WiliAssessmentFeatures;
 }
 export interface Incident {
   id: string; phase: Phase; version: number; createdAt: number; updatedAt: number;
@@ -40,7 +42,7 @@ export interface Action {
 export interface TimelineEvent { id: string; incidentId: string; type: string; actor: string; at: number; detail: string }
 export type CheckinDecision = 'help_requested' | 'confirmation_required' | 'unresolved';
 export interface CheckinReply {
-  incidentId: string; checkinId: string; transcript: string; source: 'ios-on-device-speech';
+  incidentId: string; checkinId: string; transcript: string; source: 'ios-on-device-speech' | 'freewili-local-speech';
 }
 export interface SensorView {
   source: Source; connected: boolean; fresh: boolean; calibrated: boolean;

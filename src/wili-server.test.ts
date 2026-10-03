@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { WebSocket } from 'ws';
 import type { Snapshot } from './contracts.ts';
 import type { BodyWiliSample } from './freewili.ts';
-import type { WiliHostPacket } from '../native/freewili/protocol.ts';
+import type { WiliHostPacket, WiliIncidentContext } from '../native/freewili/protocol.ts';
 
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function waitFor<T>(read: () => Promise<T>, matches: (value: T) => boolean, timeout = 3500): Promise<T> {
@@ -20,7 +20,7 @@ async function waitFor<T>(read: () => Promise<T>, matches: (value: T) => boolean
   throw new Error('Isolated WILi server did not reach the expected fixture state.');
 }
 
-test('isolated WILi acquisition enforces source/clock identity and policy-bound explicit buttons', { timeout: 15_000 }, async () => {
+test('isolated stock WILi acquisition, speech and buttons preserve policy and reported responder progress', { timeout: 15_000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'lifeline-wili-server-'));
   const child = spawn(process.execPath, ['--import', './src/test-helpers/offline.ts', './src/server.ts'], {
     cwd: process.cwd(), env: { ...process.env, LIFELINE_DATA_DIR: dir, LIFELINE_PORT: '0', LIFELINE_HOST: '127.0.0.1',
@@ -64,6 +64,12 @@ test('isolated WILi acquisition enforces source/clock identity and policy-bound 
     const sessionId = 'synthetic-server-og-boot';
     const ws = new WebSocket(`ws://127.0.0.1:${port}/motion?source=body-wili&token=${setup.token}`); sockets.push(ws);
     const contexts: WiliHostPacket[] = [];
+    const context = async (incidentId: string, phase: string) => {
+      const packets = await waitFor(async () => contexts, value => value.some(packet =>
+        packet.type === 'incident.context' && packet.incidentId === incidentId && packet.phase === phase));
+      return packets.findLast((packet): packet is WiliIncidentContext =>
+        packet.type === 'incident.context' && packet.incidentId === incidentId && packet.phase === phase)!;
+    };
     let sequence = 0;
     ws.on('message', bytes => {
       const packet = JSON.parse(bytes.toString()) as WiliHostPacket;
@@ -73,26 +79,30 @@ test('isolated WILi acquisition enforces source/clock identity and policy-bound 
     });
     await once(ws, 'open');
     ws.send(JSON.stringify({ type: 'device.hello', protocolVersion: 1, source: 'body-wili', sessionId,
-      deviceModel: 'freewili-og', fullScaleG: 8,
-      capabilities: { accelerometer: true, speaker: true, microphone: false, buttons: true } }));
+      deviceModel: 'freewili-og', fullScaleG: 2, transport: 'stock-sdk',
+      capabilities: { accelerometer: true, speaker: true, microphone: true, buttons: true } }));
     // A hello-time pong can arrive before the first sample initializes the adapter session.
     // The first accepted sample must request alignment without waiting for the periodic ping.
     await pause(50);
     const sample = (): BodyWiliSample => ({ type: 'accel.sample', source: 'body-wili', sessionId, sequence: sequence++,
-      sensorTime: performance.now() / 1000, captureClock: 'device-monotonic', accelerationG: [0, 0, 3],
-      fullScaleG: 8, fresh: true, saturated: false, quality: 'measured' });
+      sensorTime: performance.now() / 1000, captureClock: 'host-receipt', accelerationG: [0, 0, 1.7],
+      frameTimestamp: String(1015894500660534528n + BigInt(sequence) * 33000n),
+      fullScaleG: 2, fresh: true, saturated: false, quality: 'measured' });
     ws.send(JSON.stringify(sample()));
     intervals.push(setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(sample())); }, 10));
     const measured = await waitFor(state, value => value.wili?.usable === true, 1000);
     assert.equal(measured.wili!.source, 'body-wili'); assert.equal(measured.wili!.sessionId, sessionId);
-    assert.equal(measured.wili!.quality, 'measured'); assert.equal(measured.wili!.totalG, 3);
+    assert.equal(measured.wili!.quality, 'measured'); assert.equal(measured.wili!.totalG, 1.7);
+    assert.equal(measured.wili!.fullScaleG, 2); assert.equal(measured.wili!.captureClock, 'host-receipt');
     assert.equal(typeof measured.wili!.alignmentUncertaintyMs, 'number');
-    assert.equal(measured.incident, null, 'raw WILi samples have no autonomous detector yet');
+    assert.equal(measured.sensors.some(sensor => sensor.source === 'waist-airpod' && sensor.fresh), false);
+    assert.equal(measured.incident, null, 'board-only motion cannot open an incident without waist corroboration');
     assert.equal(contexts.some(packet => packet.type === 'incident.context' && packet.incidentId === null), true);
     await pause(50);
     const recording = readFileSync(join(dir, 'recordings', `body-wili-${sessionId}.jsonl`), 'utf8').trim().split('\n').map(line => JSON.parse(line));
     assert.equal(recording.length > 2, true);
-    assert.equal(recording.every(packet => packet.source === 'body-wili' && packet.captureClock === 'device-monotonic'
+    assert.equal(recording.every(packet => packet.source === 'body-wili' && packet.captureClock === 'host-receipt'
+      && packet.fullScaleG === 2 && /^\d{1,20}$/.test(packet.frameTimestamp)
       && Number.isFinite(packet.hostMonotonicMs) && Number.isFinite(packet.receivedAt)), true);
     assert.equal(recording.some(packet => 'quaternion' in packet || 'gravity' in packet || 'rotationRate' in packet), false);
 
@@ -105,12 +115,61 @@ test('isolated WILi acquisition enforces source/clock identity and policy-bound 
     assert.equal((await state()).timeline.some(event => event.actor === 'freewili-button'), true);
     press('cancel', 'synthetic-cancel-escalated', help.id, help.checkinId);
     await pause(30); assert.equal((await state()).incident?.phase, 'HELP_REQUESTED', 'board cannot cancel after escalation');
-    for (const type of ['accept', 'depart', 'arrive'] as const)
-      assert.equal((await command({ type, incidentId: help.id, responderId: 'maya' })).status, 200);
+    const unassigned = await context(help.id, 'HELP_REQUESTED');
+    assert.equal(unassigned.ownerName, null); assert.match(unassigned.statusText!, /WAITING FOR RESPONDER/);
+    assert.equal((await command({ type: 'accept', incidentId: help.id, responderId: 'maya' })).status, 200);
+    const accepted = await context(help.id, 'ACKNOWLEDGED');
+    assert.equal(accepted.ownerName, 'Maya'); assert.equal(accepted.voiceAsset, 'ACCEPTED');
+    assert.match(accepted.statusText!, /Maya ACCEPTED\nDEPARTURE NOT REPORTED/);
+    assert.doesNotMatch(accepted.statusText!, /EN ROUTE/);
+    assert.equal((await command({ type: 'depart', incidentId: help.id, responderId: 'maya' })).status, 200);
+    const enRoute = await context(help.id, 'RESPONDER_EN_ROUTE');
+    assert.equal(enRoute.ownerName, 'Maya'); assert.equal(enRoute.voiceAsset, 'ENROUTE');
+    assert.match(enRoute.statusText!, /Maya EN ROUTE/);
+    assert.equal((await command({ type: 'arrive', incidentId: help.id, responderId: 'maya' })).status, 200);
+    const onScene = await context(help.id, 'ON_SCENE');
+    assert.equal(onScene.ownerName, 'Maya'); assert.match(onScene.statusText!, /Maya ON SCENE/);
     assert.equal((await command({ type: 'resolve', incidentId: help.id, responderId: 'maya',
       outcome: 'Synthetic protocol fixture resolved by assigned test responder.' })).status, 200);
+    const resolved = await context(help.id, 'RESOLVED');
+    assert.equal(resolved.ownerName, 'Maya'); assert.equal(resolved.voiceAsset, 'RESOLVED');
+    assert.match(resolved.statusText!, /RESOLVED\nOUTCOME RECORDED/);
     press('help', 'synthetic-stale-help', help.id, help.checkinId);
     await pause(30); assert.equal((await state()).incident?.phase, 'RESOLVED', 'stale help does not reopen a terminal incident');
+    assert.equal(contexts.findLast(packet => packet.type === 'incident.context')?.type, 'incident.context');
+    assert.equal(contexts.findLast(packet => packet.type === 'incident.context'), resolved,
+      'the board retains the latest terminal context instead of returning to a ready screen');
+
+    assert.equal((await command({ type: 'trigger', kind: 'synthetic', summary: 'Synthetic board-local speech fixture; no physical event.' })).status, 200);
+    const spoken = (await state()).incident!; assert.equal(spoken.phase, 'CONFIRMING');
+    const reply = (eventId: string, transcript: string) => ws.send(JSON.stringify({ type: 'checkin.reply',
+      source: 'body-wili', sessionId, eventId, incidentId: spoken.id, checkinId: spoken.checkinId, transcript }));
+    const spokenDecision = (transcript: string, decision: string) => waitFor(state, value => value.timeline.some(event =>
+      event.incidentId === spoken.id && event.type === 'CHECKIN_REPLY' && event.actor === 'freewili-local-speech'
+      && event.detail === JSON.stringify({ transcript, decision })));
+    reply('synthetic-positive-speech', "I'm okay");
+    const positive = await spokenDecision("I'm okay", 'confirmation_required');
+    assert.equal(positive.incident!.phase, 'CONFIRMING');
+    assert.equal(positive.incident!.checkinDeadline, spoken.checkinDeadline, 'positive speech never extends the server deadline');
+    await waitFor(async () => contexts, packets => packets.some(packet => packet.type === 'audio.command'
+      && packet.commandId === 'speech-synthetic-positive-speech' && packet.asset === 'safe-confirmation'
+      && packet.incidentId === spoken.id && packet.checkinId === spoken.checkinId && packet.action === 'play'));
+    const acknowledgements = contexts.filter(packet => packet.type === 'audio.command').length;
+    reply('synthetic-ambiguous-speech', 'I think maybe');
+    const ambiguous = await spokenDecision('I think maybe', 'unresolved');
+    assert.equal(ambiguous.incident!.phase, 'CONFIRMING');
+    assert.equal(ambiguous.incident!.checkinDeadline, spoken.checkinDeadline);
+    assert.equal(contexts.filter(packet => packet.type === 'audio.command').length, acknowledgements,
+      'an ambiguous reply does not receive a safe acknowledgement');
+    reply('synthetic-help-speech', 'I need help');
+    const requested = await spokenDecision('I need help', 'help_requested');
+    assert.equal(requested.incident!.phase, 'HELP_REQUESTED', 'an exact help command escalates before the silence deadline');
+    assert.equal(requested.incident!.checkinDeadline, spoken.checkinDeadline);
+    assert.equal(requested.serverTime < spoken.checkinDeadline, true);
+    for (const type of ['accept', 'depart', 'arrive'] as const)
+      assert.equal((await command({ type, incidentId: spoken.id, responderId: 'maya' })).status, 200);
+    assert.equal((await command({ type: 'resolve', incidentId: spoken.id, responderId: 'maya',
+      outcome: 'Synthetic speech fixture resolved by assigned test responder.' })).status, 200);
 
     assert.equal((await command({ type: 'trigger', kind: 'synthetic', summary: 'Synthetic WILi button policy fixture; no physical event.' })).status, 200);
     const confirming = (await state()).incident!; assert.equal(confirming.phase, 'CONFIRMING');
@@ -120,6 +179,9 @@ test('isolated WILi acquisition enforces source/clock identity and policy-bound 
     const cancelled = await waitFor(state, value => value.incident?.phase === 'CANCELLED_FALSE_ALARM');
     assert.equal(cancelled.incident!.id, confirming.id);
     assert.equal(cancelled.timeline.some(event => event.actor === 'freewili-button' && event.type === 'CANCELLED_FALSE_ALARM'), true);
+    const closedCheckin = await context(confirming.id, 'CANCELLED_FALSE_ALARM');
+    // A closed check-in must not replay instructions to press green again.
+    assert.equal(closedCheckin.voiceAsset, null); assert.match(closedCheckin.statusText!, /GREEN BUTTON CONFIRMED/);
 
     intervals.forEach(clearInterval); intervals.length = 0;
     const closed = once(ws, 'close');

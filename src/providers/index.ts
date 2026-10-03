@@ -1,6 +1,7 @@
 import type { HealthContext, Incident } from '../contracts.ts';
 import { createPhotonAdapter, type PhotonFactory } from './photon.ts';
 import { normalizePatientRecord, type PatientRecordSnapshot, type PatientSection } from '../patient-record.ts';
+import { stockVoiceSelection } from '../../native/freewili/prepare-stock-audio.ts';
 
 export const FINCH_DEMO_URL = 'https://api.finchnode.com/demo/v1/users/patient-demo-001/records?categories=demographics,medications,conditions,allergies,vitals';
 export const CHECKIN_TEXT = "I detected a possible fall. Do you need help? You can say I need help, or tap I don't need help to cancel.";
@@ -148,8 +149,9 @@ export function createProviders(options: {
   });
   const records = new Map<string, { records: HealthRecord[]; raw: RecordData }>();
   let finchDetail = 'Keyless synthetic demo configured; lookup not yet performed';
-  const audioConfigured = Boolean(env.ELEVENLABS_API_KEY?.trim() && env.ELEVENLABS_VOICE_ID?.trim());
-  let audioDetail = audioConfigured ? 'Configured; check-in clip not prepared' : 'Unconfigured: set ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID';
+  const audioConfigured = Boolean(env.ELEVENLABS_API_KEY?.trim());
+  const voiceSelection = stockVoiceSelection(env);
+  let audioDetail = audioConfigured ? 'API configured; cached WILi prompts are prepared separately' : 'Unconfigured: set ELEVENLABS_API_KEY';
   let audioPromise: Promise<Uint8Array | null> | undefined;
   const llmConfigured = Boolean(env.LIFELINE_LLM_API_KEY?.trim() && env.LIFELINE_LLM_BASE_URL?.trim() && env.LIFELINE_LLM_MODEL?.trim());
   let llmDetail = llmConfigured ? 'AI context generation configured; handoff/Q&A not yet verified' : 'AI unconfigured: degraded template only; AI demo requirement unmet';
@@ -313,10 +315,10 @@ export function createProviders(options: {
     if (!audioConfigured) return null;
     if (!audioPromise) audioPromise = (async () => {
       try {
-        const response = await fetcher(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(env.ELEVENLABS_VOICE_ID!)}?output_format=mp3_44100_128`, {
+        const response = await fetcher(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceSelection.voiceId)}?output_format=mp3_44100_128`, {
           method: 'POST', redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
           headers: { 'xi-api-key': env.ELEVENLABS_API_KEY!, 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
-          body: JSON.stringify({ text: env.LIFELINE_DEMO_MODE === '1' ? DEMO_CHECKIN_TEXT : CHECKIN_TEXT, model_id: 'eleven_multilingual_v2' }),
+          body: JSON.stringify({ text: env.LIFELINE_DEMO_MODE === '1' ? DEMO_CHECKIN_TEXT : CHECKIN_TEXT, model_id: voiceSelection.modelId }),
         });
         if (!response.ok || response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'audio/mpeg') throw new Error('speech unavailable');
         const bytes = await readBounded(response, MAX_AUDIO_BYTES);

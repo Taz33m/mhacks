@@ -50,6 +50,22 @@ test('clock exchange maps device acquisition independently of host receipt', () 
   assert.equal(view.totalG, 1); assert.equal('quaternion' in view, false);
 });
 
+test('stock gateway timing is explicit and sparse board events do not invent quiet or reset the host clock', () => {
+  let now = 1000;
+  const wili = new FreeWili(() => now); wili.connected();
+  const stock = (sequence: number): BodyWiliSample => ({ ...sample(sequence, now / 1000, 2),
+    captureClock: 'host-receipt', frameTimestamp: '1015894500660534528' });
+  wili.sample(stock(0)); const ping = wili.ping('stock-clock');
+  assert.equal(wili.pong({type:'clock.pong',id:ping.id,sessionId:sample().sessionId,deviceReceivedMs:now,deviceSentMs:now}),true);
+  now += 20; wili.sample(stock(1)); assert.equal(wili.view().usable,true);
+  now += 600; assert.equal(wili.view().fresh,false,'sparse stock events become stale between receipts');
+  wili.sample(stock(2));
+  assert.equal(wili.view().captureClock,'host-receipt'); assert.equal(wili.view().usable,true);
+  assert.equal(wili.observations().length,3,'historical observations retain actual gaps without filling missing motion');
+  assert.equal(wili.sample({...stock(3),captureClock:'device-monotonic'}),false,'clock domain cannot change within a session');
+  now += 15_000; wili.sample(stock(4)); assert.equal(wili.view().usable,false,'the gateway estimate still expires');
+});
+
 test('increasing delayed or future acquisition timestamps cannot become fresh through receipt', () => {
   for (const skew of [-10000, 1000]) {
     const f = fixture(8, 80); f.advance(10);

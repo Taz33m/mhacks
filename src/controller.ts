@@ -150,14 +150,14 @@ export class Controller {
     });
   }
   recordCheckinReply(reply: CheckinReply): CheckinDecision {
-    if (reply.source !== 'ios-on-device-speech') throw new PolicyError('A final on-device transcript of 1–500 characters is required.');
-    return this.applyCheckinReply(reply, 'ios-on-device-speech')!;
+    if (!['ios-on-device-speech', 'freewili-local-speech'].includes(reply.source)) throw new PolicyError('A final device transcript of 1–500 characters is required.');
+    return this.applyCheckinReply(reply, reply.source)!;
   }
   recordWearerCheckinReply(reply: Omit<CheckinReply, 'source'>, inboundId: string, event?: ProviderInbound): CheckinDecision | null {
     if (typeof inboundId !== 'string' || !inboundId.trim() || inboundId.length > 500) throw new PolicyError('A provider message ID is required.');
     return this.applyCheckinReply(reply, 'photon-imessage', inboundId, event);
   }
-  private applyCheckinReply(reply: Omit<CheckinReply, 'source'>, source: 'ios-on-device-speech' | 'photon-imessage', inboundId?: string, event?: ProviderInbound): CheckinDecision | null {
+  private applyCheckinReply(reply: Omit<CheckinReply, 'source'>, source: 'ios-on-device-speech' | 'freewili-local-speech' | 'photon-imessage', inboundId?: string, event?: ProviderInbound): CheckinDecision | null {
     return this.transaction(() => {
       if (inboundId && this.seenInbound(inboundId)) return null;
       const i = this.current(reply.incidentId);

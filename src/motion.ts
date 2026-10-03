@@ -17,7 +17,12 @@ export function validSample(p: unknown, source: Source): p is MotionSample {
     && vec(s.gravity, 3) && norm(s.gravity) > .5 && norm(s.gravity) < 1.5
     && vec(s.userAcceleration, 3) && norm(s.userAcceleration) < 100;
 }
-interface Point { at: number; alignedAt: number | null; captureFresh: boolean; totalG: number; tiltDegrees: number | null; angularSpeed: number; linearG: number }
+interface Point { at: number; alignedAt: number | null; sensorTime: number; sequence: number; captureFresh: boolean; totalG: number; tiltDegrees: number | null; angularSpeed: number; linearG: number }
+export interface MotionObservation {
+  source: Source; sessionId: string; sensorLocation: string;
+  hostReceivedMs: number; alignedAtMs: number | null; sensorTime: number; sequence: number;
+  captureFresh: boolean; totalG: number; tiltDegrees: number | null; angularSpeed: number; linearG: number;
+}
 interface Stream {
   source: Source; connected: boolean; session: string | null; location: string | null;
   sequence: number; sensorTime: number; lastAt: number | null; lastCaptureAt: number | null; baseline: Vec3 | null;
@@ -83,7 +88,7 @@ export class Motion {
       ? p.sensorTime * 1000 + s.offset : null;
     s.lastCaptureAt = alignedAt;
     const captureFresh = alignedAt === null || (t - alignedAt >= -100 && t - alignedAt < 500);
-    s.points.push({ at: t, alignedAt, captureFresh, totalG: norm(p.gravity.map((v, i) => v + p.userAcceleration[i])),
+    s.points.push({ at: t, alignedAt, sensorTime: p.sensorTime, sequence: p.sequence, captureFresh, totalG: norm(p.gravity.map((v, i) => v + p.userAcceleration[i])),
       tiltDegrees: tilt, angularSpeed: norm(p.rotationRate), linearG: norm(p.userAcceleration) });
     s.samples.push({ at: t, gravity: p.gravity, angularSpeed: norm(p.rotationRate), linearG: norm(p.userAcceleration), captureFresh });
     s.points = s.points.filter(p => t - p.at < 15_000).slice(-1600);
@@ -111,6 +116,15 @@ export class Motion {
       if (options.clocks) { s.offset = null; s.uncertainty = null; s.syncAt = null; s.lastCaptureAt = null; s.pending.clear(); }
     }
     this.lastCandidateAt = options.cooldown === false ? -Infinity : this.now();
+  }
+  /** Copied measured features for cross-device assessment; no calibration or detection side effects. */
+  observations(source: Source): MotionObservation[] {
+    const s = this.streams.get(source)!;
+    if (!s.session || !s.location) return [];
+    return s.points.map(p => ({ source, sessionId: s.session!, sensorLocation: s.location!,
+      hostReceivedMs: p.at, alignedAtMs: p.alignedAt, sensorTime: p.sensorTime, sequence: p.sequence,
+      captureFresh: p.captureFresh, totalG: p.totalG, tiltDegrees: p.tiltDegrees,
+      angularSpeed: p.angularSpeed, linearG: p.linearG }));
   }
   views(): SensorView[] {
     const t = this.now();

@@ -104,14 +104,14 @@
   function renderSensor(sensor) {
     const card = document.getElementById(sensor.source);
     if (!card) return;
-    const state = !sensor.connected ? 'Disconnected' : !online ? 'Last received' : !sensor.fresh ? 'Stale signal' : !sensor.calibrated ? 'Uncalibrated' : 'Fresh signal';
+    const state = !sensor.connected ? 'Disconnected' : !online ? 'Last received' : !sensor.fresh ? 'Stale signal' : 'Fresh signal';
     const badge = $('.sensor-status', card);
     badge.textContent = state;
-    badge.className = `badge sensor-status ${online && sensor.connected && sensor.fresh && sensor.calibrated ? 'good' : sensor.connected ? 'warning' : ''}`;
+    badge.className = `badge sensor-status ${online && sensor.connected && sensor.fresh ? 'good' : sensor.connected ? 'warning' : ''}`;
     text('.sensor-g', number(sensor.totalG, 2), card);
     text('.sensor-tilt', `Tilt ${number(sensor.tiltDegrees)}${finite(sensor.tiltDegrees) ? '°' : ''}`, card);
     text('.sensor-age', finite(sensor.ageMs) ? sensor.ageMs < 1000 ? `${Math.round(sensor.ageMs)} ms` : `${(sensor.ageMs / 1000).toFixed(1)} s` : 'No sample', card);
-    text('.sensor-calibration', sensor.calibrated ? 'Calibrated' : 'Required', card);
+    text('.sensor-calibration', sensor.calibrated ? 'Calibrated' : 'Optional; tilt unknown', card);
     text('.sensor-alignment', finite(sensor.alignmentUncertaintyMs) ? `${Math.round(sensor.alignmentUncertaintyMs)} ms` : 'Unknown', card);
     text('.sensor-hz', finite(sensor.sampleHz) && sensor.sampleHz > 0 ? `${sensor.sampleHz.toFixed(1)} Hz` : '—', card);
     text('.sensor-identity', `Source: ${sensor.source}${sensor.sensorLocation ? ` · ${sensor.sensorLocation}` : ''} · ${sensor.sessionId ? `Session ${sensor.sessionId.slice(0, 8)}` : 'No session'}`, card);
@@ -127,13 +127,33 @@
     ['x', 'y', 'z'].forEach((axis, index) => text(`#wili-${axis}`, finite(wili?.accelerationG?.[index]) ? `${number(wili.accelerationG[index], 3)} g` : '—'));
     const elapsed = !online && lastStateReceived ? Date.now() - lastStateReceived : 0;
     text('#wili-age', finite(wili?.receivedAgeMs) ? `${Math.round(wili.receivedAgeMs + elapsed)} ms` : 'No sample');
+    const receiptTiming = wili?.captureClock === 'host-receipt';
+    text('#wili-timing-label', receiptTiming ? 'Gateway receipt age' : 'Capture age');
     text('#wili-capture-age', finite(wili?.captureAgeMs) ? `${Math.round(wili.captureAgeMs + elapsed)} ms` : 'Unknown');
+    text('#wili-alignment-label', receiptTiming ? 'Gateway clock ±' : 'Capture clock ±');
     text('#wili-alignment', finite(wili?.alignmentUncertaintyMs) ? `${Math.round(wili.alignmentUncertaintyMs)} ms` : 'Unknown');
     text('#wili-hz', finite(wili?.sampleHz) && wili.sampleHz > 0 ? `${number(wili.sampleHz, 1)} Hz` : '—');
     text('#wili-range', finite(wili?.fullScaleG) ? `±${wili.fullScaleG} g` : 'Unknown');
     text('#wili-quality', wili?.quality || 'Unknown');
     text('#wili-identity', `Source: body-wili · ${wili?.sessionId ? `Session ${wili.sessionId}` : 'No session'} · ${wili?.captureClock || 'Capture clock not reported'}`);
-    text('#wili-detail', `${wili?.saturated === true ? 'Saturation reported. ' : ''}${finite(wili?.rejectedSamples) ? `${wili.rejectedSamples} rejected packets. ` : ''}Acquisition readiness does not establish a working fall detector. Tilt and angular rate are unavailable.`);
+    text('#wili-detail', `${wili?.saturated === true ? 'Saturation reported. ' : ''}${receiptTiming ? 'Stock OG uses gateway receipt timing; sensor capture time and transport latency are not measured. ' : ''}Provisional detection requires correlated waist movement and subsequent quiet. Telemetry quality does not establish accuracy. Tilt and angular rate are unavailable on WILi.`);
+  }
+
+  function detectorReadiness() {
+    const body = snapshot?.wili, waist = snapshot?.sensors.find(sensor => sensor.source === 'waist-airpod');
+    const aligned = value => finite(value) && value >= 0 && value <= 100;
+    const bodyReady = body?.connected && body.fresh && body.usable && body.quality === 'measured' && body.saturated === false
+      && !!body.sessionId && aligned(body.alignmentUncertaintyMs)
+      && ['device-monotonic', 'host-receipt'].includes(body.captureClock) && finite(body.totalG)
+      && finite(body.fullScaleG) && (body.fullScaleG > 2 || (body.captureClock === 'host-receipt' && body.fullScaleG === 2));
+    const waistReady = waist?.connected && waist.fresh && !!waist.sessionId
+      && finite(waist.totalG) && ['Left', 'Right'].includes(waist.sensorLocation) && aligned(waist.alignmentUncertaintyMs);
+    const ready = !!(online && bodyReady && waistReady);
+    const detail = !online ? 'Live state disconnected; last telemetry cannot establish readiness.'
+      : !bodyReady ? 'Waiting for usable FREE-WILi measurements and clock alignment.'
+        : !waistReady ? 'Waiting for a fresh waist AirPod stream with clock alignment.'
+          : 'Both streams pass current telemetry gates. Monitoring for primary impact, correlated waist movement/rotation and continuous waist quiet.';
+    return { ready, detail };
   }
 
   function drawChart(card, rawTrace) {
@@ -182,6 +202,7 @@
       evidence.textContent = labels[incident.evidence.kind] || incident.evidence.kind;
       evidence.className = `badge ${incident.evidence.kind === 'synthetic' ? 'warning' : ''}`;
     }
+    renderMeasuredEvidence();
     const phaseIndex = phases.findIndex(([phase]) => phase === incident?.phase);
     const cancelled = incident?.phase === 'CANCELLED_FALSE_ALARM';
     $('#phase-list').className = `phase-list${cancelled ? ' cancelled' : ''}`;
@@ -205,6 +226,40 @@
     element.textContent = value;
     parent.appendChild(element);
     return element;
+  }
+
+  function renderMeasuredEvidence() {
+    const assessment = snapshot?.incident?.evidence?.assessment;
+    const present = assessment?.detector === 'wili-waist-provisional-v1' && assessment.impact && assessment.supportingWaist && assessment.quietWaist;
+    $('#incident-evidence').hidden = !present;
+    if (!present) { $('#incident-evidence-facts').replaceChildren(); text('#incident-evidence-timing', ''); text('#incident-evidence-sources', ''); return; }
+    const impact = assessment.impact, waist = assessment.supportingWaist, quiet = assessment.quietWaist;
+    const metric = (value, unit, digits = 2) => finite(value) ? `${number(value, digits)} ${unit}` : 'Not recorded';
+    const source = value => typeof value === 'string' && value ? value : 'Not recorded';
+    const fields = document.createDocumentFragment();
+    const rows = [
+      ['Primary impact', `${metric(impact.totalG, 'g')} · selected threshold ${metric(assessment.selectedImpactG, 'g')} · range ${finite(impact.fullScaleG) ? `±${impact.fullScaleG} g` : 'not recorded'}`],
+      ['Waist support', `${metric(waist.linearG, 'g')} linear · ${metric(waist.angularSpeed, 'rad/s')} rotation · timing separation ${metric(waist.separationMs, 'ms', 0)}`],
+      ['Waist quiet', `${metric(quiet.durationMs, 'ms', 0)} across ${finite(quiet.sampleCount) ? quiet.sampleCount : 'unknown'} samples · maximum ${metric(quiet.maxLinearG, 'g')} linear, ${metric(quiet.maxAngularSpeed, 'rad/s')} rotation`],
+    ];
+    for (const [label, value] of rows) { const row = appendText(fields, 'div', '', ''); appendText(row, 'dt', '', label); appendText(row, 'dd', '', value); }
+    $('#incident-evidence-facts').replaceChildren(fields);
+    text('#incident-evidence-timing', impact.captureClock === 'host-receipt'
+      ? 'Stock OG evidence uses gateway host-receipt timing. Sensor capture time and acquisition latency are not established. These frozen measurements support a provisional prototype assessment, not a diagnosis or accuracy claim.'
+      : impact.captureClock === 'device-monotonic'
+        ? 'Device acquisition timestamps are mapped to the server monotonic clock. These frozen measurements support a provisional prototype assessment, not a diagnosis or accuracy claim.'
+        : 'Timing basis was not recorded. These measurements do not establish a diagnosis or detection accuracy.');
+    const clock = assessment.alignmentAtAssessment;
+    text('#incident-evidence-sources', [
+      `Detector ${source(assessment.detector)} · assessed ${metric(assessment.assessedAtMs, 'ms server monotonic', 1)}`,
+      `Primary ${source(impact.source)} · session ${source(impact.sessionId)} · sequence ${finite(impact.sequence) ? impact.sequence : 'not recorded'}`,
+      `${impact.captureClock === 'host-receipt' ? 'Gateway' : 'Reported'} timestamp ${metric(impact.sensorTime, 's', 3)} · clock ${source(impact.captureClock)} · mapped ${metric(impact.alignedAtMs, 'ms server monotonic', 1)} · server receipt ${metric(impact.hostReceivedMs, 'ms', 1)}`,
+      ...(typeof impact.frameTimestamp === 'string' ? [`Raw board frame timestamp ${impact.frameTimestamp}; conversion to capture time is not established.`] : []),
+      `Waist ${source(waist.source)} · session ${source(waist.sessionId)} · bud ${source(waist.sensorLocation)} · sequence ${finite(waist.sequence) ? waist.sequence : 'not recorded'}`,
+      `Waist device timestamp ${metric(waist.sensorTime, 's', 3)} · mapped ${metric(waist.alignedAtMs, 'ms server monotonic', 1)}`,
+      `Quiet interval ${metric(quiet.fromAlignedAtMs, 'ms', 1)} → ${metric(quiet.toAlignedAtMs, 'ms', 1)} server monotonic · maximum gaps ${metric(quiet.maxCaptureGapMs, 'ms', 0)} capture / ${metric(quiet.maxReceiveGapMs, 'ms', 0)} receipt`,
+      `Clock mapping uncertainty at assessment: ${impact.captureClock === 'host-receipt' ? 'gateway' : 'primary'} ${metric(clock?.bodyUncertaintyMs, 'ms', 1)} · waist ${metric(clock?.waistUncertaintyMs, 'ms', 1)}.`,
+    ].join('\n'));
   }
 
   function patientContext() {
@@ -457,7 +512,7 @@
     if (!reply) {
       text('#reply-decision', 'NO REPLY');
       text('#reply-transcript', 'No wearer reply received for this incident.');
-      text('#reply-meta', 'iMessage replies can request help or preserve the check-in. Cancellation requires the explicit current check-in control. Board speech is pending.');
+      text('#reply-meta', 'Wearer speech and iMessage replies can request help or preserve the check-in. Cancellation requires the explicit current check-in control.');
       $('#reply-transcript').classList.remove('has-reply');
       return;
     }
@@ -469,7 +524,7 @@
     } catch { /* Preserve the recorded detail if it is not structured. */ }
     text('#reply-decision', decision);
     text('#reply-transcript', transcript);
-    const source = reply.actor === 'ios-on-device-speech' ? 'Legacy iPhone on-device speech' : reply.actor === 'photon-imessage' ? 'Wearer iMessage via Photon' : reply.actor;
+    const source = reply.actor === 'freewili-local-speech' ? 'FREE-WILi microphone · local Whisper' : reply.actor === 'ios-on-device-speech' ? 'Legacy iPhone on-device speech' : reply.actor === 'photon-imessage' ? 'Wearer iMessage via Photon' : reply.actor;
     text('#reply-meta', `${time(reply.at)} · ${source} · Cancellation requires the explicit check-in control.`);
     $('#reply-transcript').classList.add('has-reply');
   }
@@ -480,7 +535,7 @@
       const sensor = snapshot.sensors.find((item) => item.source === source);
       const receiving = online && sensor?.connected && sensor?.fresh;
       const status = !sensor?.connected ? 'Disconnected' : !online ? 'Last received' : !sensor.fresh ? 'Stale' : 'Receiving';
-      const detail = sensor?.connected ? `${sensor.calibrated ? 'Standing calibration recorded' : 'Standing calibration required'}${source === 'waist-airpod' && sensor.sensorLocation ? ` · reporting ${sensor.sensorLocation} bud` : ''}` : 'No connected source reported';
+      const detail = sensor?.connected ? `${sensor.calibrated ? 'Standing tilt calibration recorded' : 'Tilt baseline not calibrated; optional for this detector'}${source === 'waist-airpod' && sensor.sensorLocation ? ` · reporting ${sensor.sensorLocation} bud` : ''}` : 'No connected source reported';
       return `<li><div class="readiness-head"><strong>${label}</strong><span class="badge ${receiving ? 'good' : ''}">${status}</span></div><p>${escaped(detail)}</p></li>`;
     });
     const alignments = [['waist-airpod', 'Waist']].map(([source, label]) => {
@@ -488,11 +543,15 @@
       return `${label}: ${finite(uncertainty) ? `±${Math.round(uncertainty)} ms` : 'unknown'}`;
     }).join(' · ');
     const audio = snapshot.providers?.elevenlabs;
+    const wiliVoice = snapshot.providers?.wiliVoice;
     const wearerMessaging = snapshot.wearerMessaging;
     const wili = snapshot.wili;
-    $('#native-readiness').innerHTML = `<li><div class="readiness-head"><strong>FREE-WILi accelerometer</strong><span class="badge">${online && wili?.usable ? 'Acquisition ready' : escaped(wili?.quality || 'Unavailable')}</span></div><p>${escaped(`Source body-wili · range ${finite(wili?.fullScaleG) ? `±${wili.fullScaleG} g` : 'unknown'} · alignment ${finite(wili?.alignmentUncertaintyMs) ? `±${Math.round(wili.alignmentUncertaintyMs)} ms` : 'unknown'}. Fall assessment and board audio are unverified.`)}</p></li>` + sourceRows.join('')
+    const readiness = detectorReadiness();
+    $('#native-readiness').innerHTML = `<li><div class="readiness-head"><strong>FREE-WILi accelerometer</strong><span class="badge">${online && wili?.usable ? 'Acquisition ready' : !online ? 'Last received' : escaped(wili?.quality || 'Unavailable')}</span></div><p>${escaped(`Source body-wili · range ${finite(wili?.fullScaleG) ? `±${wili.fullScaleG} g` : 'unknown'} · ${wili?.captureClock === 'host-receipt' ? 'gateway receipt clock' : 'device capture clock'} mapping ${finite(wili?.alignmentUncertaintyMs) ? `±${Math.round(wili.alignmentUncertaintyMs)} ms` : 'unknown'}. ${wili?.captureClock === 'host-receipt' ? 'Stock timing does not measure sensor capture latency.' : 'No primary orientation is inferred.'}`)}</p></li>` + sourceRows.join('')
+      + `<li><div class="readiness-head"><strong>Provisional cross-body detector</strong><span class="badge ${readiness.ready ? 'good' : ''}">${readiness.ready ? 'Signals ready' : 'Waiting'}</span></div><p>${escaped(readiness.detail)} Telemetry readiness does not establish detection accuracy.</p></li>`
       + `<li><div class="readiness-head"><strong>Clock alignment</strong></div><p>${escaped(alignments)}</p></li>`
-      + `<li><div class="readiness-head"><strong>Check-in voice provider</strong><span class="badge">${audio?.configured ? 'Configured' : 'Unavailable'}</span></div><p>${escaped(audio?.detail || 'No voice provider status reported')} · Board playback is not established by provider configuration.</p></li>`
+      + `<li><div class="readiness-head"><strong>WILi voice cache</strong><span class="badge ${wiliVoice?.configured ? 'good' : ''}">${wiliVoice?.configured ? 'Prepared' : 'Unavailable'}</span></div><p>${escaped(wiliVoice?.detail || 'No prepared board voice cache reported.')} Rehearse playback on the wearable.</p></li>`
+      + `<li><div class="readiness-head"><strong>ElevenLabs API</strong><span class="badge">${audio?.configured ? 'Configured' : 'Unavailable'}</span></div><p>${escaped(audio?.detail || 'No ElevenLabs API status reported')}</p></li>`
       + `<li><div class="readiness-head"><strong>Wearer iMessage</strong><span class="badge">${wearerMessaging?.configured ? 'Configured' : 'Unavailable'}</span></div><p>${escaped(wearerMessaging?.detail || 'No wearer messaging configuration reported')}</p></li>`;
     if (nativeSetup) {
       const addresses = nativeSetup.addresses.length ? nativeSetup.addresses.map((address) => `${address}:${nativeSetup.port}`).join('\n') : 'No external IPv4 address reported';
@@ -638,7 +697,7 @@
       const result = await response.json();
       if (!response.ok || result.error) throw new Error(result.error || `Command failed (${response.status})`);
       text(message, payload.type === 'calibrate'
-        ? 'Calibration recorded for available still sensors. Check both sensor cards below.'
+        ? 'Tilt calibration recorded for available AirPod/legacy motion sensors. Check their sensor cards below.'
         : 'Command accepted by the controller.');
       if (payload.type === 'resolve' || payload.type === 'reset') $('#outcome-input').value = '';
       await loadState().catch(() => {});

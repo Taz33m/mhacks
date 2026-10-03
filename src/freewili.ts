@@ -3,7 +3,9 @@ import { randomUUID } from 'node:crypto';
 /** Raw board acceleration includes gravity. This is not a Core Motion packet. */
 export interface BodyWiliSample {
   type: 'accel.sample'; source: 'body-wili'; sessionId: string; sequence: number;
-  sensorTime: number; captureClock: 'device-monotonic'; accelerationG: [number, number, number];
+  sensorTime: number; captureClock: 'device-monotonic' | 'host-receipt'; accelerationG: [number, number, number];
+  /** Stock SDK framing value is retained verbatim; its unit is not assumed. */
+  frameTimestamp?: string;
   fullScaleG: 2 | 4 | 8 | 16; fresh: true; saturated: boolean; quality: 'measured';
 }
 export interface WiliClockPing { type: 'clock.ping'; id: string; serverSentMs: number }
@@ -18,7 +20,7 @@ export type BodyWiliQuality = 'disconnected' | 'awaiting-sample' | 'unsynchroniz
   | 'capture-stale' | 'insufficient-range' | 'saturated' | 'measured';
 export interface BodyWiliView {
   source: 'body-wili'; sensorLocation: 'body'; connected: boolean; fresh: boolean; usable: boolean;
-  sessionId: string | null; captureClock: 'device-monotonic'; quality: BodyWiliQuality;
+  sessionId: string | null; captureClock: 'device-monotonic' | 'host-receipt'; quality: BodyWiliQuality;
   receivedAgeMs: number | null; captureAgeMs: number | null; ageMs: number | null;
   alignmentUncertaintyMs: number | null; sampleHz: number;
   accelerationG: [number, number, number] | null; totalG: number | null;
@@ -26,7 +28,7 @@ export interface BodyWiliView {
 }
 
 const fields = new Set(['type', 'source', 'sessionId', 'sequence', 'sensorTime', 'captureClock',
-  'accelerationG', 'fullScaleG', 'fresh', 'saturated', 'quality']);
+  'accelerationG', 'fullScaleG', 'fresh', 'saturated', 'quality', 'frameTimestamp']);
 export const wiliId = (value: unknown): value is string => typeof value === 'string' && /^[\w-]{1,80}$/.test(value);
 const time = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
   && value >= 0 && value <= Number.MAX_SAFE_INTEGER / 1000;
@@ -36,7 +38,9 @@ export function validBodyWiliSample(value: unknown): value is BodyWiliSample {
   return Object.keys(p).every(key => fields.has(key))
     && p.type === 'accel.sample' && p.source === 'body-wili' && wiliId(p.sessionId)
     && Number.isSafeInteger(p.sequence) && p.sequence >= 0 && time(p.sensorTime)
-    && p.captureClock === 'device-monotonic' && [2, 4, 8, 16].includes(p.fullScaleG)
+    && ['device-monotonic', 'host-receipt'].includes(p.captureClock) && [2, 4, 8, 16].includes(p.fullScaleG)
+    && (p.frameTimestamp === undefined || (typeof p.frameTimestamp === 'string' && /^\d{1,20}$/.test(p.frameTimestamp)))
+    && (p.captureClock !== 'host-receipt' || p.frameTimestamp !== undefined)
     && p.fresh === true && p.quality === 'measured' && typeof p.saturated === 'boolean'
     && Array.isArray(p.accelerationG) && p.accelerationG.length === 3
     && p.accelerationG.every(axis => typeof axis === 'number' && Number.isFinite(axis)
@@ -59,6 +63,7 @@ export class FreeWili {
   private sequence = -1;
   private sensorTime = -1;
   private fullScale: number | null = null;
+  private captureClock: BodyWiliSample['captureClock'] | null = null;
   private lastReceived: number | null = null;
   private latest: BodyWiliObservation | null = null;
   private points: BodyWiliObservation[] = [];
@@ -77,7 +82,7 @@ export class FreeWili {
       while (this.retired.size > 16) this.retired.delete(this.retired.values().next().value!);
     }
     this.session = null; this.sequence = -1; this.sensorTime = -1; this.fullScale = null;
-    this.lastReceived = null; this.latest = null; this.points = [];
+    this.captureClock = null; this.lastReceived = null; this.latest = null; this.points = [];
     this.clearClock();
   }
   private clearClock(): void {
@@ -121,11 +126,16 @@ export class FreeWili {
       this.session = value.sessionId;
     }
     if (value.sessionId !== this.session || value.sequence <= this.sequence || value.sensorTime <= this.sensorTime
-      || (this.fullScale !== null && value.fullScaleG !== this.fullScale)) return reject();
+      || (this.fullScale !== null && value.fullScaleG !== this.fullScale)
+      || (this.captureClock !== null && value.captureClock !== this.captureClock)) return reject();
     if (this.lastReceived !== null && hostReceivedMs - this.lastReceived >= 500) {
-      this.points = []; this.clearClock();
+      // A sparse stock event stream does not reset the Mac gateway's clock.
+      // It still goes stale in view(); no primary quiet/continuity is inferred.
+      if (value.captureClock !== 'host-receipt') { this.points = []; this.clearClock(); }
+      else if (hostReceivedMs - this.lastReceived >= 5000) this.points = [];
     }
     this.sequence = value.sequence; this.sensorTime = value.sensorTime; this.fullScale = value.fullScaleG;
+    this.captureClock = value.captureClock;
     this.lastReceived = hostReceivedMs;
     const sample = clone(value);
     const alignedAtMs = this.aligned(hostReceivedMs) ? sample.sensorTime * 1000 + this.offset! : null;
@@ -134,7 +144,8 @@ export class FreeWili {
     // Device clipping flags are retained; near full-scale axes are conservatively marked as saturated too.
     const saturated = sample.saturated || sample.accelerationG.some(axis => Math.abs(axis) >= sample.fullScaleG * .98);
     const observation: BodyWiliObservation = { sample, hostReceivedMs, alignedAtMs, captureFresh, saturated,
-      totalG: Math.hypot(...sample.accelerationG), usable: captureFresh && !saturated && sample.fullScaleG > 2 };
+      totalG: Math.hypot(...sample.accelerationG), usable: captureFresh && !saturated
+        && (sample.fullScaleG > 2 || sample.captureClock === 'host-receipt') };
     this.latest = observation; this.points.push(observation);
     this.points = this.points.filter(point => hostReceivedMs - point.hostReceivedMs < 15_000).slice(-1600);
     return true;
@@ -154,9 +165,9 @@ export class FreeWili {
     const first = recent.at(0), end = recent.at(-1);
     const quality: BodyWiliQuality = !this.online ? 'disconnected' : !latest ? 'awaiting-sample'
       : !receiptFresh ? 'stale' : !this.aligned(at) ? 'unsynchronized' : !fresh ? 'capture-stale'
-        : latest.saturated ? 'saturated' : latest.sample.fullScaleG <= 2 ? 'insufficient-range' : 'measured';
+        : latest.saturated ? 'saturated' : latest.sample.fullScaleG <= 2 && latest.sample.captureClock !== 'host-receipt' ? 'insufficient-range' : 'measured';
     return { source: 'body-wili', sensorLocation: 'body', connected: this.online, fresh, usable,
-      sessionId: this.session, captureClock: 'device-monotonic', quality, receivedAgeMs, captureAgeMs,
+      sessionId: this.session, captureClock: this.captureClock ?? 'device-monotonic', quality, receivedAgeMs, captureAgeMs,
       ageMs: receivedAgeMs === null ? null : Math.max(receivedAgeMs, captureAgeMs ?? 0),
       alignmentUncertaintyMs: this.aligned(at) ? this.uncertainty : null,
       sampleHz: first && end && end.hostReceivedMs > first.hostReceivedMs

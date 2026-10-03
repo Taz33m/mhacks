@@ -5,3 +5,6 @@ native/**/build*/
 native/ios/*.xcodeproj/xcuserdata/
 *.log
 .DS_Store
+output/
+__pycache__/
+*.pyc
