@@ -4,7 +4,9 @@ import { approvedResponder } from './identity.ts';
 
 export async function handleResponderQuestion(
   event: ProviderInbound, controller: Controller,
-  generate: (incident: Incident, question: string) => Promise<string>,
+  generate: (incident: Incident, question: string) => Promise<string | {
+    text: string; generation: 'ai' | 'degraded' | 'policy_refusal';
+  }>,
   canQueue: () => boolean = () => true,
 ): Promise<boolean> {
   if (event.removed || event.kind !== 'text' || typeof event.text !== 'string'
@@ -22,12 +24,13 @@ export async function handleResponderQuestion(
 
   const answer = await generate(incident, question);
   if (!canQueue()) return false;
-  const text = `${incident.id}: ${answer}`;
+  const text = `${incident.id}: ${typeof answer === 'string' ? answer : answer.text}`;
   const boundedText = text.length <= 6000 ? text
     : `${incident.id}: The returned record summary exceeds the message limit. Please ask about a specific medication, condition, or allergy.`;
   try {
     // Authorization, version, dedupe, audit, and the outbox commit together.
-    return controller.queueAnswer(incident.id, incident.version, responder.id, event.messageId, boundedText);
+    return controller.queueAnswer(incident.id, incident.version, responder.id, event.messageId, boundedText,
+      { question, generation: text.length > 6000 ? 'degraded' : typeof answer === 'string' ? undefined : answer.generation });
   } catch (error) {
     if (error instanceof PolicyError) return false;
     throw error;

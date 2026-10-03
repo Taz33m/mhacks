@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Incident, ProviderInbound } from '../contracts.ts';
-import { CHECKIN_TEXT, DEMO_CHECKIN_TEXT, FINCH_DEMO_URL, createProviders } from './index.ts';
+import { CHECKIN_TEXT, DEMO_CHECKIN_TEXT, FINCH_DEMO_URL, answerQuestionDetailed, createProviders, type DetailedAnswer } from './index.ts';
 import { createPhotonAdapter, normalizePhoton, type PhotonClient, type PhotonMessage, type PhotonSpace } from './photon.ts';
 
 const incident: Incident = {
@@ -115,7 +115,10 @@ test('AI composes an incident-grounded answer with selected source fields and un
     }),
   });
   const health = await providers.loadHealth();
-  const answer = await providers.answerQuestion(incident, health, 'What allergies are recorded?');
+  const detailed: DetailedAnswer = await providers.answerQuestionDetailed(incident, health, 'What allergies are recorded?');
+  assert.equal(detailed.generation, 'ai');
+  const answer = detailed.text;
+  assert.equal(await providers.answerQuestion(incident, health, 'What allergies are recorded?'), answer);
   assert.match(answer, /Penicillin/);
   assert.doesNotMatch(answer, /Invented diagnosis/);
   assert.doesNotMatch(answer, /Example medication/);
@@ -126,6 +129,50 @@ test('AI composes an incident-grounded answer with selected source fields and un
   const before = requests;
   assert.match(await providers.answerQuestion(incident, health, 'Should I administer a medicine?'), /cannot recommend treatment/);
   assert.equal(requests, before);
+});
+
+test('each answer reports its own provenance despite a previous verified model answer', async () => {
+  let modelCalls = 0;
+  const providers = createProviders({
+    env: { LIFELINE_LLM_API_KEY: 'mock', LIFELINE_LLM_BASE_URL: 'https://model.example/v1', LIFELINE_LLM_MODEL: 'mock' },
+    fetch: fetchStub(url => {
+      if (url === FINCH_DEMO_URL) return json(fixture);
+      modelCalls++;
+      return json({ choices: [{ message: { content: JSON.stringify({
+        facts: [{ recordId: 'allergy-1', fields: ['substance'] }], incidentFields: [], unavailable: [],
+      }) } }] });
+    }),
+  });
+  const health = await providers.loadHealth();
+  assert.equal((await providers.answerQuestionDetailed(incident, health, 'What allergies were recorded?')).generation, 'ai');
+  assert.match(providers.providerStatus().llm.detail, /AI answer generation verified/);
+
+  const unavailable = { ...health, available: false, recordIds: [] };
+  const fallback = await providers.answerQuestionDetailed(incident, unavailable, 'What allergies were recorded?');
+  assert.equal(fallback.generation, 'degraded');
+  assert.match(fallback.text, /Health record unavailable/);
+  const refusal = await providers.answerQuestionDetailed(incident, health, 'Should I administer a medicine?');
+  assert.equal(refusal.generation, 'policy_refusal');
+  assert.match(refusal.text, /cannot recommend treatment/);
+  assert.match(providers.providerStatus().llm.detail, /AI answer generation verified/);
+  assert.equal(modelCalls, 1);
+});
+
+test('templates and missing input are degraded, while the text wrapper stays compatible', async () => {
+  assert.equal(typeof answerQuestionDetailed, 'function');
+  const providers = createProviders({ env: {}, fetch: fetchStub(() => json(fixture)) });
+  const health = await providers.loadHealth();
+  for (const [question, expected] of [
+    [' ', /Please send a question/],
+    ['What is the incident status?', /Incident A17: HELP_REQUESTED/],
+    ['What allergies were recorded?', /template fallback/],
+    ['What conditions were recorded?', /No supporting raw records/],
+  ] as const) {
+    const answer = await providers.answerQuestionDetailed(incident, health, question);
+    assert.equal(answer.generation, 'degraded');
+    assert.match(answer.text, expected);
+    assert.equal(await providers.answerQuestion(incident, health, question), answer.text);
+  }
 });
 
 test('contextual should questions reach grounded AI answers with source IDs and incident observations', async () => {
@@ -174,7 +221,9 @@ test('clinical and mixed contextual advice requests remain refused before any mo
     'What should I tell the patient to take?',
     'What should I know before I arrive, and should I give medication?',
     'What should I know about the medication interactions?', 'Should I assume the wearer is fine?']) {
-    assert.match(await providers.answerQuestion(incident, health, question), /cannot recommend treatment or establish a diagnosis/, question);
+    const answer = await providers.answerQuestionDetailed(incident, health, question);
+    assert.equal(answer.generation, 'policy_refusal', question);
+    assert.match(answer.text, /cannot recommend treatment or establish a diagnosis/, question);
   }
   assert.equal(modelCalls, 0);
 });
@@ -185,9 +234,10 @@ test('invented AI records or fields fall back visibly to actual records', async 
     env: { LIFELINE_LLM_API_KEY: 'mock', LIFELINE_LLM_BASE_URL: 'https://model.example/v1', LIFELINE_LLM_MODEL: 'mock' },
     fetch: fetchStub((url) => url === FINCH_DEMO_URL ? json(fixture) : json({ choices: [{ message: { content: JSON.stringify({ facts, incidentFields: [], unavailable: [] }) } }] })),
   });
-  const answer = await providers.answerQuestion(incident, await providers.loadHealth(), 'What allergies are recorded?');
-  assert.match(answer, /template fallback/);
-  assert.doesNotMatch(answer, /invented-record/);
+  const answer = await providers.answerQuestionDetailed(incident, await providers.loadHealth(), 'What allergies are recorded?');
+  assert.equal(answer.generation, 'degraded');
+  assert.match(answer.text, /template fallback/);
+  assert.doesNotMatch(answer.text, /invented-record/);
   assert.match(providers.providerStatus().llm.detail, /AI demo requirement unmet/);
   }
 });

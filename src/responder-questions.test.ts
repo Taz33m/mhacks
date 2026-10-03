@@ -39,8 +39,31 @@ test('distinct questions in one phase persist separate answers and concurrent du
     assert.equal(await handleResponderQuestion(question('q1'), c, () => { throw new Error('Duplicate generated again'); }), false);
     assert.equal(c.actions(i.id).filter(a => a.type === 'answer').length, 2);
     assert.equal(c.events(i.id).filter(e => e.type === 'ANSWER_QUEUED').length, 2);
+    const exchanges = c.events(i.id).filter(e => e.type === 'ANSWER_QUEUED').map(e => JSON.parse(e.detail));
+    for (const exchange of exchanges) {
+      assert.equal(exchange.question, 'What medications are recorded?');
+      assert.equal(exchange.source, 'photon-imessage');
+      assert.equal(c.actions(i.id).find(a => a.id === exchange.actionId)?.type, 'answer');
+    }
+    assert.deepEqual(exchanges.map(e => e.inboundId).sort(), ['q1', 'q2']);
     assert.equal(c.active()?.phase, 'HELP_REQUESTED');
     assert.equal(c.active()?.ownerId, null);
+  } finally { c.close(); }
+});
+
+test('question audit keeps individual answer provenance and marks oversized substitutes degraded', async () => {
+  const { c, i } = setup();
+  try {
+    const original = 'What should I know before I arrive?';
+    assert.equal(await handleResponderQuestion(question('model-q', { text: original }), c,
+      async () => ({ text: 'Known synthetic allergy [allergy-1]. Location unknown.', generation: 'ai' })), true);
+    assert.equal(await handleResponderQuestion(question('long-q'), c,
+      async () => ({ text: 'x'.repeat(6001), generation: 'ai' })), true);
+    const details = c.events(i.id).filter(e => e.type === 'ANSWER_QUEUED').map(e => JSON.parse(e.detail));
+    assert.equal(details[0].question, original);
+    assert.equal(details[0].generation, 'ai');
+    assert.equal(details[1].generation, 'degraded');
+    assert.match(c.actions(i.id).find(a => a.id === details[1].actionId)!.text, /exceeds the message limit/);
   } finally { c.close(); }
 });
 

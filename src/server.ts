@@ -14,7 +14,7 @@ import { handleWearerInbound } from './wearer.ts';
 import { handleResponderQuestion } from './responder-questions.ts';
 import { Trials } from './trials.ts';
 import type { CheckinReply, ClockPong, Command, Incident, ProviderInbound, Responder, Snapshot, Source } from './contracts.ts';
-import { providerStatus, loadHealth, buildHandoff, answerQuestion, sendMessage, startPhotonListener, prepareCheckinAudio } from './providers/index.ts';
+import { providerStatus, loadHealth, buildHandoff, answerQuestionDetailed, sendMessage, startPhotonListener, prepareCheckinAudio } from './providers/index.ts';
 
 const port = Number(process.env.LIFELINE_PORT ?? 8877);
 const host = process.env.LIFELINE_HOST ?? '127.0.0.1';
@@ -54,6 +54,7 @@ const busyChannels = new Set<'wearer' | 'responders'>();
 let stopPhoton: (() => Promise<void>) | null = null;
 let handoffIncident: string | null = null;
 let stopping = false;
+let contextPreviewBusy = false;
 
 function snapshot(): Snapshot {
   const incident = controller.latest();
@@ -122,7 +123,7 @@ async function inbound(e: ProviderInbound): Promise<void> {
     else if (text === `DECLINE ${i.id}`) { controller.decline(i.id, r.id); controller.rememberInbound(e.messageId); }
     else if (text.startsWith(`RESOLVED ${i.id} `)) { controller.resolve(i.id, r.id, text.slice(`RESOLVED ${i.id} `.length)); controller.rememberInbound(e.messageId); }
     else if (text) await handleResponderQuestion(e, controller,
-      async (incident, question) => answerQuestion(incident, await healthPromise, question), () => !stopping);
+      async (incident, question) => answerQuestionDetailed(incident, await healthPromise, question), () => !stopping);
   } catch (error) {
     if (!(error instanceof PolicyError)) console.error('Provider processing failed; incident remains unresolved.');
   } finally { if (!stopping) broadcast(); }
@@ -184,6 +185,29 @@ const server = createServer(async (req, res) => {
     if (url.pathname === '/api/commands' && req.method === 'POST') {
       if (!authorized(req)) return json(res, 401, { error: 'Operator/pairing token required.' });
       execute(await commandBody(req)); broadcast(); return json(res, 200, { ok: true });
+    }
+    if (url.pathname === '/api/context/question' && req.method === 'POST') {
+      if (!authorized(req)) return json(res, 401, { error: 'Operator token required for local AI rehearsal.' });
+      const body = await requestBody(req) as { incidentId?: unknown; question?: unknown };
+      if (!body || typeof body !== 'object' || typeof body.incidentId !== 'string'
+        || typeof body.question !== 'string' || !body.question.trim() || body.question.length > 2000)
+        throw new PolicyError('Provide the displayed incident ID and a question of 1–2000 characters.');
+      const incident = controller.latest();
+      if (!incident) throw new PolicyError('Start a labelled development incident before rehearsing a question.');
+      if (incident.id !== body.incidentId) return json(res, 409, { error: 'The incident changed. Refresh the context and ask again.' });
+      if (contextPreviewBusy) return json(res, 409, { error: 'An answer is already being prepared. Wait for it to finish.' });
+      contextPreviewBusy = true;
+      try {
+        const answer = await answerQuestionDetailed(incident, await healthPromise, body.question.trim());
+        if (stopping || res.destroyed) return;
+        const current = controller.latest();
+        if (!current || current.id !== incident.id || current.version !== incident.version)
+          return json(res, 409, { error: 'The incident changed while preparing the answer. Ask again using the current context.' });
+        // Local rehearsal only: no outbox entry, responder impersonation, or phase change.
+        broadcast();
+        return json(res, 200, { incidentId: incident.id, version: incident.version,
+          answer: answer.text, generation: answer.generation });
+      } finally { contextPreviewBusy = false; }
     }
     if (url.pathname === '/api/trials/start' && req.method === 'POST') {
       if (!authorized(req)) return json(res, 401, { error: 'Operator token required.' });

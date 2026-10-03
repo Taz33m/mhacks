@@ -43,6 +43,12 @@ test('isolated HTTP/WS server accepts native packets, authenticates commands, an
     assert.equal(setup.lanEnabled, false);
     const commands = async (body: unknown) => fetch(`${base}/api/commands`, { method: 'POST', headers: { Authorization: `Bearer ${setup.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const state = async () => await (await fetch(`${base}/api/state`)).json() as Snapshot;
+    const preview = async (incidentId: string, question: unknown) => fetch(`${base}/api/context/question`, {
+      method: 'POST', headers: { Authorization: `Bearer ${setup.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ incidentId, question }),
+    });
+    assert.equal((await fetch(`${base}/api/context/question`, { method: 'POST', body: '{}' })).status, 401);
+    assert.equal((await preview('not-created', 'What is recorded?')).status, 400);
     const trialCommand = async (action: string, body: unknown = {}) => fetch(`${base}/api/trials/${action}`, { method: 'POST',
       headers: { Authorization: `Bearer ${setup.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     assert.equal((await fetch(`${base}/api/trials/start`, { method: 'POST', body: '{}' })).status, 401);
@@ -109,6 +115,24 @@ test('isolated HTTP/WS server accepts native packets, authenticates commands, an
     assert.equal((await commands({ type: 'resolve', incidentId: i.id, responderId: 'maya', outcome: 'Protocol test outcome recorded by assigned owner.' })).status, 200);
     assert.equal((await state()).incident?.phase, 'RESOLVED');
     assert.equal((await state()).actions.some(a => a.status === 'provider_accepted'), false);
+    const beforePreview = await state();
+    assert.equal((await preview('old-incident', 'What is recorded?')).status, 409);
+    assert.equal((await preview(i.id, '')).status, 400);
+    assert.equal((await preview(i.id, 5)).status, 400);
+    assert.equal((await preview(i.id, 'x'.repeat(2001))).status, 400);
+    const previewResult = await preview(i.id, 'Which allergies are in the returned record?');
+    assert.equal(previewResult.status, 200);
+    const answer = await previewResult.json();
+    assert.equal(answer.incidentId, i.id);
+    assert.equal(answer.generation, 'degraded');
+    assert.match(answer.answer, /Health record unavailable/);
+    const refusal = await (await preview(i.id, 'Should I give medicine?')).json();
+    assert.equal(refusal.generation, 'policy_refusal');
+    assert.match(refusal.answer, /cannot recommend treatment/);
+    const afterPreview = await state();
+    assert.deepEqual(afterPreview.incident, beforePreview.incident);
+    assert.deepEqual(afterPreview.actions, beforePreview.actions);
+    assert.deepEqual(afterPreview.timeline, beforePreview.timeline);
     const wearer = await (await fetch(`${base}/api/checkin`, { headers: { Authorization: `Bearer ${setup.token}` } })).json();
     assert.equal(wearer.incident.phase, 'RESOLVED');
     assert.equal(wearer.incident.outcome, 'Protocol test outcome recorded by assigned owner.');

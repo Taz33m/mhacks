@@ -60,7 +60,23 @@
             <div id="outcome-panel" class="outcome-panel" hidden><span class="eyebrow">RECORDED OUTCOME</span><p id="outcome"></p><small id="outcome-source"></small></div>
           </section>
 
-          <section class="card handoff-card" aria-labelledby="handoff-title"><div class="card-top"><h2 id="handoff-title">Contextual handoff</h2><span class="badge">SYNTHETIC HEALTH RECORDS</span></div><p id="handoff" class="handoff-text">A record-grounded handoff will appear here when it is available.</p></section>
+          <section class="card handoff-card" aria-labelledby="handoff-title"><div class="card-top"><h2 id="handoff-title">Contextual handoff</h2><span class="badge">SYNTHETIC HEALTH RECORDS</span></div><div id="handoff" class="handoff-text"><p>A record-grounded handoff will appear here when it is available.</p></div></section>
+
+          <section class="card context-card" aria-labelledby="questions-title">
+            <div class="card-top"><h2 id="questions-title">Responder questions</h2><span id="question-count" class="count">0</span></div>
+            <p id="context-incident" class="context-incident mono">No incident context available.</p>
+            <p class="section-note">Actual answer messages for this incident. Provider acceptance does not establish recipient delivery.</p>
+            <ol id="responder-questions" class="question-list"><li class="empty-list">No responder answer messages for this incident.</li></ol>
+            <form id="rehearsal-form" class="rehearsal-form">
+              <div class="card-top"><h3>Local AI rehearsal</h3><span class="badge">PREVIEW ONLY</span></div>
+              <p class="section-note">Ask about the available incident observations or synthetic records. This preview does not send a message or change the incident.</p>
+              <label for="rehearsal-question">Question</label>
+              <textarea id="rehearsal-question" rows="2" maxlength="2000" placeholder="What allergy information is available?" required></textarea>
+              <div class="rehearsal-controls"><button id="rehearsal-submit" class="button button-primary" type="submit" disabled>Generate preview</button><p id="rehearsal-availability" class="field-note">Start a labelled development simulation to provide incident context.</p></div>
+              <p id="rehearsal-message" class="command-message" role="status" aria-live="polite"></p>
+              <div id="rehearsal-preview" class="rehearsal-preview" hidden><div class="card-top"><h3>Preview answer</h3><span id="rehearsal-generation" class="badge"></span></div><p id="rehearsal-context" class="field-note"></p><p id="rehearsal-submitted-question" class="preview-question"></p><p id="rehearsal-answer" class="preview-answer"></p></div>
+            </form>
+          </section>
 
           <div class="activity-grid">
             <section class="card" aria-labelledby="timeline-title"><div class="card-top"><h2 id="timeline-title">Incident history</h2><span id="event-count" class="count">0</span></div><ol id="timeline" class="event-list"><li class="empty-list">Events will appear as the incident progresses.</li></ol></section>

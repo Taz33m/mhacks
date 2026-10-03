@@ -17,6 +17,11 @@
     provider_accepted: ['Provider accepted', 'good'], failed: ['Failed', 'bad'],
     unknown: ['Outcome unknown', 'warning'], cancelled: ['Cancelled', ''],
   };
+  const generationLabels = {
+    ai: ['AI GENERATED', 'good'], degraded: ['DEGRADED TEMPLATE', 'warning'],
+    policy_refusal: ['POLICY REFUSAL', 'warning'],
+  };
+  const generationFor = (value) => typeof value === 'string' && Object.hasOwn(generationLabels, value) ? generationLabels[value] : ['PROVENANCE UNAVAILABLE', ''];
   let snapshot = null;
   let token = '';
   let busy = false;
@@ -29,6 +34,8 @@
   let responderSignature = '';
   let nativeSetup = null;
   let trialBusy = false;
+  let handoffSignature = null;
+  let contextRequest = null;
 
   const escaped = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
   const text = (selector, value, scope = document) => { $(selector, scope).textContent = value; };
@@ -52,7 +59,9 @@
 
   function acceptSnapshot(value) {
     if (!value || !Array.isArray(value.sensors) || !Array.isArray(value.responders) || !Array.isArray(value.actions) || !Array.isArray(value.timeline)) throw new Error('Invalid server snapshot');
+    const previousIncident = snapshot?.incident;
     snapshot = value;
+    syncContext(previousIncident);
     if (finite(value.serverTime)) clockOffset = value.serverTime - Date.now();
     lastStateReceived = Date.now();
     value.sensors.forEach(renderSensor);
@@ -63,6 +72,7 @@
     renderReadiness();
     renderTimeline();
     renderActions();
+    renderQuestions();
     renderTrial();
     renderPolicy();
     updateControls();
@@ -156,10 +166,144 @@
       ON_SCENE: 'Arrival recorded; outcome pending.', RESOLVED: 'Outcome recorded.',
       CANCELLED_FALSE_ALARM: 'Incident cancelled.',
     }[incident.phase] || 'Owner recorded for this incident.' : 'An alert alone does not establish ownership.');
-    text('#handoff', incident?.handoff || 'A record-grounded handoff will appear here when it is available.');
+    renderHandoff();
     $('#outcome-panel').hidden = !incident?.outcome;
     text('#outcome', incident?.outcome || '');
     text('#outcome-source', incident?.outcome ? `Recorded by ${nameFor(incident.resolutionActor)} · ${time(incident.updatedAt)}` : '');
+  }
+
+  function appendText(parent, tag, className, value) {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    element.textContent = value;
+    parent.appendChild(element);
+    return element;
+  }
+
+  function renderHandoff() {
+    const content = snapshot.incident?.handoff || 'A record-grounded handoff will appear here when it is available.';
+    const signature = JSON.stringify([snapshot.incident?.id, content]);
+    if (signature === handoffSignature) return;
+    handoffSignature = signature;
+    const fragment = document.createDocumentFragment();
+    const headings = new Set(['Known source facts:', 'Unavailable information:', 'AI-composed synthetic health handoff:', 'AI unavailable — source template fallback:']);
+    for (const line of content.split('\n')) {
+      if (headings.has(line)) { appendText(fragment, 'h3', 'handoff-heading', line); continue; }
+      const row = appendText(fragment, 'p', 'handoff-line', '');
+      const category = line.match(/^(medications|conditions|allergies):/);
+      const source = line.match(/ \[[^\]\n]+\]$/);
+      const sourceStart = source ? line.length - source[0].length : line.length;
+      if (category) {
+        appendText(row, 'strong', 'handoff-category', category[0]);
+        appendText(row, 'span', '', line.slice(category[0].length, sourceStart));
+      } else appendText(row, 'span', '', line.slice(0, sourceStart));
+      if (source) appendText(row, 'span', 'source-ref', source[0]);
+    }
+    $('#handoff').replaceChildren(fragment);
+  }
+
+  function syncContext(previousIncident) {
+    const incident = snapshot?.incident;
+    const changedIncident = previousIncident?.id !== incident?.id;
+    const changedVersion = previousIncident?.version !== incident?.version;
+    if (changedIncident) {
+      $('#rehearsal-preview').hidden = true;
+      text('#rehearsal-answer', '');
+      text('#rehearsal-submitted-question', '');
+      text('#rehearsal-context', '');
+      text('#rehearsal-message', '');
+      $('#rehearsal-message').classList.remove('error');
+    }
+    if (contextRequest && (changedIncident || changedVersion)) {
+      contextRequest.controller.abort();
+      contextRequest = null;
+      text('#rehearsal-message', 'Incident context changed while generating. Review the current phase and generate a new preview.');
+      $('#rehearsal-message').classList.add('error');
+    }
+  }
+
+  function renderQuestions() {
+    const incident = snapshot?.incident;
+    text('#context-incident', incident ? `Context ${incident.id} · ${incident.phase} · version ${incident.version}` : 'No incident context available.');
+    const questions = new Map();
+    for (const event of snapshot.timeline) {
+      if (event.incidentId !== incident?.id || event.type !== 'ANSWER_QUEUED') continue;
+      try {
+        const detail = JSON.parse(event.detail);
+        if (detail && typeof detail.actionId === 'string' && typeof detail.question === 'string' && detail.source === 'photon-imessage') questions.set(detail.actionId, detail);
+      } catch { /* Older audit entries do not contain the original question. */ }
+    }
+    const actions = snapshot.actions.filter((action) => action.incidentId === incident?.id && action.type === 'answer').slice().sort((a, b) => b.createdAt - a.createdAt);
+    text('#question-count', actions.length);
+    const fragment = document.createDocumentFragment();
+    if (!actions.length) appendText(fragment, 'li', 'empty-list', 'No responder answer messages for this incident.');
+    for (const action of actions) {
+      const detail = questions.get(action.id);
+      const row = appendText(fragment, 'li', 'question-item', '');
+      const head = appendText(row, 'div', 'question-head', '');
+      appendText(head, 'strong', '', nameFor(action.recipientId));
+      const [label, color] = actionLabels[action.status] || [action.status, ''];
+      appendText(head, 'span', `badge ${color}`, label);
+      appendText(row, 'p', 'question-label', 'Question');
+      appendText(row, 'p', 'question-text', detail ? detail.question : 'Question unavailable in the recorded audit entry.');
+      const answerHead = appendText(row, 'div', 'question-answer-head', '');
+      appendText(answerHead, 'p', 'question-label', 'Answer message');
+      const [generation, generationColor] = generationFor(detail?.generation);
+      appendText(answerHead, 'span', `badge ${generationColor}`, generation);
+      appendText(row, 'p', 'question-answer', action.text || 'No answer text recorded.');
+      appendText(row, 'p', 'question-result', action.providerResult || 'No provider result yet.');
+      const source = detail ? `Photon iMessage${typeof detail.inboundId === 'string' ? ` · Inbound ${detail.inboundId}` : ''}` : 'Original question source unavailable';
+      appendText(row, 'p', 'question-meta', `${time(action.createdAt)} · ${source} · Action ${action.id}`);
+    }
+    $('#responder-questions').replaceChildren(fragment);
+  }
+
+  function updateRehearsalControls() {
+    const incident = snapshot?.incident;
+    const question = $('#rehearsal-question').value.trim();
+    $('#rehearsal-submit').disabled = !token || !online || !incident || !!contextRequest || !question || question.length > 2000;
+    $('#rehearsal-question').disabled = !!contextRequest;
+    text('#rehearsal-availability', !incident ? 'Start a labelled development simulation to provide incident context.'
+      : !token ? 'Enter a development pairing token in Operator controls to enable this preview.'
+      : !online ? 'Reconnect to the server before generating a preview.'
+      : contextRequest ? 'Generating against the displayed incident context…'
+      : 'Uses this incident, including a recorded terminal phase. Nothing is sent to a responder.');
+  }
+
+  async function rehearseQuestion() {
+    const incident = snapshot?.incident;
+    const question = $('#rehearsal-question').value.trim();
+    if (!token || !online || !incident || contextRequest || !question || question.length > 2000) return;
+    const request = { incidentId: incident.id, version: incident.version, phase: incident.phase, question, controller: new AbortController() };
+    contextRequest = request;
+    const current = () => contextRequest === request && snapshot?.incident?.id === request.incidentId && snapshot?.incident?.version === request.version;
+    updateRehearsalControls();
+    $('#rehearsal-message').classList.remove('error');
+    text('#rehearsal-message', 'Generating a local preview…');
+    try {
+      const response = await fetch('/api/context/question', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ incidentId: request.incidentId, question }), signal: AbortSignal.any([request.controller.signal, AbortSignal.timeout(30000)]) });
+      const result = await response.json().catch(() => { throw new Error('Preview service returned an unreadable response. Check server availability and try again.'); });
+      if (!current()) return;
+      if (response.status === 401) throw new Error('Pairing token rejected. Enter a current development token in Operator controls and try again.');
+      if (!response.ok || result.error) throw new Error(`${result.error || `Preview unavailable (${response.status})`}. Review the current incident context and try again.`);
+      if (result.incidentId !== request.incidentId || result.version !== request.version) throw new Error('Preview context did not match the requested incident and version. Review the current phase and generate a new preview.');
+      if (typeof result.answer !== 'string' || typeof result.generation !== 'string' || !Object.hasOwn(generationLabels, result.generation)) throw new Error('Preview service returned an invalid answer. Check server availability and try again.');
+      const generation = generationFor(result.generation);
+      text('#rehearsal-generation', generation[0]);
+      $('#rehearsal-generation').className = `badge ${generation[1]}`;
+      text('#rehearsal-context', `Preview context ${request.incidentId} · ${request.phase} · version ${request.version}`);
+      text('#rehearsal-submitted-question', `Question: ${request.question}`);
+      text('#rehearsal-answer', result.answer);
+      $('#rehearsal-preview').hidden = false;
+      text('#rehearsal-message', 'Preview generated locally. No responder message was sent.');
+    } catch (error) {
+      if (!current()) return;
+      $('#rehearsal-message').classList.add('error');
+      text('#rehearsal-message', error.name === 'TimeoutError' ? 'Preview timed out. Check server and AI configuration, then try again.' : error.message || 'Preview unavailable. Check server availability and try again.');
+    } finally {
+      if (contextRequest === request) { contextRequest = null; updateRehearsalControls(); }
+    }
   }
 
   function renderReply() {
@@ -294,6 +438,7 @@
     $('#trial-download').disabled = !token || trialBusy || snapshot?.trial?.status !== 'stopped';
     $('#trial-label').disabled = trialBusy || recording;
     $('#trial-scenario').disabled = trialBusy || recording;
+    updateRehearsalControls();
   }
 
   function setToken(value, local = false) {
@@ -441,6 +586,8 @@
   $('#responder').addEventListener('change', updateControls);
   $('#outcome-input').addEventListener('input', updateControls);
   $('#trial-label').addEventListener('input', updateControls);
+  $('#rehearsal-question').addEventListener('input', updateRehearsalControls);
+  $('#rehearsal-form').addEventListener('submit', (event) => { event.preventDefault(); rehearseQuestion(); });
   $('#trial-start').addEventListener('click', () => trialRequest('start'));
   $('#trial-stop').addEventListener('click', () => trialRequest('stop'));
   $('#trial-download').addEventListener('click', downloadTrial);
@@ -451,7 +598,7 @@
   $('#resolve').addEventListener('click', () => { const incident = snapshot?.incident; if (incident) command({ type: 'resolve', incidentId: incident.id, responderId: $('#responder').value, outcome: $('#outcome-input').value.trim() }); });
   $('#calibrate').addEventListener('click', () => command({ type: 'calibrate' }));
   $('#reset').addEventListener('click', () => command({ type: 'reset' }));
-  window.addEventListener('pagehide', () => { clearTimeout(reconnectTimer); socket = null; });
+  window.addEventListener('pagehide', () => { clearTimeout(reconnectTimer); socket = null; contextRequest?.controller.abort(); contextRequest = null; });
 
   $('#phase-list').innerHTML = phases.map(([, label]) => `<li>${label}</li>`).join('');
   updateControls();

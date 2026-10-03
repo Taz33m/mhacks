@@ -71,13 +71,14 @@ export class Controller {
   private phase(i: StoredIncident, phase: Phase, actor: string, detail: string): void {
     i.phase = phase; i.version++; i.updatedAt = this.now(); this.save(i); this.event(i, phase, actor, detail);
   }
-  private enqueue(i: StoredIncident, type: ActionType, recipientId: string | null, text: string, dedupeKey?: string): boolean {
+  private enqueue(i: StoredIncident, type: ActionType, recipientId: string | null, text: string, dedupeKey?: string): Action | null {
     const a: Action = { id: randomUUID(), incidentId: i.id, type, recipientId, text,
       status: 'queued', attempts: 0, providerMessageId: null, providerResult: null,
       nextAttemptAt: this.now(), createdAt: this.now() };
     const key = dedupeKey ?? `${i.id}:${i.version}:${type}:${recipientId ?? 'subject'}`;
-    return this.db.prepare('INSERT OR IGNORE INTO actions VALUES(?,?,?,?,?,?,?)')
+    const inserted = this.db.prepare('INSERT OR IGNORE INTO actions VALUES(?,?,?,?,?,?,?)')
       .run(a.id, i.id, key, a.status, a.nextAttemptAt, null, JSON.stringify(a)).changes === 1;
+    return inserted ? a : null;
   }
   private notify(i: StoredIncident, text: string): void {
     for (const id of i.contacted) this.enqueue(i, 'status', id, text);
@@ -252,7 +253,8 @@ export class Controller {
   actions(id: string): Action[] {
     return this.db.prepare('SELECT body FROM actions WHERE incident_id=? ORDER BY rowid').all(id).map(row => JSON.parse(String(row.body)) as Action);
   }
-  queueAnswer(id: string, version: number, responderId: string, inboundId: string, text: string): boolean {
+  queueAnswer(id: string, version: number, responderId: string, inboundId: string, text: string,
+    audit?: { question: string; generation?: 'ai' | 'degraded' | 'policy_refusal' }): boolean {
     return this.transaction(() => {
       if (this.seenInbound(inboundId)) return false;
       const i = this.current(id); this.responder(responderId);
@@ -262,11 +264,16 @@ export class Controller {
         throw new PolicyError('A provider message ID is required.');
       if (typeof text !== 'string' || !text.trim() || text.length > 6000)
         throw new PolicyError('An answer of 1–6000 characters is required.');
+      if (audit && (typeof audit.question !== 'string' || !audit.question.trim() || audit.question.length > 2000))
+        throw new PolicyError('A responder question of 1–2000 characters is required.');
       const inserted = this.enqueue(i, 'answer', responderId, text,
         `${i.id}:${i.version}:answer:${JSON.stringify([responderId, inboundId])}`);
       if (!inserted) throw new Error('Responder answer was not persisted; inbound ID remains unprocessed.');
       this.rememberInbound(inboundId);
-      this.event(i, 'ANSWER_QUEUED', responderId, 'Responder answer queued; delivery is not yet established.');
+      this.event(i, 'ANSWER_QUEUED', responderId, audit ? JSON.stringify({
+        question: audit.question, inboundId, actionId: inserted.id,
+        source: 'photon-imessage', generation: audit.generation ?? null,
+      }) : 'Responder answer queued; delivery is not yet established.');
       return true;
     });
   }

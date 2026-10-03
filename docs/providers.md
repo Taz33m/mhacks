@@ -49,6 +49,8 @@ JSON reads are capped at 1 MB before parsing. Each returned record needs a uniqu
 
 AI is required for the judged handoff and Q&A. The model receives the physical incident context and synthetic records, then generates a structured plan: source record IDs and fields in relevance order, selected incident facts, and explicit unavailable information. Application code renders those source values and IDs. A selected absent record field says “not returned; unknown.” Unknown IDs, field names, or invalid plans visibly degrade to templates and leave the AI demo gate unmet. Treatment and diagnosis questions receive an explicit limitation. Models have no tools to mutate phase, assign ownership, clear a check-in, or send messages.
 
+The console pairs recorded responder questions with their persisted answer and delivery result. Each answer records its own provenance: validated AI output, degraded template, or policy refusal. Older entries without that audit data remain explicitly unavailable. **Local AI rehearsal** uses the latest incident and synthetic records through the same answer adapter, including after closure. It creates no message or incident event; its labelled preview does not establish live responder receipt.
+
 ## ElevenLabs
 
 Prepare a fixed check-in with `POST /v1/text-to-speech/{voice_id}?output_format=mp3_44100_128`, the `xi-api-key` header, and `eleven_multilingual_v2`. Return the MP3 bytes; the server owns the authenticated audio route. Preparation is cached once per process, including a failure, so a polling phone does not generate repeated paid clips. [Official conversion API](https://elevenlabs.io/docs/api-reference/text-to-speech/convert)

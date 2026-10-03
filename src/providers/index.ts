@@ -4,6 +4,7 @@ import { createPhotonAdapter, type PhotonFactory } from './photon.ts';
 export const FINCH_DEMO_URL = 'https://api.finchnode.com/demo/v1/users/patient-demo-001/records?categories=medications,conditions,allergies';
 export const CHECKIN_TEXT = "I detected a possible fall. Do you need help? You can say I need help, or tap I don't need help to cancel.";
 export const DEMO_CHECKIN_TEXT = 'I detected a possible fall. Are you okay?';
+export type DetailedAnswer = { text: string; generation: 'ai' | 'degraded' | 'policy_refusal' };
 type Fetcher = typeof fetch;
 type RecordData = Record<string, unknown>;
 type HealthRecord = { category: 'medications' | 'conditions' | 'allergies'; id: string; raw: RecordData };
@@ -231,23 +232,27 @@ export function createProviders(options: {
     ].join('\n');
   }
 
-  async function answerQuestion(incident: Incident, health: HealthContext, question: string): Promise<string> {
-    if (!question.trim()) return 'Please send a question about the available incident evidence or synthetic records.';
-    if (clinicalQuestion(question)) return 'I can relay incident observations and recorded health information, but cannot recommend treatment or establish a diagnosis. Please use an authorized clinician or emergency service for that decision.';
+  async function answerQuestionDetailed(incident: Incident, health: HealthContext, question: string): Promise<DetailedAnswer> {
+    if (!question.trim()) return { text: 'Please send a question about the available incident evidence or synthetic records.', generation: 'degraded' };
+    if (clinicalQuestion(question)) return { text: 'I can relay incident observations and recorded health information, but cannot recommend treatment or establish a diagnosis. Please use an authorized clinician or emergency service for that decision.', generation: 'policy_refusal' };
     const plan = health.available ? await composeContext(incident, health, question, 'question') : null;
-    if (plan) return `AI-composed answer from synthetic records and incident observations:\n${renderPlan(plan, incident)}`;
+    if (plan) return { text: `AI-composed answer from synthetic records and incident observations:\n${renderPlan(plan, incident)}`, generation: 'ai' };
     if (/\b(phase|status|owner|responsib\w*|happen\w*|evidence|incident)\b/i.test(question)) {
-      return `Incident ${incident.id}: ${incident.phase}. Observation: ${incident.evidence.summary}. ${incident.ownerId ? `Recorded owner ID: ${incident.ownerId}.` : 'No responder has accepted ownership.'} This observation is not a diagnosis.`;
+      return { text: `Incident ${incident.id}: ${incident.phase}. Observation: ${incident.evidence.summary}. ${incident.ownerId ? `Recorded owner ID: ${incident.ownerId}.` : 'No responder has accepted ownership.'} This observation is not a diagnosis.`, generation: 'degraded' };
     }
-    if (!health.available) return 'Health record unavailable. I cannot establish medications, conditions, or allergies from missing data.';
+    if (!health.available) return { text: 'Health record unavailable. I cannot establish medications, conditions, or allergies from missing data.', generation: 'degraded' };
     const source = records.get(healthKey(health));
     let category: HealthRecord['category'] | null = null;
     if (/allerg|penicillin/i.test(question)) category = 'allergies';
     else if (/medicat|medicine|prescri|metformin|lisinopril/i.test(question)) category = 'medications';
     else if (/condition|diabet|hypertension|history/i.test(question)) category = 'conditions';
     const matching = source?.records.filter((record) => !category || record.category === category) ?? [];
-    if (matching.length) return `Available synthetic record fields (template fallback):\n${matching.map(recordText).join('\n')}\nNo conclusions beyond these records are established.`;
-    return `No supporting raw records are available for this question. Known context:\n${health.summary}`;
+    if (matching.length) return { text: `Available synthetic record fields (template fallback):\n${matching.map(recordText).join('\n')}\nNo conclusions beyond these records are established.`, generation: 'degraded' };
+    return { text: `No supporting raw records are available for this question. Known context:\n${health.summary}`, generation: 'degraded' };
+  }
+
+  async function answerQuestion(incident: Incident, health: HealthContext, question: string): Promise<string> {
+    return (await answerQuestionDetailed(incident, health, question)).text;
   }
 
   async function prepareCheckinAudio(): Promise<Uint8Array | null> {
@@ -279,10 +284,10 @@ export function createProviders(options: {
       photon: photon.status(), finchnode: { configured: true, detail: finchDetail },
       elevenlabs: { configured: audioConfigured, detail: audioDetail }, llm: { configured: llmConfigured, detail: llmDetail },
     }),
-    loadHealth, buildHandoff, answerQuestion, prepareCheckinAudio,
+    loadHealth, buildHandoff, answerQuestion, answerQuestionDetailed, prepareCheckinAudio,
     sendMessage: photon.sendMessage, startPhotonListener: photon.startPhotonListener,
   };
 }
 
 const defaults = createProviders();
-export const { providerStatus, loadHealth, buildHandoff, answerQuestion, sendMessage, startPhotonListener, prepareCheckinAudio } = defaults;
+export const { providerStatus, loadHealth, buildHandoff, answerQuestion, answerQuestionDetailed, sendMessage, startPhotonListener, prepareCheckinAudio } = defaults;
