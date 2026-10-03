@@ -10,7 +10,9 @@ LIFELINE is an incident-response product. Fall-like motion is the prototype trig
 
 **AI handles unstructured information; deterministic software handles the safety policy.** AI selects incident-relevant source facts, composes a grounded handoff, and answers responder questions while distinguishing known facts from unavailable information. Only authenticated, explicit actions and configured deadlines change incident state.
 
-The hackathon prototype uses a **chest-mounted iPhone 15**, a **waist-mounted AirPod Pro**, and a nearby Mac. The two motion streams provide different body-placement evidence. Whether they improve detection over either sensor alone is a hypothesis to evaluate using recorded trials.
+The target hackathon prototype uses **FREE-WILi for primary wearable acceleration and spoken interaction**, a **waist-mounted AirPod Pro**, and a nearby Mac. The **iPhone is the texting/communication channel**; it supplies no sensor, camera, or speech evidence in the target design. The two motion streams provide different body-placement evidence. Whether they improve detection over either sensor alone is a hypothesis to evaluate using recorded trials.
+
+The existing runtime still contains the earlier iPhone motion/audio implementation. The [device and patient-record migration plan](device-and-record-migration.md) defines the replacement and its hardware validation gates. Camera work is removed from scope; no implemented camera path was found.
 
 ## Users and decisions
 
@@ -28,13 +30,14 @@ The prototype serves one wearer and one active incident, with a configured respo
 | --- | --- |
 | Main track | Actually Intelligent (AI). Hardware is not a target track. |
 | AirPods acquisition | Directly incorporate Kinesthetic's working Mac acquisition and route keeper. Keep the existing `KeepAlive.swift` unchanged and retain [provenance](../native/PROVENANCE.md). |
-| Phone | Native SwiftUI app: real Core Motion, speaker, on-device English speech recognition, and explicit wearer controls. Monitoring requires the foreground. |
+| Primary wearable | FREE-WILi acceleration, mic/speaker, buttons and incident display through a Mac bridge. Match the acquired board/firmware before choosing OneWili or the OG BSP. |
+| Phone | Photon/iMessage communication for wearer and responders; no motion, camera or voice acquisition. |
 | Host | Nearby Mac runs Node 24, SQLite, detector, persisted incident controller, provider workers, and live web console. |
 | Messaging | Photon cloud through Spectrum: wearer check-in plus individual approved-responder conversations. |
-| Health | FinchNode's fixed synthetic `patient-demo-001` medications, conditions, and allergies. No live patient mapping. |
-| Voice | A cached ElevenLabs check-in clip; visibly identified native phone speech when provider audio is unavailable during development. |
+| Health | Structured Finch patient view: demographics, medications (including administration/dispense history), conditions, allergies and dated historical vitals. Start with synthetic demo records; sandbox Connect adds explicit wearer/subject binding. Finch is read-only; incident records remain in LIFELINE. |
+| Voice | Cached check-in audio played by FREE-WILi, with host transcription of board microphone audio. OG PCM transport/resampling is required; phone speech is removed from the target. |
 | AI | Required for the judged AI demo: model composes structured handoffs and answers by selecting incident facts, record IDs/fields, and unavailable information. Application code renders source values and citations. Degraded templates keep response running on failure but do not satisfy the AI demo gate. |
-| Deferred | Spacetime migration, Fetch/ASI:One entry point, camera perception, FREE-WILi, new wearable hardware, automatic emergency calling, and multiple wearers. |
+| Deferred | Spacetime migration, Fetch/ASI:One entry point, automatic emergency calling, production patient enrollment, and multiple wearers. Camera perception is out of scope. |
 
 Photon, FinchNode, and ElevenLabs each have a concrete role in this same incident. Submission claims must reflect the integrations actually demonstrated. No prize stacking or award amounts are assumed by this PRD.
 
@@ -42,9 +45,9 @@ Photon, FinchNode, and ElevenLabs each have a concrete role in this same inciden
 
 1. Both mounted sources stream to the Mac. The operator verifies freshness, reporting AirPod, calibration, and clock alignment.
 2. A qualifying motion candidate opens one suspected incident. The evidence states whether it is cross-body, single-source, manual, or synthetic.
-3. The phone speaks its check-in. Photon sends the wearer: **“I detected a possible fall. Are you okay?”** with the incident code and help/cancellation instructions.
-4. Both channels share one check-in identity and deadline. Exact help requests escalate immediately. Silence, positive language, and ambiguity preserve the unresolved incident until the deadline. A positive reply receives: **“Glad you're okay. To close this check-in, tap 'I DON'T NEED HELP' on your phone.”** The phone speaks it after a positive spoken reply; Photon queues it after a positive wearer iMessage. It does not reset the timer.
-5. Before escalation, the wearer can explicitly tap **I DON'T NEED HELP** for the current check-in. A typed or spoken “I'm okay” cannot cancel it.
+3. FREE-WILi speaks its check-in. Photon sends the wearer: **“I detected a possible fall. Are you okay?”** with the incident code and help/cancellation instructions.
+4. Both channels share one check-in identity and deadline. Exact help requests escalate immediately. Silence, positive language, and ambiguity preserve the unresolved incident until the deadline. A positive reply directs the wearer to the explicitly labelled **I DON'T NEED HELP** control on FREE-WILi. Board playback or a Photon acknowledgement does not reset the timer. Existing phone-specific prompts must migrate with the board controls.
+5. Before escalation, the wearer can explicitly activate **I DON'T NEED HELP** for the current check-in. A typed or spoken “I'm okay” cannot cancel it.
 6. On escalation, the controller contacts approved responders according to policy. Their messages include the handoff and exact commands needed to continue.
 7. An approved, contacted responder accepts the correlated alert. First acceptance wins atomically. The wearer and console see that acceptance; departure remains unconfirmed.
 8. The owner reports departure or arrival. Other contacts receive truthful updates and remain available for reassignment if necessary.
@@ -74,7 +77,7 @@ stateDiagram-v2
 
 Normal configurable defaults: **20-second check-in, 60-second acceptance window, 120-second owner progress window**. The explicit hackathon profile (`npm run start:demo` or `LIFELINE_DEMO_MODE=1`) sets **DEMO_CHECKIN_TIMEOUT = 5 seconds** for newly created check-ins. The console and phone display **“Demo timeout accelerated from configurable policy value”** with the effective and configured durations. Restart never changes an existing persisted deadline.
 
-The five-second profile demonstrates silence → deadline → escalation and uses the short spoken prompt “I detected a possible fall. Are you okay?” A spoken positive-reply rehearsal uses a sufficient configurable window for playback, recognition, and acknowledgement. Neither playback nor acknowledgement extends the original deadline. Actual provider latency and the phone's polling cadence must be measured before relying on the five-second profile.
+The five-second profile demonstrates silence → deadline → escalation and uses the short spoken prompt “I detected a possible fall. Are you okay?” A spoken positive-reply rehearsal uses a sufficient configurable window for playback, recognition, and acknowledgement. Neither playback nor acknowledgement extends the original deadline. Actual provider latency, board playback and bridge polling/transport cadence must be measured before relying on the five-second profile.
 
 Each contact round selects up to the first two eligible responders in configured order. Exhausting the list leaves the incident unresolved and visibly unassigned.
 
@@ -88,12 +91,12 @@ All requirements below are P0 unless marked P1. “P0” means required for the 
 
 | ID | Requirement | Acceptance evidence |
 | --- | --- | --- |
-| S1 | Preserve both real motion streams with source, reporting bud, session, sequence, capture/receive timing, gravity, acceleration, and angular velocity. | Two separate live traces and increasing received sample counts; invalid/out-of-order packets rejected. |
+| S1 | Preserve both real motion streams with source, reporting bud where applicable, session, sequence, capture/receive timing, measured capabilities and units. WILi packets preserve gravity-inclusive acceleration/range; AirPod packets retain fused motion fields. Do not fabricate unsupported fields. | Two separate live traces and increasing received sample counts; invalid/out-of-order packets rejected and saturation visible. |
 | S2 | Show freshness, cadence, calibration, and alignment. Reconnect, reporting-bud changes, and substantial gaps invalidate prior calibration. | Disconnect/reconnect trial shows stale/unknown state and requires recalibration. |
-| S3 | Cross-body assessment uses aligned chest impact, waist posture, and continuous quiet motion. Thresholds remain provisional. | A complete recorded staged-event trial reproduces the candidate offline. |
-| S4 | When the waist is unavailable, permit explicitly labelled chest-only assessment. A fresh waist lacking calibration/alignment cannot supply cross-body evidence. | Controlled fixtures and recorded degraded trials show the evidence kind; missing data never establishes safety. |
+| S3 | Cross-body assessment uses aligned WILi impact, waist posture and continuous quiet motion. WILi quiet/calibration must support accelerometer-only measurements. Thresholds remain provisional; OG range must exceed the candidate impact threshold. | A complete recorded staged-event trial reproduces the candidate offline without fabricated gyro/gravity values. |
+| S4 | When the waist is unavailable, only a separately validated accelerometer-only rule may supply single-source evidence. A fresh waist lacking calibration/alignment cannot supply cross-body evidence. | Controlled fixtures and recorded degraded trials show the evidence kind; missing data never establishes safety. |
 | C1 | Keep one active incident, deterministic transitions, audit events, and persisted deadlines. Repeated triggers cannot restart its check-in budget. | Injected-clock and restart tests. |
-| C2 | Issue phone audio and wearer iMessage for the same check-in. A slow wearer send cannot block responder escalation. | Observe phone playback and wearer receipt; independent worker tests. |
+| C2 | Issue FREE-WILi audio and wearer iMessage for the same check-in. A slow wearer send cannot block responder escalation. | Observe board playback and wearer receipt; independent worker tests and simultaneous motion/audio measurement. |
 | C3 | Correlate replies and controls to current IDs. Exact help escalates; positive replies acknowledge and direct the wearer to the explicit control. Positive/ambiguous language cannot cancel or extend the deadline. | Spoken/iMessage help, positive, negated, ambiguous, and duplicate cases; stale explicit targets remain invalid even with a current code. |
 | C4 | Require explicit current wearer cancellation before escalation; after escalation require the on-scene owner's outcome. | Late/stale cancellation and premature resolution are rejected. |
 | R1 | Contact only approved configured identities, distinguish send outcome from acceptance, and assign one owner atomically. | Actual alert receipt, authorized/competing acceptance, stale tapbacks, Apple-ID/suffix identity rejection, and supplied reaction-removal events preserving ownership. General Photon removal delivery remains unverified. |
@@ -105,7 +108,8 @@ All requirements below are P0 unless marked P1. “P0” means required for the 
 | D1 | Show phase, owner, reported progress, outcome, readable handoff, paired responder questions/answers, per-answer provenance, source health, and action attempts on the console. Offer a labelled local answer preview that sends no message and does not change incident history. | Views agree with controller state throughout the same incident; preview leaves phase, timeline, and outbox unchanged. |
 | D2 | Keep synthetic triggers, operator impersonation controls, native fallback voice, and replay visibly labelled. | Demo reviewer can identify which evidence is physical and which is simulated. |
 | D3 | Label the accelerated five-second demo profile and the configured normal policy. Never replace an existing incident's persisted deadline when changing profile. | Console/phone show effective timing; new incidents use the profile while an existing deadline survives restart. |
-| E1 | Record samples, clocks, calibration, assessments, gaps, and trial boundaries; replay combined/chest-only/waist-only modes offline. | Download a complete JSONL trial and compare all three modes without sends. |
+| D4 | Display structured clinical rows and dated historical vitals with subject, status, source IDs, source dates, retrieval time and category availability. Keep sensor evidence, wearer statements, responder reports and AI artifacts distinguishable. | Every shown fact can be traced to its source; historical vitals are never labelled current. Clinical context revisions do not silently rewrite older handoffs. |
+| E1 | Record samples, capabilities/range, clocks, calibration, assessments, gaps, and trial boundaries; replay combined/primary-only/waist-only modes offline. Preserve legacy chest-phone captures under their original identity. | Download a complete JSONL trial and compare all three modes without sends. |
 | P1 | Compare held-out recorded movements against tuning trials and report candidate counts, misses, false alerts, and latency. | Results include trial definitions and missing/unscored evidence; no clinical accuracy claim. |
 
 ## Messaging contract
@@ -130,7 +134,7 @@ General natural-language ETAs or declines are outside this version. A model is n
 
 - The controller alone changes phase. Sensor readings, language, provider availability, and model text cannot clear an incident.
 - Sensor loss is unknown evidence. It does not resolve an existing incident or extend its deadline.
-- Phone connection attempts must time out and recover. Local acceleration and completed socket writes must not be presented as proof of dashboard receipt.
+- Device connection attempts must time out and recover. Local acceleration and completed writes must not be presented as proof of dashboard receipt.
 - An outbox result of `provider_accepted` establishes provider submission only. Actual phone receipt requires observation; responsibility requires explicit acceptance.
 - A confirmed pre-submission failure can retry within policy. An interrupted or uncertain submission remains `unknown`; it is not blindly resent.
 - Cancellation/phase changes invalidate obsolete pending actions. A final permission check occurs after DM preparation and before submission.
@@ -145,9 +149,9 @@ The intended demo is about 90 seconds: show the two streams, a controlled candid
 
 Before calling it a live end-to-end demo, establish:
 
-1. Both mounted sources remain usable through a complete rehearsal, including phone audio. Measure actual cadence, gaps, and clock uncertainty rather than assuming the requested rates.
-2. A recorded physical candidate starts the response loop. Test a phone-only drop separately; report its observed result rather than promising rejection before validation.
-3. The wearer hears the phone and receives the actual Photon check-in. Silence preserves the original configured timeout; exact help bypasses it.
+1. Both mounted sources remain usable through a complete rehearsal, including board audio. Measure actual cadence, gaps, saturation and clock uncertainty rather than assuming the requested rates.
+2. A recorded physical candidate starts the response loop. Test an isolated WILi drop separately; report its observed result rather than promising rejection before validation.
+3. The wearer hears FREE-WILi and receives the actual Photon check-in. Silence preserves the original configured timeout; exact help bypasses it.
 4. Approved responder phones receive the handoff. Acceptance is visible across views, later progress is explicit, and the owner's final outcome is persisted.
 5. AI composes the grounded handoff and answers one correlated responder question with source record IDs and explicit unknowns. Observe answer receipt on the phone and its persisted outbound result separately. A template fallback does not pass this AI gate.
 6. One injected failure or stale/duplicate input demonstrates the policy boundary without silently resolving or duplicating the incident.
@@ -157,7 +161,7 @@ Report detection-to-check-in, deadline-to-help-request, actual message receipt, 
 
 ## Current implementation and remaining work
 
-The repository implements the native producers, tentative detector, trial/replay tools, SQLite incident loop, console, final on-device reply policy, dual wearer check-in actions, grounded synthetic health, and provider adapters. The iPhone 15 app is signed, installed, and privately paired. A complete 120-second connectivity recording captured 12,019 real chest-phone samples at 100.14 Hz and 5,674 Right AirPod samples at 47.28 Hz through the wired development connection. Maximum received gaps were 81 ms and 127 ms respectively. Placement was unverified and neither source was calibrated, so this establishes simultaneous streaming rather than mounted detection. Mounted sensing and calibration are deferred until the user is ready.
+The repository implements the earlier iPhone/AirPod producers, tentative detector, trial/replay tools, SQLite incident loop, console, reply policy, dual wearer check-in actions, grounded synthetic health, and provider adapters. FREE-WILi acquisition/audio and the structured patient view remain migration work. The earlier iPhone 15 app is signed, installed, and privately paired. A complete 120-second connectivity recording captured 12,019 real chest-phone samples at 100.14 Hz and 5,674 Right AirPod samples at 47.28 Hz through the wired development connection. Maximum received gaps were 81 ms and 127 ms respectively. These remain historical iPhone acquisition results, not WILi evidence. Placement was unverified and neither source was calibrated. Mounted sensing and calibration are deferred until the user is ready.
 
 Responder alerts/updates include exact workflow commands. AI context generation, positive wearer acknowledgements, the demo profile, durable answers, and Photon recovery have automated checks. Local Qwen2.5 3B inference has produced a validated handoff covering medications, conditions, and allergies with source IDs, and a focused allergy answer in the running console. Schema-constrained plans and application validation reject invented fields and omitted available categories. Physical voice behavior and actual message receipt still need rehearsal. If Spectrum cleanup never completes, recovery reports the incomplete teardown and blocks replacement clients; it cannot forcibly cancel the SDK.
 

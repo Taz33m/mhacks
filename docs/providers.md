@@ -51,6 +51,8 @@ Replies enter the same persisted outbox as responder alerts. Generation occurs o
 
 ## FinchNode and grounded responses
 
+The [workshop-grounded patient-data plan](device-and-record-migration.md) defines the next structured record view, historical vitals, medication administration/dispense sections, consent metadata and incident-specific clinical revisions. The adapter behavior below describes the currently implemented three-category demo reader, not the full planned EHR integration.
+
 Read `https://api.finchnode.com/demo/v1/users/patient-demo-001/records?categories=medications,conditions,allergies` without a key. Require the response to identify itself as synthetic/demo. Retain raw records internally for up to eight contexts, indexed by retrieval timestamp and record IDs. The public context contains source-linked field summaries and retrieval time; it does not contain the raw response. This cache is process-local. After restart, retrieve a new context before model-assisted Q&A. [Official demo reference](https://finchnode.com/docs/api/demo)
 
 Fixture dates and consent/synchronization are simulated. Empty categories say “no records returned”; absent data does not establish no medications, conditions, or allergies. Lookup failures return unavailable and never block escalation.

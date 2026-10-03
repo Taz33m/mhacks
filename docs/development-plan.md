@@ -1,29 +1,33 @@
 # LIFELINE development plan
 
-Main track: Actually Intelligent (AI). Fixed hardware: chest iPhone 15, waist AirPod Pro, nearby Mac. Directly reuse Kinesthetic's AirPods acquisition and AudioRouteKeeper; preserve attribution and do not modify the source repo.
+Main track: Actually Intelligent (AI). Target hardware: FREE-WILi for primary wearable acceleration and mic/speaker, waist AirPod Pro, nearby Mac. The iPhone is the Photon/iMessage communication channel only. Directly reuse Kinesthetic's AirPods acquisition and AudioRouteKeeper; preserve attribution and do not modify the source repo.
 
 The [PRD](PRD.md) defines the product scope, fixed decisions, demo requirements, and acceptance evidence.
+
+The [workshop-grounded migration plan](device-and-record-migration.md) defines the structured Finch patient view and FREE-WILi bridge. Existing phone motion/audio code is the pre-migration implementation; it does not establish board support.
 
 ## Implementation areas
 
 - Backend: contracts, incident controller, SQLite, motion ingestion/alignment/detection, server, provider worker integration, tests, end-to-end verification.
-- Native clients: copied/adapted macOS AirPods app and build script; minimal SwiftUI iPhone motion producer and Xcode project/build script.
-- Dashboard: vanilla HTML/CSS/JS live traces, device health, phase/owner/outcome, explicitly labelled development controls.
+- Device clients: existing macOS AirPod app; FREE-WILi host bridge and board app selected for the actual hardware. Remove phone motion/audio/speech from the active path.
+- Dashboard: vanilla HTML/CSS/JS structured patient records, separately labelled live evidence, device health, phase/owner/outcome and development controls.
 - Providers: Photon cloud adapter, FinchNode synthetic records, ElevenLabs audio and required grounded AI handoff/Q&A for the judged demo.
 
 ## Milestones
 
-1. Compile native apps; run the local server; observe two separate real-source channels. Physical acquisition remains unproven until a device session is run.
-2. A labelled synthetic trigger opens a persisted incident; injected-clock tests establish escalation, correlation, atomic acceptance, and sourced resolution.
-3. Dashboard and authenticated controls demonstrate the response loop without claiming provider delivery when credentials are absent.
-4. Configure actual providers and responders; validate sends/replies on real phones. No arbitrary recipients or fake success.
-5. Record physical trials, tune tentative detection, compare single-source and combined behavior, rehearse and record the completed demo.
+1. Expose validated Finch clinical rows and historical vitals with source metadata, then bind clinical revisions to incidents instead of sharing one startup lookup forever.
+2. Acquire real FREE-WILi acceleration with explicit units/range/capabilities and capture timing; adapt calibration/detection without inventing fused Core Motion fields. Preserve the existing AirPod bridge.
+3. Add board help/cancel controls, playback and host transcription. Verify motion continuity while audio is active. Existing controller deadlines, ownership and outbox policy remain authoritative.
+4. Configure providers and approved phones; verify physical playback, messages/replies and sandbox Connect subject binding. No arbitrary recipients or fake success.
+5. Record new board/AirPod trials, tune tentative detection, compare single-source and combined behavior, rehearse and record the completed demo.
 
-Node 24 + SQLite are the initial runtime/backend. Avoid additional app frameworks. Spacetime is outside this first slice. Camera, FREE-WILi, Fetch/ASI:One, and multi-patient features are deferred.
+Node 24 + SQLite are the runtime/backend. Avoid additional app frameworks. Spacetime, Fetch/ASI:One and multi-patient features remain deferred. Camera acquisition/interpretation is out of scope. The primary track remains AI rather than Hardware.
 
 Shared interfaces are defined in `src/contracts.ts` and `docs/interfaces.md`. Components use separate directories and one shared root package manifest.
 
-## Current progress
+## Existing pre-migration progress
+
+The following describes the earlier phone/AirPod implementation and its validation history. New board sensing/audio and the structured Finch view remain pending; do not reuse phone measurements as board evidence.
 
 The backend, native clients, dashboard, and provider adapters are implemented. Automated tests cover the incident loop, speech policy, authentication, raw motion protocol, and provider failures. `npm run setup:local` installs/pairs the Mac app and prepares network access; iPhone device installation uses the signing/device steps in [native setup](native-setup.md).
 

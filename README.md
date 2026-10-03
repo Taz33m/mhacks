@@ -1,6 +1,8 @@
 # LIFELINE
 
-MHacks 2026 — Actually Intelligent (AI). Chest iPhone + waist AirPod evidence starts a policy-controlled incident, followed through responder acceptance, progress, and a recorded outcome. The [product requirements](docs/PRD.md) define the demo scope, policy, and acceptance gates.
+MHacks 2026 — Actually Intelligent (AI). FREE-WILi + waist AirPod evidence will start a policy-controlled incident, followed through responder acceptance, progress, and a recorded outcome. The iPhone is the Photon/iMessage communication channel. The [product requirements](docs/PRD.md) define the demo scope, policy, and acceptance gates.
+
+**Migration in progress:** the current runtime still contains the earlier iPhone motion/audio client and summary-only Finch adapter. The [device and patient-record plan](docs/device-and-record-migration.md) defines board acquisition/audio, honest accelerometer capabilities and structured clinical data. Phone setup/USB/voice instructions below document the old prototype; they are not the target device workflow. Camera work is out of scope, and no camera implementation exists.
 
 ## Start
 
