@@ -123,7 +123,12 @@ detection accuracy.
   relay's player list. The dashboard is the authority for freshness,
   calibration, alignment, and measured cadence.
 - iPhone requests a 100 Hz interval; delivered/transmitted cadence needs
-  measurement. It polls authenticated `/api/checkin` every second while
+  measurement. Local acceleration is distinct from socket send completion
+  and dashboard receipt. A socket waits for the handshake before sending;
+  a five-second handshake, three-second pending send, or seven-second missing
+  receiver clock causes a disconnect and retry after two seconds. Static
+  network error codes help diagnose reachability without exposing request
+  URLs or tokens. It polls authenticated `/api/checkin` every second while
   monitoring and plays each current `checkinId` once per monitoring session.
   The response includes `serverTime` and responder names. A conservative local
   voice deadline is derived from server time and local request-start time.

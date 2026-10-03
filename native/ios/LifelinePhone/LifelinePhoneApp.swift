@@ -28,10 +28,13 @@ import AVFoundation
                         if model.monitoring { model.stop() } else { model.start() }
                     }.buttonStyle(.borderedProminent).controlSize(.large)
                     Text(model.status).fixedSize(horizontal: false, vertical: true)
-                    Text("Sent \(model.samples) samples · skipped \(model.dropped)")
+                    Text(model.connectionStatus).font(.caption).fixedSize(horizontal: false, vertical: true)
+                    Text("Socket completed \(model.samples) frames · skipped \(model.dropped)")
                         .font(.caption.monospacedDigit())
-                    Text(model.totalG.map { String(format: "Latest real acceleration: %.2f g", $0) } ?? "No motion sample available")
+                    Text(model.totalG.map { String(format: "Local acceleration: %.2f g", $0) } ?? "No motion sample available")
                         .font(.caption.monospacedDigit())
+                    Text("The dashboard confirms received motion; a completed socket send is not a server acknowledgement.")
+                        .font(.caption).foregroundStyle(.secondary)
                     Button("I NEED HELP") { Task { await model.requestManualHelp() } }
                         .font(.title2.bold()).buttonStyle(.borderedProminent)
                         .controlSize(.large).tint(.red)
@@ -103,6 +106,7 @@ struct CheckinResponse: Decodable {
 }
 struct PhoneResponder: Decodable { let id: String; let name: String }
 struct SpokenReplyResponse: Decodable { let decision: String }
+private enum CheckinResponseError: Error { case unreadable }
 struct PhoneIncident: Decodable {
     struct Evidence: Decodable { let summary: String }
     let id: String
@@ -116,7 +120,7 @@ struct PhoneIncident: Decodable {
 }
 
 /// A native foreground producer. Simulator/non-motion devices send no fabricated samples.
-@MainActor final class ChestMotionModel: ObservableObject {
+@MainActor final class ChestMotionModel: NSObject, ObservableObject, URLSessionWebSocketDelegate {
     @Published var host = UserDefaults.standard.string(forKey: "lifeline.host") ?? "" {
         didSet { UserDefaults.standard.set(host, forKey: "lifeline.host") }
     }
@@ -125,6 +129,7 @@ struct PhoneIncident: Decodable {
     }
     @Published var monitoring = false
     @Published var status = "Enter the Mac address and pairing token."
+    @Published var connectionStatus = "Relay socket not connected."
     @Published var samples = 0
     @Published var dropped = 0
     @Published var totalG: Double?
@@ -139,6 +144,15 @@ struct PhoneIncident: Decodable {
     private let motion = CMMotionManager()
     private let motionQueue = OperationQueue()
     private var socket: URLSessionWebSocketTask?
+    private var socketSession: URLSession?
+    private let controllerSession: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 4
+        configuration.timeoutIntervalForResource = 6
+        configuration.waitsForConnectivity = false
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration)
+    }()
     private var receiveTask: Task<Void, Never>?
     private var timer: Timer?
     private var sessionId = UUID().uuidString
@@ -146,11 +160,20 @@ struct PhoneIncident: Decodable {
     private var lastSensorTime = -1.0
     private var lastSampleReceived = 0.0
     private var sending = false
-    private var polling = false
+    private var sequence = 0
+    private var socketOpened = false
+    private var connectionStarted = 0.0
+    private var socketOpenedAt = 0.0
+    private var sendStarted: Double?
+    private var pongStarted: Double?
+    private var lastClockPing: Double?
+    private var retryNotBefore = 0.0
+    private var pollingId: UUID?
     private var playedCheckins = Set<String>()
     private var replyTask: Task<Void, Never>?
 
-    init() {
+    override init() {
+        super.init()
         voice.onFinalTranscript = { [weak self] identity, transcript in
             guard let self else { return }
             self.replyTask?.cancel()
@@ -196,6 +219,13 @@ struct PhoneIncident: Decodable {
         }
         monitoring = true
         monitoringEpoch = UUID().uuidString
+        samples = 0
+        dropped = 0
+        retryNotBefore = 0
+        let configuration = URLSessionConfiguration.default
+        configuration.waitsForConnectivity = false
+        configuration.timeoutIntervalForRequest = 5
+        socketSession = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
         playedCheckins.removeAll()
         voice.refreshPermissionState()
         Task { await voice.preparePermissions() }
@@ -204,12 +234,7 @@ struct PhoneIncident: Decodable {
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.monitoring else { return }
-                if self.socket == nil { self.connect() }
-                else if self.motion.isDeviceMotionActive,
-                        ProcessInfo.processInfo.systemUptime - self.lastSampleReceived > 3 {
-                    self.status = "Real motion paused. Reconnecting; recalibrate when stable."
-                    self.disconnect()
-                }
+                self.maintainConnection()
                 await self.pollCheckin()
             }
         }
@@ -217,14 +242,17 @@ struct PhoneIncident: Decodable {
     }
 
     private func connect() {
-        guard monitoring, let endpoint = url("ws", path: "/motion", producer: true) else { return }
-        disconnect()
+        guard monitoring, socket == nil, ProcessInfo.processInfo.systemUptime >= retryNotBefore,
+              let session = socketSession, let endpoint = url("ws", path: "/motion", producer: true) else { return }
         sessionId = UUID().uuidString
         lastSensorTime = -1
-        samples = 0
-        dropped = 0
+        sequence = 0
+        connectionStarted = ProcessInfo.processInfo.systemUptime
+        socketOpened = false
+        lastClockPing = nil
         lastSampleReceived = ProcessInfo.processInfo.systemUptime
-        let task = URLSession.shared.webSocketTask(with: endpoint)
+        connectionStatus = "Connecting to the relay on port 8877."
+        let task = session.webSocketTask(with: endpoint)
         socket = task
         task.resume()
         receiveTask = Task { [weak self] in await self?.receiveMessages(task) }
@@ -258,23 +286,27 @@ struct PhoneIncident: Decodable {
                 self.lastSensorTime = time
                 self.lastSampleReceived = ProcessInfo.processInfo.systemUptime
                 self.totalG = sqrt(pow(g.x+a.x, 2)+pow(g.y+a.y, 2)+pow(g.z+a.z, 2))
-                guard !self.sending else { self.dropped += 1; return }
+                guard self.socketOpened, !self.sending else { self.dropped += 1; return }
                 let packet: [String: Any] = [
                     "type": "motion.sample", "source": "chest-phone", "sensorLocation": "phone",
-                    "sessionId": self.sessionId, "sequence": self.samples, "sensorTime": time,
+                    "sessionId": self.sessionId, "sequence": self.sequence, "sensorTime": time,
                     "quaternion": [q.x,q.y,q.z,q.w], "rotationRate": [r.x,r.y,r.z],
                     "gravity": [g.x,g.y,g.z], "userAcceleration": [a.x,a.y,a.z]
                 ]
                 guard let bytes = try? JSONSerialization.data(withJSONObject: packet) else { return }
-                self.samples += 1
+                self.sequence += 1
                 self.sending = true
-                do { try await task.send(.data(bytes)) }
+                self.sendStarted = ProcessInfo.processInfo.systemUptime
+                do {
+                    try await task.send(.data(bytes))
+                    guard self.monitoring, self.socket === task else { return }
+                    self.samples += 1
+                }
                 catch {
                     guard self.socket === task else { return }
-                    self.status = "Relay connection paused. Check host/token; retrying."
-                    self.disconnect()
+                    self.connectionFailed(task, reason: self.networkExplanation(error))
                 }
-                if self.socket === task { self.sending = false }
+                if self.socket === task { self.sending = false; self.sendStarted = nil }
             }
         }
     }
@@ -293,14 +325,100 @@ struct PhoneIncident: Decodable {
                 guard monitoring, socket === task,
                       let ping = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                       ping["type"] as? String == "clock.ping", let id = ping["id"] as? String else { continue }
+                lastClockPing = ProcessInfo.processInfo.systemUptime
+                connectionStatus = "Relay socket open. Receiver clock messages received."
                 let pong: [String: Any] = ["type": "clock.pong", "id": id, "sessionId": sessionId,
                     "deviceReceivedMs": receivedMs, "deviceSentMs": ProcessInfo.processInfo.systemUptime * 1000]
+                pongStarted = ProcessInfo.processInfo.systemUptime
                 try await task.send(.data(JSONSerialization.data(withJSONObject: pong)))
+                if socket === task { pongStarted = nil }
             }
         } catch {
             guard monitoring, socket === task else { return }
-            status = "Relay connection ended. Check the address/token; retrying."
-            disconnect()
+            connectionFailed(task, reason: networkExplanation(error))
+        }
+    }
+
+    /// Runs before HTTP polling each tick, so a hanging send or poll cannot keep
+    /// local motion readings looking like a working relay connection.
+    private func maintainConnection() {
+        guard monitoring else { return }
+        guard let task = socket else { connect(); return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if !socketOpened && now - connectionStarted >= 5 {
+            connectionFailed(task, reason: "Relay handshake timed out after 5 seconds. Check Wi-Fi, Local Network permission, and Mac reachability.")
+        } else if let started = sendStarted, now - started >= 3 {
+            connectionFailed(task, reason: "Motion send stalled for 3 seconds; no completion was counted.")
+        } else if let started = pongStarted, now - started >= 3 {
+            connectionFailed(task, reason: "Receiver clock reply stalled for 3 seconds.")
+        } else if socketOpened, now - (lastClockPing ?? socketOpenedAt) >= 7 {
+            connectionFailed(task, reason: "No receiver clock message for 7 seconds. Relay continuity is unavailable.")
+        } else if motion.isDeviceMotionActive, now - lastSampleReceived > 3 {
+            status = "Real motion paused. Reconnecting; recalibrate when stable."
+            connectionFailed(task, reason: "No new local motion sample for 3 seconds.")
+        }
+    }
+
+    private func connectionFailed(_ task: URLSessionWebSocketTask, reason: String) {
+        guard monitoring, socket === task else { return }
+        connectionStatus = reason + " Retrying in 2 seconds. Recalibrate after reconnection."
+        retryNotBefore = ProcessInfo.processInfo.systemUptime + 2
+        disconnect()
+    }
+
+    // Static messages only: NSError descriptions/userInfo can contain the
+    // authenticated request URL and must never be shown or logged.
+    private func networkExplanation(_ error: Error) -> String {
+        guard let failure = error as? URLError else { return "Relay request failed; no connection result is confirmed." }
+        let reason: String
+        switch failure.code {
+        case .notConnectedToInternet:
+            reason = "No usable network path. Check Wi-Fi and Settings > LIFELINE > Local Network."
+        case .cannotConnectToHost:
+            reason = "Cannot connect to the Mac on port 8877. Check its address, listener, and network access."
+        case .cannotFindHost, .dnsLookupFailed:
+            reason = "Cannot resolve the Mac hostname. Check the relay address."
+        case .timedOut:
+            reason = "Relay request timed out. Check phone-to-Mac reachability and Local Network permission."
+        case .networkConnectionLost:
+            reason = "The relay network connection was lost."
+        case .appTransportSecurityRequiresSecureConnection:
+            reason = "The request was blocked by transport security."
+        case .badServerResponse:
+            reason = "The relay rejected the connection or returned an invalid response. Check pairing and port 8877."
+        case .cancelled:
+            reason = "The relay request was cancelled."
+        default:
+            reason = "The relay network request failed."
+        }
+        return "\(reason) (URL error \(failure.code.rawValue))"
+    }
+
+    nonisolated func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
+        Task { @MainActor [weak self] in
+            guard let self, self.monitoring, self.socket === webSocketTask else { return }
+            self.socketOpened = true
+            self.socketOpenedAt = ProcessInfo.processInfo.systemUptime
+            self.connectionStatus = "Relay handshake completed. Waiting for receiver clock messages."
+        }
+    }
+
+    nonisolated func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask,
+                                didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
+        Task { @MainActor [weak self] in
+            self?.connectionFailed(webSocketTask, reason: "Relay closed the socket (code \(closeCode.rawValue)).")
+        }
+    }
+
+    nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard let webSocket = task as? URLSessionWebSocketTask, let error else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let reason: String
+            if let response = webSocket.response as? HTTPURLResponse, response.statusCode == 403 {
+                reason = "Motion connection rejected (HTTP 403). Check pairing or another connected chest app."
+            } else { reason = self.networkExplanation(error) }
+            self.connectionFailed(webSocket, reason: reason)
         }
     }
 
@@ -318,22 +436,28 @@ struct PhoneIncident: Decodable {
     }
 
     private func pollCheckin() async {
-        guard monitoring, !polling, let request = authenticatedRequest("/api/checkin") else { return }
+        guard monitoring, pollingId == nil, let request = authenticatedRequest("/api/checkin") else { return }
         let epoch = monitoringEpoch
         let requestStarted = Date()
-        polling = true
-        defer { polling = false }
+        let id = UUID()
+        pollingId = id
+        defer { if pollingId == id { pollingId = nil } }
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await controllerSession.data(for: request)
             guard monitoring, monitoringEpoch == epoch else { return }
             guard (response as? HTTPURLResponse)?.statusCode == 200 else {
                 incident = nil
                 checkinAvailable = false
                 voice.suspendForConnection(reason: "Check-in connection unavailable. Voice paused; incident safety is unknown.")
-                checkinStatus = "Check-in unavailable. Verify pairing token and relay."
+                let code = (response as? HTTPURLResponse)?.statusCode
+                checkinStatus = code == 401 || code == 403
+                    ? "Check-in rejected (HTTP \(code ?? 0)). Verify the pairing token."
+                    : "Check-in unavailable (HTTP \(code ?? 0)). Verify the relay service."
                 return
             }
-            let checkin = try JSONDecoder().decode(CheckinResponse.self, from: data)
+            let checkin: CheckinResponse
+            do { checkin = try JSONDecoder().decode(CheckinResponse.self, from: data) }
+            catch { throw CheckinResponseError.unreadable }
             incident = checkin.incident
             checkinAvailable = true
             responders = checkin.responders ?? []
@@ -364,7 +488,8 @@ struct PhoneIncident: Decodable {
             incident = nil
             checkinAvailable = false
             voice.suspendForConnection(reason: "Check-in connection unavailable. Voice paused; the incident remains with the controller.")
-            checkinStatus = "Check-in connection unavailable; this does not mean the incident is safe."
+            let reason = error is CheckinResponseError ? "Relay returned unreadable incident state (HTTP 200)." : networkExplanation(error)
+            checkinStatus = "Check-in unavailable. \(reason) Incident safety is unknown."
         }
     }
 
@@ -456,6 +581,9 @@ struct PhoneIncident: Decodable {
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
         sending = false
+        socketOpened = false
+        sendStarted = nil
+        pongStarted = nil
     }
 
     func stop() {
@@ -463,11 +591,15 @@ struct PhoneIncident: Decodable {
         timer?.invalidate()
         timer = nil
         disconnect()
+        socketSession?.invalidateAndCancel()
+        socketSession = nil
+        pollingId = nil
         voice.cancel(reason: "Monitoring stopped. Voice and microphone are off.")
         incident = nil
         checkinAvailable = false
         UIApplication.shared.isIdleTimerDisabled = false
         status = "Stopped. Sensor unavailability does not resolve an incident."
+        connectionStatus = "Relay socket stopped."
         checkinStatus = "Monitoring stopped. Existing incidents remain with the controller."
     }
 
