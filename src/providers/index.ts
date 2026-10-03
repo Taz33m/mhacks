@@ -181,7 +181,6 @@ export function createProviders(options: {
       `Created ${new Date(incident.createdAt).toISOString()}.`,
       'Location not provided. Detection does not establish a diagnosis.',
       context,
-      `React 👍 to this alert to accept responsibility, or send ON IT ${incident.id}.`,
     ].join('\n');
   }
 

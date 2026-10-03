@@ -31,7 +31,13 @@ Inbound mapping preserves `message.sender.id`, `message.id`, and reaction/reply 
 
 **Removal limitation:** inspection of the published 12.10.1 cloud source found normalization for `message.reactionAdded`, without a `reactionRemoved` arm. The adapter reports `removed:true` when explicit `reactionRecord.selected:false` or a nested reaction `unsend` is supplied, but general removal delivery is unverified. Never treat disappearance or silence as a decline. Test actual alert → 👍 on the demo phones. Use an explicit incident-coded decline to relinquish responsibility.
 
-The stop callback closes Spectrum. SDK startup and send calls have bounded waits; a timed-out send may still complete remotely, so an unknown action must not be blindly resent. SDK telemetry is disabled.
+The listener returns a stop callback before startup succeeds, and retries connection failures or ended/failed iterators with exponential backoff from 1 to 30 seconds. Successfully handled recent message IDs are suppressed in memory across reconnections; persisted controller dedupe remains the authority across restarts. Listener diagnostics remain visible alongside outbound send status. Idle subscribed streams do not expire merely because no message arrives.
+
+The stop callback stops dispatch/recovery, closes Spectrum once, and bounds cleanup waits. SDK initialization cannot be forcibly cancelled; a late client is stopped when it resolves. Incomplete teardown blocks replacement clients and reports unavailable recovery. SDK startup and send calls have bounded waits; a timed-out send may still complete remotely, so an unknown action must not be blindly resent. SDK telemetry is disabled.
+
+Actionable alerts and phase updates include the exact acceptance/decline, departure, arrival, and resolution commands appropriate to that phase. Context-only handoffs do not repeat acceptance instructions. Responder questions must come from an eligible contacted phone for the active incident. Explicit stale/foreign targets or incident codes cannot fall through to a question about a newer incident.
+
+Replies enter the same persisted outbox as responder alerts. Generation occurs outside the transaction; only a current-version answer commits with the inbound ID and audit event. Generation interrupted before that commit requires inbound redelivery; it is not a durable generation job. Each distinct question queues separately, duplicates commit once, pre-submission failures retry, and unknown sends require reconciliation. Authorization is checked again before submission; phase changes, decline, or closure invalidate old answers. Actual reply receipt and the sourced live question/answer still need demo-phone validation.
 
 ## FinchNode and grounded responses
 

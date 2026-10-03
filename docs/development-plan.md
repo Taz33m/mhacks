@@ -2,6 +2,8 @@
 
 Main track: Actually Intelligent (AI). Fixed hardware: chest iPhone 15, waist AirPod Pro, nearby Mac. Directly reuse Kinesthetic's AirPods acquisition and AudioRouteKeeper; preserve attribution and do not modify the source repo.
 
+The [PRD](PRD.md) defines the product scope, fixed decisions, demo requirements, and acceptance evidence.
+
 ## Implementation areas
 
 - Backend: contracts, incident controller, SQLite, motion ingestion/alignment/detection, server, provider worker integration, tests, end-to-end verification.
@@ -28,6 +30,8 @@ The backend, native clients, dashboard, and provider adapters are implemented. A
 Spoken check-ins use final on-device English transcripts. Help requests escalate; positive replies require the explicit cancel control; ambiguity preserves the deadline. The dashboard displays the recorded reply and actual source/configuration status.
 
 The wearer check-in also queues a Photon iMessage when configured with `LIFELINE_WEARER_PHONE`. Wearer replies share the same policy and deadline; a separate worker slot keeps a slow wearer send from delaying responder alerts. The dashboard distinguishes phone audio, wearer iMessage, and responder delivery. Actual iMessage receipt and replies remain part of the physical demo validation.
+
+Responder alerts and phase updates include exact commands to complete the loop from a phone. Grounded answers now use the persisted responder outbox, with atomic inbound dedupe and permission checks after generation and before submission. Photon listener startup/stream failures recover with capped backoff; incomplete SDK cleanup is visible and blocks replacement clients. Automated checks cover these paths; actual provider receipt and interruption recovery remain live rehearsal gates.
 
 Trial capture and offline replay now preserve timing/calibration and compare combined sensing with each source alone. Synthetic detection fixtures exercise phone-only drops, sitting/bending, ongoing movement, sample gaps, stale clocks, and unstable calibration. These establish software behavior; physical recordings still need to establish whether the thresholds fit the mounted devices. See [motion trials](motion-trials.md).
 

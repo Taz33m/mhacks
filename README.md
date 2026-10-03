@@ -1,6 +1,6 @@
 # LIFELINE
 
-MHacks 2026 — Actually Intelligent (AI). Chest iPhone + waist AirPod evidence starts a policy-controlled incident, followed through responder acceptance, progress, and a recorded outcome.
+MHacks 2026 — Actually Intelligent (AI). Chest iPhone + waist AirPod evidence starts a policy-controlled incident, followed through responder acceptance, progress, and a recorded outcome. The [product requirements](docs/PRD.md) define the demo scope, policy, and acceptance gates.
 
 ## Start
 

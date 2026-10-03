@@ -23,7 +23,7 @@ export interface Incident {
   handoff: string; outcome: string | null; resolutionActor: string | null;
 }
 export interface Responder { id: string; name: string; phone: string | null }
-export type ActionType = 'checkin' | 'wearer_checkin' | 'alert' | 'status' | 'handoff';
+export type ActionType = 'checkin' | 'wearer_checkin' | 'alert' | 'status' | 'handoff' | 'answer';
 export interface Action {
   id: string; incidentId: string; type: ActionType; recipientId: string | null;
   text: string; status: 'queued' | 'attempting' | 'provider_accepted' | 'failed' | 'unknown' | 'cancelled';

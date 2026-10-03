@@ -103,3 +103,91 @@ test('an in-flight alert that fails after resolution never retries, while final 
     assert.equal(c.actions(i.id).find(a => a.id === alert.id)?.status, 'cancelled');
   } finally { c.close(); }
 });
+
+test('phone-only responder phase messages name exact commands without claiming unreported progress or safety', () => {
+  const { c } = setup();
+  try {
+    const i = c.trigger({ kind: 'manual', summary: 'Phone-only responder guidance fixture.' });
+    const latestStatuses = () => c.actions(i.id).filter(action => action.type === 'status').slice(-2);
+    const statusCount = () => c.actions(i.id).filter(action => action.type === 'status').length;
+
+    c.accept(i.id, 'maya');
+    assert.equal(c.active()?.phase, 'ACKNOWLEDGED');
+    assert.equal(statusCount(), 2, 'existing one-update-per-contact behavior is retained');
+    for (const action of latestStatuses()) {
+      assert.match(action.text, /Departure has not been confirmed/);
+      assert.ok(action.text.includes(`Assigned responder Maya: reply DEPART ${i.id}`));
+      assert.ok(action.text.includes(`ARRIVED ${i.id}`));
+      assert.ok(action.text.includes(`DECLINE ${i.id}`));
+      assert.doesNotMatch(action.text, /on the way|reported departure|confirmed departure|wearer is safe|subject is safe/i);
+      assert.equal(action.text.includes(`RESOLVED ${i.id}`), false);
+    }
+
+    c.progress(i.id, 'maya', 'depart');
+    assert.equal(c.active()?.phase, 'RESPONDER_EN_ROUTE');
+    assert.equal(statusCount(), 4);
+    for (const action of latestStatuses()) {
+      assert.match(action.text, /Maya reported departure/);
+      assert.ok(action.text.includes(`Assigned responder Maya: reply ARRIVED ${i.id}`));
+      assert.ok(action.text.includes(`DECLINE ${i.id}`));
+      assert.equal(action.text.includes(`DEPART ${i.id}`), false, 'departure is no longer a permitted next update');
+      assert.equal(action.text.includes(`RESOLVED ${i.id}`), false);
+    }
+
+    c.progress(i.id, 'maya', 'arrive');
+    assert.equal(c.active()?.phase, 'ON_SCENE');
+    assert.equal(statusCount(), 6);
+    for (const action of latestStatuses()) {
+      assert.match(action.text, /An outcome has not been recorded/);
+      assert.ok(action.text.includes(`Assigned responder Maya: reply RESOLVED ${i.id} <concrete outcome>`));
+      assert.match(action.text, /what you observed and what help was provided/);
+      assert.ok(action.text.includes(`DECLINE ${i.id}`));
+      assert.equal(action.text.includes(`DEPART ${i.id}`), false);
+      assert.equal(action.text.includes(`ARRIVED ${i.id}`), false);
+      assert.doesNotMatch(action.text, /wearer is safe|subject is safe/i);
+    }
+    c.resolve(i.id, 'maya', 'On scene; wearer requested no further assistance.');
+    assert.equal(c.latest()?.phase, 'RESOLVED');
+    assert.equal(statusCount(), 8);
+  } finally { c.close(); }
+});
+
+test('initial and health-updated alerts retain exact acceptance and decline guidance', () => {
+  const { c } = setup();
+  try {
+    const i = c.trigger({ kind: 'manual', summary: 'Alert guidance fixture.' });
+    const guidance = (text: string) => {
+      assert.match(text, /React 👍 to this alert to accept responsibility/);
+      assert.ok(text.includes(`ON IT ${i.id}`));
+      assert.ok(text.includes(`DECLINE ${i.id}`));
+    };
+    for (const action of c.actions(i.id).filter(action => action.type === 'alert')) guidance(action.text);
+    const submitted = c.claimAction('responders')!;
+    c.finishAction(submitted.id, 'provider_accepted', 'Offline provider fixture accepted.', 'guidance-alert-id');
+    c.setHandoff(i.id, 'Source-grounded synthetic record fields.');
+    const queued = c.actions(i.id).filter(action => action.type === 'alert' && action.status === 'queued');
+    assert.equal(queued.length, 1);
+    assert.match(queued[0].text, /Source-grounded synthetic record fields/);
+    guidance(queued[0].text);
+    assert.equal(c.actions(i.id).filter(action => action.type === 'handoff').length, 1, 'existing handoff follow-up count is unchanged');
+  } finally { c.close(); }
+});
+
+test('declined or timed-out ownership re-alerts include incident-coded phone acceptance and decline', () => {
+  for (const cause of ['decline', 'timeout']) {
+    const { c, advance } = setup();
+    try {
+      const i = c.trigger({ kind: 'manual', summary: 'Reassignment guidance fixture.' });
+      c.accept(i.id, 'maya');
+      if (cause === 'decline') c.decline(i.id, 'maya'); else advance(120);
+      assert.equal(c.active()?.phase, 'HELP_REQUESTED');
+      assert.equal(c.active()?.ownerId, null);
+      const queued = c.actions(i.id).filter(action => action.type === 'alert' && action.status === 'queued');
+      assert.equal(queued.length, 1, 'no additional guidance messages are queued');
+      assert.equal(queued[0].recipientId, 'jordan');
+      assert.match(queued[0].text, /React 👍 to this alert to accept responsibility/);
+      assert.ok(queued[0].text.includes(`ON IT ${i.id}`));
+      assert.ok(queued[0].text.includes(`DECLINE ${i.id}`));
+    } finally { c.close(); }
+  }
+});

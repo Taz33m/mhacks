@@ -1,0 +1,162 @@
+# LIFELINE — Product requirements
+
+Updated: October 3, 2026. Primary track: **Actually Intelligent (AI)**.
+
+## Product
+
+LIFELINE follows a suspected physical incident from motion evidence through a wearer check-in, approved responder coordination, and a recorded outcome. The product promise is follow-through: someone explicitly accepts responsibility, reports progress, and records what happened.
+
+The hackathon prototype uses a **chest-mounted iPhone 15**, a **waist-mounted AirPod Pro**, and a nearby Mac. The two motion streams provide different body-placement evidence. Whether they improve detection over either sensor alone is a hypothesis to evaluate using recorded trials.
+
+## Users and decisions
+
+| User | Needs to know or do |
+| --- | --- |
+| Wearer | Hear the check-in, request help, explicitly cancel a false alarm, and see who accepted and what progress they reported. |
+| Approved responder | Receive a concise incident handoff, accept or decline, ask about returned synthetic records, report departure/arrival, and record an outcome. |
+| Demo operator | Verify sensing and provider readiness, record trials, see the incident timeline and actual action results, and run clearly labelled development simulations. |
+
+The prototype serves one wearer and one active incident, with a configured responder list. It does not enroll real patients or dispatch emergency services.
+
+## Scope and fixed decisions
+
+| Area | Decision |
+| --- | --- |
+| Main track | Actually Intelligent (AI). Hardware is not a target track. |
+| AirPods acquisition | Directly incorporate Kinesthetic's working Mac acquisition and route keeper. Keep the existing `KeepAlive.swift` unchanged and retain [provenance](../native/PROVENANCE.md). |
+| Phone | Native SwiftUI app: real Core Motion, speaker, on-device English speech recognition, and explicit wearer controls. Monitoring requires the foreground. |
+| Host | Nearby Mac runs Node 24, SQLite, detector, persisted incident controller, provider workers, and live web console. |
+| Messaging | Photon cloud through Spectrum: wearer check-in plus individual approved-responder conversations. |
+| Health | FinchNode's fixed synthetic `patient-demo-001` medications, conditions, and allergies. No live patient mapping. |
+| Voice | A cached ElevenLabs check-in clip; visibly identified native phone speech when provider audio is unavailable during development. |
+| AI | Optional model selects relevant returned health-record IDs. Application code renders the fields. Models cannot change incident state or prescribe treatment. |
+| Deferred | Spacetime migration, Fetch/ASI:One entry point, camera perception, FREE-WILi, new wearable hardware, automatic emergency calling, and multiple wearers. |
+
+Photon, FinchNode, and ElevenLabs each have a concrete role in this same incident. Submission claims must reflect the integrations actually demonstrated. No prize stacking or award amounts are assumed by this PRD.
+
+## Core experience
+
+1. Both mounted sources stream to the Mac. The operator verifies freshness, reporting AirPod, calibration, and clock alignment.
+2. A qualifying motion candidate opens one suspected incident. The evidence states whether it is cross-body, single-source, manual, or synthetic.
+3. The phone speaks its check-in. Photon sends the wearer: **“I detected a possible fall. Are you okay?”** with the incident code and help/cancellation instructions.
+4. Both channels share one check-in identity and deadline. Exact help requests escalate immediately. Silence, positive language, and ambiguity preserve the unresolved incident until the deadline.
+5. Before escalation, the wearer can explicitly tap **I DON'T NEED HELP** for the current check-in. A typed or spoken “I'm okay” cannot cancel it.
+6. On escalation, the controller contacts approved responders according to policy. Their messages include the handoff and exact commands needed to continue.
+7. An approved, contacted responder accepts the correlated alert. First acceptance wins atomically. The wearer and console see that acceptance; departure remains unconfirmed.
+8. The owner reports departure or arrival. Other contacts receive truthful updates and remain available for reassignment if necessary.
+9. The on-scene owner records a concrete outcome. The controller closes the incident, records the source, and sends the final update.
+
+The wearer can press **I NEED HELP** independently of the detector. That requests help immediately and does not wait for the check-in timeout.
+
+## Incident policy
+
+```mermaid
+stateDiagram-v2
+    [*] --> DETECTED
+    DETECTED --> CONFIRMING
+    CONFIRMING --> CANCELLED_FALSE_ALARM: current explicit wearer control
+    CONFIRMING --> HELP_REQUESTED: exact help or deadline
+    HELP_REQUESTED --> ACKNOWLEDGED: approved contacted responder accepts
+    ACKNOWLEDGED --> RESPONDER_EN_ROUTE: owner reports departure
+    ACKNOWLEDGED --> ON_SCENE: owner reports direct arrival
+    RESPONDER_EN_ROUTE --> ON_SCENE: owner reports arrival
+    ON_SCENE --> RESOLVED: owner records outcome
+    ACKNOWLEDGED --> HELP_REQUESTED: owner declines or misses deadline
+    RESPONDER_EN_ROUTE --> HELP_REQUESTED: owner declines or misses deadline
+    ON_SCENE --> HELP_REQUESTED: owner declines or misses deadline
+    CANCELLED_FALSE_ALARM --> [*]
+    RESOLVED --> [*]
+```
+
+Default demo policy: **20-second check-in, 60-second acceptance window, 120-second owner progress window**. Values are configurable and persisted deadlines survive restart. Each contact round selects up to the first two eligible responders in configured order. Exhausting the list leaves the incident unresolved and visibly unassigned.
+
+Arrival can be reported directly from acceptance: someone already beside the wearer should not have to invent a departure. A contacted non-owner can decline. Only the current owner can report progress or resolve.
+
+Resolution records a responder's reported outcome, actor, and time. It is not independent confirmation of a diagnosis or of the wearer's physical safety.
+
+## Functional requirements
+
+All requirements below are P0 unless marked P1. “P0” means required for the intended live demo; implementation and validation are separate gates.
+
+| ID | Requirement | Acceptance evidence |
+| --- | --- | --- |
+| S1 | Preserve both real motion streams with source, reporting bud, session, sequence, capture/receive timing, gravity, acceleration, and angular velocity. | Two separate live traces and increasing received sample counts; invalid/out-of-order packets rejected. |
+| S2 | Show freshness, cadence, calibration, and alignment. Reconnect, reporting-bud changes, and substantial gaps invalidate prior calibration. | Disconnect/reconnect trial shows stale/unknown state and requires recalibration. |
+| S3 | Cross-body assessment uses aligned chest impact, waist posture, and continuous quiet motion. Thresholds remain provisional. | A complete recorded staged-event trial reproduces the candidate offline. |
+| S4 | When the waist is unavailable, permit explicitly labelled chest-only assessment. A fresh waist lacking calibration/alignment cannot supply cross-body evidence. | Controlled fixtures and recorded degraded trials show the evidence kind; missing data never establishes safety. |
+| C1 | Keep one active incident, deterministic transitions, audit events, and persisted deadlines. Repeated triggers cannot restart its check-in budget. | Injected-clock and restart tests. |
+| C2 | Issue phone audio and wearer iMessage for the same check-in. A slow wearer send cannot block responder escalation. | Observe phone playback and wearer receipt; independent worker tests. |
+| C3 | Correlate replies and controls to current IDs. Exact help escalates; positive/ambiguous language does not cancel. | Spoken/iMessage help, positive, negated, ambiguous, and duplicate cases; stale explicit targets remain invalid even with a current code. |
+| C4 | Require explicit current wearer cancellation before escalation; after escalation require the on-scene owner's outcome. | Late/stale cancellation and premature resolution are rejected. |
+| R1 | Contact only approved configured identities, distinguish send outcome from acceptance, and assign one owner atomically. | Actual alert receipt, authorized/competing acceptance, stale tapbacks, Apple-ID/suffix identity rejection, and supplied reaction-removal events preserving ownership. General Photon removal delivery remains unverified. |
+| R2 | Actionable alerts and phase updates explain the next permitted exact command. Acceptance must not imply departure; context-only handoffs/answers must not repeat obsolete commands. | A teammate completes the loop using only the received messages. |
+| R3 | Handle decline, missed acceptance, and missed owner progress without clearing the incident. | Reassignment tests and a rehearsed unavailable-owner branch. |
+| A1 | Ground the handoff and answers in returned synthetic record fields and IDs. Explicitly state unavailable/unknown information. | Inspect rendered claims against source records; invalid model selections use the fallback. |
+| A2 | Persist outgoing answers and delivery attempts. Duplicate inbound questions cannot create duplicate reply actions. Recheck permission immediately before submission; discard answers if phase changes during preparation or queueing. | Failed, unknown, duplicate, stale, rollback/restart, and incident-changed-during-answer tests. |
+| A3 | Recover Photon inbound listening after initial connection failure or stream interruption, with bounded retry and clean shutdown. | Offline reconnect/end/error tests; live disruption rehearsal when configured. |
+| D1 | Show phase, owner, reported progress, outcome, handoff, replies, source health, and action attempts on the console. | Views agree with controller state throughout the same incident. |
+| D2 | Keep synthetic triggers, operator impersonation controls, native fallback voice, and replay visibly labelled. | Demo reviewer can identify which evidence is physical and which is simulated. |
+| E1 | Record samples, clocks, calibration, assessments, gaps, and trial boundaries; replay combined/chest-only/waist-only modes offline. | Download a complete JSONL trial and compare all three modes without sends. |
+| P1 | Compare held-out recorded movements against tuning trials and report candidate counts, misses, false alerts, and latency. | Results include trial definitions and missing/unscored evidence; no clinical accuracy claim. |
+
+## Messaging contract
+
+Use the full current incident code, for example `LF-1234ABCD`.
+
+| Sender/context | Interaction | Result |
+| --- | --- | --- |
+| Wearer, current check-in | Reply “I need help” to its Photon message, or send `I NEED HELP LF-1234ABCD` | Request help immediately. |
+| Wearer, current check-in | Positive/ambiguous speech or iMessage | Preserve incident and deadline. The phone displays the explicit cancellation control; iMessage relies on the original instructions and sends no automatic reply acknowledgement. |
+| Contacted responder, unassigned incident | 👍 on the persisted current alert, or `ON IT LF-1234ABCD` | Accept responsibility if eligible and still unassigned. |
+| Assigned owner | `DEPART LF-1234ABCD` | Record departure. |
+| Assigned owner | `ARRIVED LF-1234ABCD` | Record arrival from accepted/en-route state. |
+| Contacted responder | `DECLINE LF-1234ABCD` | Record decline; if owner, return responsibility to unassigned. |
+| On-scene owner | `RESOLVED LF-1234ABCD <concrete outcome>` | Record outcome and close. |
+| Current eligible contacted responder | Record question in the current conversation | Queue a source-grounded reply; stale explicit targets/codes cannot refer to a different incident. |
+
+General natural-language ETAs or declines are outside this version. A model is not allowed to turn an inferred intent into acceptance, departure, arrival, or closure.
+
+## Failure behavior and data
+
+- The controller alone changes phase. Sensor readings, language, provider availability, and model text cannot clear an incident.
+- Sensor loss is unknown evidence. It does not resolve an existing incident or extend its deadline.
+- Phone connection attempts must time out and recover. Local acceleration and completed socket writes must not be presented as proof of dashboard receipt.
+- An outbox result of `provider_accepted` establishes provider submission only. Actual phone receipt requires observation; responsibility requires explicit acceptance.
+- A confirmed pre-submission failure can retry within policy. An interrupted or uncertain submission remains `unknown`; it is not blindly resent.
+- Cancellation/phase changes invalidate obsolete pending actions. A final permission check occurs after DM preparation and before submission.
+- FinchNode, AI, audio, and Photon failures must remain visible and must not stop the controller's deadlines. An unavailable record is not evidence that a medication, condition, or allergy is absent.
+- Location is currently **not provided**. The app must not invent a room, address, GPS fix, or responder ETA.
+- Tokens, provider credentials, phone numbers, raw recordings, and build outputs stay out of source control and public logs. The current operator token and read-only LAN console are development access, not production identity/enrollment.
+- Stopping a trial leaves incident response running. A development reset is recorded as an operator action, never as a safety determination.
+
+## Success criteria and demo gate
+
+The intended demo is about 90 seconds: show the two streams, a controlled candidate, the audible and iMessage wearer check-ins, silence causing escalation, real responder receipt and acceptance, a sourced question/answer, progress, and a recorded outcome.
+
+Before calling it a live end-to-end demo, establish:
+
+1. Both mounted sources remain usable through a complete rehearsal, including phone audio. Measure actual cadence, gaps, and clock uncertainty rather than assuming the requested rates.
+2. A recorded physical candidate starts the response loop. Test a phone-only drop separately; report its observed result rather than promising rejection before validation.
+3. The wearer hears the phone and receives the actual Photon check-in. Silence preserves the original configured timeout; exact help bypasses it.
+4. Approved responder phones receive the handoff. Acceptance is visible across views, later progress is explicit, and the owner's final outcome is persisted.
+5. A correlated responder question produces an answer with source record IDs. Observe its receipt on the phone and its persisted outbound result separately.
+6. One injected failure or stale/duplicate input demonstrates the policy boundary without silently resolving or duplicating the incident.
+7. A full backup recording exists. If using an operator trigger or recorded replay, identify it clearly and limit the sensing claim accordingly.
+
+Report detection-to-check-in, deadline-to-help-request, actual message receipt, acceptance, and resolution timings as separate measurements. Availability and missed evidence belong beside the candidate results. Do not infer a cross-body accuracy gain from synthetic fixtures or from an average sample rate.
+
+## Current implementation and remaining work
+
+The repository implements the native producers, tentative detector, trial/replay tools, SQLite incident loop, console, final on-device reply policy, dual wearer check-in actions, grounded synthetic health, and provider adapters. The iPhone 15 app is signed, installed, and privately paired. A brief real AirPod acquisition and local phone motion were observed; sustained mounted sensing and phone-to-Mac streaming are not yet established.
+
+Responder alerts/updates now include exact workflow commands. Source-grounded answers use the persisted authorized outbox, and Photon listening recovers from startup/iterator failures with capped backoff. These have credential-free automated checks; live disruption and actual message receipt still need rehearsal. If Spectrum cleanup never completes, recovery reports the incomplete teardown and blocks replacement clients; it cannot forcibly cancel the SDK.
+
+The current credential-free checks demonstrate software behavior. Photon wearer/responder receipt, reactions and replies, ElevenLabs playback, and optional live model selection still require configuration and direct validation. A configured flag is not a demo pass.
+
+Implementation order from here:
+
+1. Establish phone-to-Mac reachability and sustained selected-bud acquisition; calibrate and capture a complete physical trial.
+2. Configure approved demo phones and the relevant providers; verify both wearer channels, source-grounded Q&A, and the full responder loop.
+3. Record comparison trials, fix observed failures, rehearse, and capture the submission demo.
+
+See [development plan](development-plan.md), [native setup](native-setup.md), [interfaces](interfaces.md), [providers](providers.md), [motion trials](motion-trials.md), and [reference architecture](LIFELINE-reference-architecture.md) for implementation details.

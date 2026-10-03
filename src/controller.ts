@@ -71,13 +71,13 @@ export class Controller {
   private phase(i: StoredIncident, phase: Phase, actor: string, detail: string): void {
     i.phase = phase; i.version++; i.updatedAt = this.now(); this.save(i); this.event(i, phase, actor, detail);
   }
-  private enqueue(i: StoredIncident, type: ActionType, recipientId: string | null, text: string): void {
+  private enqueue(i: StoredIncident, type: ActionType, recipientId: string | null, text: string, dedupeKey?: string): boolean {
     const a: Action = { id: randomUUID(), incidentId: i.id, type, recipientId, text,
       status: 'queued', attempts: 0, providerMessageId: null, providerResult: null,
       nextAttemptAt: this.now(), createdAt: this.now() };
-    const key = `${i.id}:${i.version}:${type}:${recipientId ?? 'subject'}`;
-    this.db.prepare('INSERT OR IGNORE INTO actions VALUES(?,?,?,?,?,?,?)')
-      .run(a.id, i.id, key, a.status, a.nextAttemptAt, null, JSON.stringify(a));
+    const key = dedupeKey ?? `${i.id}:${i.version}:${type}:${recipientId ?? 'subject'}`;
+    return this.db.prepare('INSERT OR IGNORE INTO actions VALUES(?,?,?,?,?,?,?)')
+      .run(a.id, i.id, key, a.status, a.nextAttemptAt, null, JSON.stringify(a)).changes === 1;
   }
   private notify(i: StoredIncident, text: string): void {
     for (const id of i.contacted) this.enqueue(i, 'status', id, text);
@@ -94,7 +94,7 @@ export class Controller {
     const eligible = this.responders.filter(r => !i.contacted.includes(r.id) && !i.declined.includes(r.id)).slice(0, 2);
     for (const r of eligible) {
       i.contacted.push(r.id);
-      this.enqueue(i, 'alert', r.id, `LIFELINE ${i.id}: Possible incident. ${i.evidence.summary}\n${i.handoff}\nReact 👍 to this alert to accept, or reply ON IT ${i.id}.`);
+      this.enqueue(i, 'alert', r.id, `LIFELINE ${i.id}: Possible incident. ${i.evidence.summary}\n${i.handoff}\nReact 👍 to this alert to accept responsibility, or reply ON IT ${i.id}. If unavailable, reply DECLINE ${i.id}.`);
     }
     this.save(i);
     if (!eligible.length) this.event(i, 'UNASSIGNED', 'policy', 'No additional approved responder is available; incident remains unresolved.');
@@ -168,7 +168,7 @@ export class Controller {
       i.ownerId = responderId; i.progressDeadline = this.now() + this.policy.progressMs;
       this.phase(i, 'ACKNOWLEDGED', responderId, `${r.name} accepted responsibility; departure is not yet confirmed.`);
       this.stopPending(i);
-      this.notify(i, `${r.name} accepted ${i.id}. Waiting for departure confirmation. Keep available for updates.`);
+      this.notify(i, `${r.name} accepted ${i.id}. Departure has not been confirmed.\nAssigned responder ${r.name}: reply DEPART ${i.id} when leaving, ARRIVED ${i.id} when on scene, or DECLINE ${i.id} if unavailable. Other contacts: keep available for updates.`);
     });
   }
   progress(id: string, responderId: string, stage: 'depart' | 'arrive'): void {
@@ -179,7 +179,9 @@ export class Controller {
       if (!allowed.includes(i.phase)) throw new PolicyError('Progress update is not valid for this phase.');
       i.progressDeadline = this.now() + this.policy.progressMs;
       this.phase(i, stage === 'depart' ? 'RESPONDER_EN_ROUTE' : 'ON_SCENE', r.id, stage === 'depart' ? 'Owner explicitly reported departure.' : 'Owner explicitly reported arrival.');
-      this.notify(i, `${r.name} ${stage === 'depart' ? 'is on the way' : 'reported arrival'} for ${i.id}.`);
+      this.notify(i, stage === 'depart'
+        ? `${r.name} reported departure for ${i.id}.\nAssigned responder ${r.name}: reply ARRIVED ${i.id} when on scene, or DECLINE ${i.id} if unavailable. Other contacts: keep available for updates.`
+        : `${r.name} reported arrival for ${i.id}. An outcome has not been recorded.\nAssigned responder ${r.name}: reply RESOLVED ${i.id} <concrete outcome>, replacing <concrete outcome> with what you observed and what help was provided. If unable to continue, reply DECLINE ${i.id}.`);
     });
   }
   decline(id: string, responderId: string): void {
@@ -191,7 +193,7 @@ export class Controller {
       if (i.ownerId === responderId) {
         this.stopPending(i); this.requestHelp(i, 'Previous owner declined; responsibility is unassigned.');
         for (const r of this.responders.filter(r => i.contacted.includes(r.id) && !i.declined.includes(r.id)))
-          this.enqueue(i, 'alert', r.id, `${i.id}: Previous owner is unavailable. React 👍 to accept responsibility.\n${i.handoff}`);
+          this.enqueue(i, 'alert', r.id, `${i.id}: Previous owner is unavailable.\n${i.handoff}\nReact 👍 to this alert to accept responsibility, or reply ON IT ${i.id}. If unavailable, reply DECLINE ${i.id}.`);
       } else this.save(i);
     });
   }
@@ -215,7 +217,7 @@ export class Controller {
         const prior = i.ownerId; i.declined.push(prior); this.stopPending(i);
         this.requestHelp(i, 'Owner progress deadline expired; responsibility must be accepted again.');
         for (const r of this.responders.filter(r => i.contacted.includes(r.id) && !i.declined.includes(r.id)))
-          this.enqueue(i, 'alert', r.id, `${i.id}: Previous owner missed the progress deadline. React 👍 if you can take responsibility.\n${i.handoff}`);
+          this.enqueue(i, 'alert', r.id, `${i.id}: Previous owner missed the progress deadline.\n${i.handoff}\nReact 👍 to this alert to accept responsibility, or reply ON IT ${i.id}. If unavailable, reply DECLINE ${i.id}.`);
       }
     });
   }
@@ -223,7 +225,7 @@ export class Controller {
     this.transaction(() => {
       const i = this.current(id); i.handoff = handoff; i.updatedAt = this.now(); this.save(i);
       for (const a of this.actions(id).filter(a => a.type === 'alert' && a.status === 'queued')) {
-        a.text = `LIFELINE ${i.id}: ${i.evidence.summary}\n${handoff}\nReact 👍 to accept responsibility, or reply ON IT ${i.id}.`; this.saveAction(a);
+        a.text = `LIFELINE ${i.id}: ${i.evidence.summary}\n${handoff}\nReact 👍 to this alert to accept responsibility, or reply ON IT ${i.id}. If unavailable, reply DECLINE ${i.id}.`; this.saveAction(a);
       }
       const alreadyAttempted = new Set(this.actions(id).filter(a => a.type === 'alert'
         && ['attempting', 'provider_accepted', 'unknown'].includes(a.status)).map(a => a.recipientId));
@@ -244,6 +246,24 @@ export class Controller {
   actions(id: string): Action[] {
     return this.db.prepare('SELECT body FROM actions WHERE incident_id=? ORDER BY rowid').all(id).map(row => JSON.parse(String(row.body)) as Action);
   }
+  queueAnswer(id: string, version: number, responderId: string, inboundId: string, text: string): boolean {
+    return this.transaction(() => {
+      if (this.seenInbound(inboundId)) return false;
+      const i = this.current(id); this.responder(responderId);
+      if (i.version !== version || !i.contacted.includes(responderId) || i.declined.includes(responderId))
+        throw new PolicyError('Answer must target the current incident version and an eligible contacted responder.');
+      if (typeof inboundId !== 'string' || !inboundId.trim() || inboundId.length > 500)
+        throw new PolicyError('A provider message ID is required.');
+      if (typeof text !== 'string' || !text.trim() || text.length > 6000)
+        throw new PolicyError('An answer of 1–6000 characters is required.');
+      const inserted = this.enqueue(i, 'answer', responderId, text,
+        `${i.id}:${i.version}:answer:${JSON.stringify([responderId, inboundId])}`);
+      if (!inserted) throw new Error('Responder answer was not persisted; inbound ID remains unprocessed.');
+      this.rememberInbound(inboundId);
+      this.event(i, 'ANSWER_QUEUED', responderId, 'Responder answer queued; delivery is not yet established.');
+      return true;
+    });
+  }
   private saveAction(a: Action): void {
     this.db.prepare('UPDATE actions SET status=?,next_at=?,provider_message_id=?,body=? WHERE id=?')
       .run(a.status, a.nextAttemptAt, a.providerMessageId, JSON.stringify(a), a.id);
@@ -256,9 +276,10 @@ export class Controller {
     if (!a.recipientId || !this.responders.some(r => r.id === a.recipientId) || !i.contacted.includes(a.recipientId)) return false;
     if (a.type === 'alert') return i.phase === 'HELP_REQUESTED' && !i.ownerId && !i.declined.includes(a.recipientId);
     if (a.type === 'handoff') return !terminal(i.phase) && !i.declined.includes(a.recipientId);
-    if (a.type === 'status') {
+    if (a.type === 'status' || a.type === 'answer') {
       const action = this.db.prepare('SELECT dedupe_key FROM actions WHERE id=?').get(a.id);
-      return action !== undefined && Number(String(action.dedupe_key).split(':')[1]) === i.version;
+      return action !== undefined && Number(String(action.dedupe_key).split(':')[1]) === i.version
+        && (a.type !== 'answer' || (!terminal(i.phase) && !i.declined.includes(a.recipientId)));
     }
     return false;
   }
@@ -288,6 +309,13 @@ export class Controller {
     if (!row) return null;
     const a = JSON.parse(String(row.body)) as Action; const i = this.active();
     return i && a.incidentId === i.id && a.recipientId === responderId && a.type === 'alert' ? i : null;
+  }
+  responderIncidentForMessage(messageId: string, responderId: string): Incident | null {
+    const row = this.db.prepare('SELECT body FROM actions WHERE provider_message_id=?').get(messageId);
+    if (!row) return null;
+    const a = JSON.parse(String(row.body)) as Action; const i = this.active();
+    return i && a.incidentId === i.id && a.recipientId === responderId
+      && ['alert', 'status', 'handoff', 'answer'].includes(a.type) ? i : null;
   }
   wearerIncidentForMessage(messageId: string): Incident | null {
     const row = this.db.prepare('SELECT body FROM actions WHERE provider_message_id=?').get(messageId);

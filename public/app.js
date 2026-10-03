@@ -227,7 +227,7 @@
     text('#action-count', actions.length);
     $('#actions').innerHTML = actions.length ? actions.map((action) => {
       const [label, color] = actionLabels[action.status] || [action.status, ''];
-      const actionTitle = { wearer_checkin: 'Wearer iMessage', checkin: 'Phone audio check-in' }[action.type] || action.type[0].toUpperCase() + action.type.slice(1);
+      const actionTitle = { wearer_checkin: 'Wearer iMessage', checkin: 'Phone audio check-in', answer: 'Responder answer' }[action.type] || action.type[0].toUpperCase() + action.type.slice(1);
       return `<li class="action-item"><div class="action-head"><strong>${escaped(actionTitle)}${action.recipientId ? ` · ${escaped(nameFor(action.recipientId))}` : ''}</strong><span class="badge ${color}">${escaped(label)}</span></div><p>${escaped(action.providerResult || action.text || 'No provider result yet.')}</p><span class="action-meta">${escaped(time(action.createdAt))} · ${action.attempts} attempt${action.attempts === 1 ? '' : 's'}${action.providerMessageId ? ` · Message ${escaped(action.providerMessageId.slice(0, 18))}` : ''}</span></li>`;
     }).join('') : '<li class="empty-list">No external actions queued.</li>';
   }

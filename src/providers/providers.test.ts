@@ -52,7 +52,7 @@ test('health uses only keyless synthetic fixture, retains IDs, and marks empty e
   assert.match(health.summary, /2026-08-25/);
   const handoff = await providers.buildHandoff(incident, health);
   assert.match(handoff, /Location not provided/);
-  assert.match(handoff, /ON IT A17/);
+  assert.doesNotMatch(handoff, /ON IT|React 👍/);
   assert.match(handoff, /\[allergy-1\]/);
   assert.match(await providers.answerQuestion(incident, health, 'What allergies were recorded?'), /Fixture rash/);
   assert.match(await providers.answerQuestion(incident, health, 'What medications does she take?'), /Example medication/);

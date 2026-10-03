@@ -10,6 +10,7 @@ import { Controller, PolicyError } from './controller.ts';
 import { Motion, validSample } from './motion.ts';
 import { approvedResponder, phoneIdentity } from './identity.ts';
 import { handleWearerInbound } from './wearer.ts';
+import { handleResponderQuestion } from './responder-questions.ts';
 import { Trials } from './trials.ts';
 import type { CheckinReply, ClockPong, Command, Incident, ProviderInbound, Responder, Snapshot, Source } from './contracts.ts';
 import { providerStatus, loadHealth, buildHandoff, answerQuestion, sendMessage, startPhotonListener, prepareCheckinAudio } from './providers/index.ts';
@@ -115,17 +116,16 @@ async function inbound(e: ProviderInbound): Promise<void> {
       if (target && ['like', '👍'].includes(e.reaction ?? '')) controller.accept(target.id, r.id, e.messageId);
       return;
     }
+    if (e.targetMessageId !== undefined
+      && (!e.targetMessageId || !controller.responderIncidentForMessage(e.targetMessageId, r.id))) return;
     const text = (e.text ?? '').trim();
     if (text === `ON IT ${i.id}` || (target && text === 'ON IT')) controller.accept(i.id, r.id, e.messageId);
     else if (text === `DEPART ${i.id}`) { controller.progress(i.id, r.id, 'depart'); controller.rememberInbound(e.messageId); }
     else if (text === `ARRIVED ${i.id}`) { controller.progress(i.id, r.id, 'arrive'); controller.rememberInbound(e.messageId); }
     else if (text === `DECLINE ${i.id}`) { controller.decline(i.id, r.id); controller.rememberInbound(e.messageId); }
     else if (text.startsWith(`RESOLVED ${i.id} `)) { controller.resolve(i.id, r.id, text.slice(`RESOLVED ${i.id} `.length)); controller.rememberInbound(e.messageId); }
-    else if (text && i.contacted.includes(r.id)) {
-      controller.rememberInbound(e.messageId);
-      const reply = await answerQuestion(i, await healthPromise, text);
-      if (!stopping && controller.active()?.id === i.id && r.phone) await sendMessage(r.phone, `${i.id}: ${reply}`);
-    }
+    else if (text) await handleResponderQuestion(e, controller,
+      async (incident, question) => answerQuestion(incident, await healthPromise, question), () => !stopping);
   } catch (error) {
     if (!(error instanceof PolicyError)) console.error('Provider processing failed; incident remains unresolved.');
   } finally { if (!stopping) broadcast(); }
