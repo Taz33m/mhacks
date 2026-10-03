@@ -1,0 +1,7 @@
+node_modules/
+.env
+data/
+native/**/build/
+native/ios/*.xcodeproj/xcuserdata/
+*.log
+.DS_Store

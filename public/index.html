@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#142923">
+    <title>LIFELINE — Incident console</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Lifeline home"><span class="brand-mark" aria-hidden="true">↗</span> LIFELINE</a>
+      <div class="topbar-meta"><span class="environment">DEVELOPMENT</span><span id="connection" class="connection"><i></i>Connecting</span></div>
+    </header>
+
+    <main class="shell">
+      <div class="page-heading"><div><p class="eyebrow">PHYSICAL EVENT → HUMAN RESPONSE</p><h1>Incident console</h1><p class="page-intro">Follow the evidence, the response, and the outcome.</p></div><span id="last-update" class="last-update">Waiting for live state</span></div>
+      <div id="connection-error" class="notice" role="status" hidden></div>
+      <div class="layout">
+        <div class="main-column">
+          <section class="sensor-grid" aria-label="Motion sources">
+            <article class="card sensor-card" id="chest-phone">
+              <div class="card-top"><div><p class="eyebrow">SOURCE 01</p><h2>Chest iPhone</h2></div><span class="badge sensor-status">No signal</span></div>
+              <div class="sensor-reading"><strong class="sensor-g">—</strong><span>g · total acceleration</span><span class="sensor-tilt">Tilt —</span></div>
+              <div class="chart-wrap"><svg class="motion-chart" viewBox="0 0 400 108" role="img" aria-label="Chest motion history"><g class="chart-grid"></g><path class="chart-accel"></path><path class="chart-tilt"></path></svg><p class="chart-empty">Waiting for measured motion</p></div>
+              <div class="chart-legend"><span><i class="accel-key"></i>Acceleration</span><span><i class="tilt-key"></i>Tilt</span><span class="chart-range">No history</span></div>
+              <dl class="sensor-details"><div><dt>Freshness</dt><dd class="sensor-age">—</dd></div><div><dt>Calibration</dt><dd class="sensor-calibration">Required</dd></div><div><dt>Alignment ±</dt><dd class="sensor-alignment">Unknown</dd></div><div><dt>Cadence</dt><dd class="sensor-hz">—</dd></div></dl>
+              <p class="sensor-identity">Source: chest-phone · No session</p>
+            </article>
+            <article class="card sensor-card" id="waist-airpod">
+              <div class="card-top"><div><p class="eyebrow">SOURCE 02</p><h2>Waist AirPod</h2></div><span class="badge sensor-status">No signal</span></div>
+              <div class="sensor-reading"><strong class="sensor-g">—</strong><span>g · total acceleration</span><span class="sensor-tilt">Tilt —</span></div>
+              <div class="chart-wrap"><svg class="motion-chart" viewBox="0 0 400 108" role="img" aria-label="Waist motion history"><g class="chart-grid"></g><path class="chart-accel"></path><path class="chart-tilt"></path></svg><p class="chart-empty">Waiting for measured motion</p></div>
+              <div class="chart-legend"><span><i class="accel-key"></i>Acceleration</span><span><i class="tilt-key"></i>Tilt</span><span class="chart-range">No history</span></div>
+              <dl class="sensor-details"><div><dt>Freshness</dt><dd class="sensor-age">—</dd></div><div><dt>Calibration</dt><dd class="sensor-calibration">Required</dd></div><div><dt>Alignment ±</dt><dd class="sensor-alignment">Unknown</dd></div><div><dt>Cadence</dt><dd class="sensor-hz">—</dd></div></dl>
+              <p class="sensor-identity">Source: waist-airpod · No session</p>
+            </article>
+          </section>
+
+          <section class="card incident-card" aria-labelledby="incident-title">
+            <div class="card-top"><p class="eyebrow">CURRENT INCIDENT</p><span id="incident-id" class="mono">NO ACTIVE INCIDENT</span></div>
+            <div class="incident-heading"><div><h2 id="incident-title">Ready for an incident</h2><p id="incident-summary">Connect the motion sources to begin. No incident has been reported.</p></div><span id="evidence-badge" class="badge" hidden></span></div>
+            <ol id="phase-list" class="phase-list" aria-label="Response phases"></ol>
+            <div class="incident-facts"><div><span class="eyebrow">RESPONSIBILITY</span><strong id="owner">Unassigned</strong><span id="owner-detail">An alert alone does not establish ownership.</span></div><div><span class="eyebrow">NEXT DEADLINE</span><strong id="deadline">—</strong><span id="deadline-detail">No deadline scheduled</span></div></div>
+            <div id="outcome-panel" class="outcome-panel" hidden><span class="eyebrow">RECORDED OUTCOME</span><p id="outcome"></p><small id="outcome-source"></small></div>
+          </section>
+
+          <section class="card handoff-card" aria-labelledby="handoff-title"><div class="card-top"><h2 id="handoff-title">Contextual handoff</h2><span class="badge">SYNTHETIC HEALTH RECORDS</span></div><p id="handoff" class="handoff-text">A record-grounded handoff will appear here when it is available.</p></section>
+
+          <div class="activity-grid">
+            <section class="card" aria-labelledby="timeline-title"><div class="card-top"><h2 id="timeline-title">Incident history</h2><span id="event-count" class="count">0</span></div><ol id="timeline" class="event-list"><li class="empty-list">Events will appear as the incident progresses.</li></ol></section>
+            <section class="card" aria-labelledby="actions-title"><div class="card-top"><h2 id="actions-title">Delivery activity</h2><span id="action-count" class="count">0</span></div><p class="section-note">Provider acceptance is distinct from recipient delivery and responder acceptance.</p><ol id="actions" class="action-list"><li class="empty-list">No external actions queued.</li></ol></section>
+          </div>
+        </div>
+
+        <aside class="side-column">
+          <section class="card operator-card" aria-labelledby="operator-title"><div class="card-top"><h2 id="operator-title">Operator controls</h2><span class="operator-dot" aria-hidden="true"></span></div><p class="simulation-label">DEVELOPMENT SIMULATION</p><p class="section-note">Trigger and responder controls simulate authorized actors. Sensor charts always show received measurements.</p>
+            <details id="auth-details" class="auth-details"><summary id="auth-summary">Pairing token required</summary><form id="token-form"><label for="token">Development pairing token</label><div class="token-row"><input id="token" name="token" type="password" autocomplete="off" placeholder="Enter token" spellcheck="false"><button class="button button-small" type="submit">Use token</button></div><p class="field-note">Available from localhost /api/setup. Kept in this tab’s memory.</p></form></details>
+            <button id="copy-token" class="button button-small" type="button" disabled>Copy native pairing token</button><p id="native-connection" class="field-note">Enter this token in the native sensor apps.</p>
+            <div class="control-section"><p class="control-label">Start an incident</p><button id="trigger" class="button button-primary button-wide" type="button">Simulate incident</button><button id="manual-help" class="button button-wide" type="button">Request help manually</button></div>
+            <div class="control-section"><p class="control-label">Current check-in</p><button id="cancel" class="button button-wide" type="button" disabled>I don’t need help</button><p class="field-note">Uses the current incident and check-in IDs.</p></div>
+            <div class="control-section"><label class="control-label" for="responder">Simulated responder</label><select id="responder" disabled><option value="">No approved responders</option></select><div class="button-grid"><button id="accept" class="button" type="button" disabled>Accept</button><button id="depart" class="button" type="button" disabled>On my way</button><button id="arrive" class="button" type="button" disabled>Arrived</button><button id="decline" class="button" type="button" disabled>Decline</button></div><label for="outcome-input">Resolution outcome</label><textarea id="outcome-input" rows="2" placeholder="Describe the observed outcome…" maxlength="2000"></textarea><button id="resolve" class="button button-wide" type="button" disabled>Record outcome & resolve</button></div>
+            <div class="control-section utility-controls"><button id="calibrate" class="button button-small" type="button">Calibrate standing</button><button id="reset" class="button button-small button-quiet" type="button">Reset demo</button></div>
+            <p id="command-message" class="command-message" role="status" aria-live="polite"></p>
+          </section>
+
+          <section class="card" aria-labelledby="responders-title"><div class="card-top"><h2 id="responders-title">Approved responders</h2></div><ul id="responders" class="responder-list"><li class="empty-list">Waiting for configuration.</li></ul></section>
+          <section class="card" aria-labelledby="providers-title"><div class="card-top"><h2 id="providers-title">Integrations</h2></div><ul id="providers" class="provider-list"><li class="empty-list">Waiting for provider status.</li></ul></section>
+        </aside>
+      </div>
+      <footer>MHacks 2026 <span>·</span> Actually Intelligent <span>·</span> LIFELINE development prototype</footer>
+    </main>
+  </body>
+</html>

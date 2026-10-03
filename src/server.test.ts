@@ -1,0 +1,75 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { once } from 'node:events';
+import { randomUUID } from 'node:crypto';
+import { get } from 'node:http';
+import { WebSocket } from 'ws';
+import type { Snapshot, Source } from './contracts.ts';
+
+test('isolated HTTP/WS server accepts native packets, authenticates commands, and completes one incident', { timeout: 15_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifeline-server-'));
+  const child = spawn(process.execPath, ['--import', './src/test-helpers/offline.ts', './src/server.ts'], {
+    cwd: process.cwd(), env: { ...process.env, LIFELINE_DATA_DIR: dir, LIFELINE_PORT: '0', LIFELINE_HOST: '127.0.0.1',
+      LIFELINE_CHECKIN_MS: '1000', SPECTRUM_PROJECT_ID: '', SPECTRUM_PROJECT_SECRET: '', ELEVENLABS_API_KEY: '', LIFELINE_LLM_API_KEY: '',
+      LIFELINE_RESPONDERS_JSON: JSON.stringify([{ id: 'maya', name: 'Maya', phone: null }, { id: 'jordan', name: 'Jordan', phone: null }]) },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  const sockets: WebSocket[] = []; const intervals: ReturnType<typeof setInterval>[] = [];
+  const exit = once(child, 'exit');
+  try {
+    const port = await new Promise<number>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Server did not start.')), 5000);
+      child.stdout.on('data', chunk => {
+        const match = String(chunk).match(/127\.0\.0\.1:(\d+)/);
+        if (match) { clearTimeout(timer); resolve(Number(match[1])); }
+      });
+      child.on('error', reject); child.on('exit', () => { clearTimeout(timer); reject(new Error('Server stopped before ready.')); });
+    });
+    const base = `http://127.0.0.1:${port}`;
+    assert.equal((await fetch(`${base}/api/commands`, { method: 'POST', body: '{}' })).status, 401);
+    const blockedHostStatus = await new Promise<number>((resolve, reject) => {
+      get(`${base}/api/setup`, { headers: { Host: 'untrusted.example' } }, response => {
+        response.resume(); resolve(response.statusCode!);
+      }).on('error', reject);
+    });
+    assert.equal(blockedHostStatus, 403);
+    const setup = await (await fetch(`${base}/api/setup`)).json() as { token: string; port: number };
+    assert.equal(setup.port, port);
+    const commands = async (body: unknown) => fetch(`${base}/api/commands`, { method: 'POST', headers: { Authorization: `Bearer ${setup.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const state = async () => await (await fetch(`${base}/api/state`)).json() as Snapshot;
+    for (const source of ['chest-phone', 'waist-airpod'] as Source[]) {
+      const sessionId = randomUUID(); let sequence = 0;
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/motion?source=${source}&token=${setup.token}`); sockets.push(ws);
+      ws.on('message', bytes => {
+        const p = JSON.parse(String(bytes)); const received = performance.now();
+        if (p.type === 'clock.ping') ws.send(JSON.stringify({ type: 'clock.pong', id: p.id, sessionId, deviceReceivedMs: received, deviceSentMs: performance.now() }));
+      });
+      await once(ws, 'open');
+      intervals.push(setInterval(() => ws.send(JSON.stringify({ type: 'motion.sample', source,
+        sensorLocation: source === 'chest-phone' ? 'phone' : 'Left', sessionId, sequence: sequence++,
+        sensorTime: performance.now() / 1000, quaternion: [0,0,0,1], gravity: [0,-1,0], userAcceleration: [0,0,0], rotationRate: [0,0,0] })), 20));
+    }
+    await new Promise(resolve => setTimeout(resolve, 2200));
+    assert.equal((await commands({ type: 'calibrate' })).status, 200);
+    const measured = await state();
+    assert.equal(measured.sensors.every(s => s.fresh && s.calibrated && s.alignmentUncertaintyMs !== null), true);
+    assert.equal((await commands({ type: 'trigger', kind: 'synthetic', summary: 'Isolated protocol fixture; not a physical fall.' })).status, 200);
+    assert.equal((await state()).incident?.phase, 'CONFIRMING');
+    await new Promise(resolve => setTimeout(resolve, 1150));
+    const i = (await state()).incident!; assert.equal(i.phase, 'HELP_REQUESTED');
+    assert.equal((await commands({ type: 'accept', incidentId: i.id, responderId: 'maya' })).status, 200);
+    assert.equal((await commands({ type: 'accept', incidentId: i.id, responderId: 'jordan' })).status, 400);
+    assert.equal((await commands({ type: 'depart', incidentId: i.id, responderId: 'maya' })).status, 200);
+    assert.equal((await commands({ type: 'arrive', incidentId: i.id, responderId: 'maya' })).status, 200);
+    assert.equal((await commands({ type: 'resolve', incidentId: i.id, responderId: 'maya', outcome: 'Protocol test outcome recorded by assigned owner.' })).status, 200);
+    assert.equal((await state()).incident?.phase, 'RESOLVED');
+    assert.equal((await state()).actions.some(a => a.status === 'provider_accepted'), false);
+  } finally {
+    intervals.forEach(clearInterval); sockets.forEach(ws => ws.terminate());
+    child.kill('SIGTERM'); await exit; rmSync(dir, { recursive: true, force: true });
+  }
+});

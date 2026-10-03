@@ -1,0 +1,26 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 56;
+	objects = {
+		A10000000000000000000001 = {isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = YES; LastUpgradeCheck = 2700; TargetAttributes = {A10000000000000000000002 = {CreatedOnToolsVersion = 27.0; }; }; }; buildConfigurationList = A10000000000000000000010; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base); mainGroup = A10000000000000000000003; productRefGroup = A10000000000000000000005; projectDirPath = ""; projectRoot = ""; targets = (A10000000000000000000002); };
+		A10000000000000000000002 = {isa = PBXNativeTarget; buildConfigurationList = A10000000000000000000011; buildPhases = (A10000000000000000000008, A10000000000000000000009); buildRules = (); dependencies = (); name = LifelinePhone; productName = LifelinePhone; productReference = A10000000000000000000007; productType = "com.apple.product-type.application"; };
+		A10000000000000000000003 = {isa = PBXGroup; children = (A10000000000000000000004, A10000000000000000000005); sourceTree = "<group>"; };
+		A10000000000000000000004 = {isa = PBXGroup; children = (A10000000000000000000006, A10000000000000000000017); path = LifelinePhone; sourceTree = "<group>"; };
+		A10000000000000000000005 = {isa = PBXGroup; children = (A10000000000000000000007); name = Products; sourceTree = "<group>"; };
+		A10000000000000000000006 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LifelinePhoneApp.swift; sourceTree = "<group>"; };
+		A10000000000000000000007 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LifelinePhone.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000008 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000016); runOnlyForDeploymentPostprocessing = 0; };
+		A10000000000000000000009 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A10000000000000000000010 = {isa = XCConfigurationList; buildConfigurations = (A10000000000000000000012, A10000000000000000000013); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A10000000000000000000011 = {isa = XCConfigurationList; buildConfigurations = (A10000000000000000000014, A10000000000000000000015); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A10000000000000000000012 = {isa = XCBuildConfiguration; buildSettings = {CLANG_ENABLE_MODULES = YES; SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SWIFT_VERSION = 5.0; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; DEBUG_INFORMATION_FORMAT = dwarf; ONLY_ACTIVE_ARCH = YES; }; name = Debug; };
+		A10000000000000000000013 = {isa = XCBuildConfiguration; buildSettings = {CLANG_ENABLE_MODULES = YES; SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SWIFT_VERSION = 5.0; SWIFT_COMPILATION_MODE = wholemodule; SWIFT_OPTIMIZATION_LEVEL = "-O"; DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym"; }; name = Release; };
+		A10000000000000000000014 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = LifelinePhone/Info.plist; PRODUCT_BUNDLE_IDENTIFIER = org.lifeline.chestphone; PRODUCT_NAME = "$(TARGET_NAME)"; TARGETED_DEVICE_FAMILY = 1; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks"); }; name = Debug; };
+		A10000000000000000000015 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = LifelinePhone/Info.plist; PRODUCT_BUNDLE_IDENTIFIER = org.lifeline.chestphone; PRODUCT_NAME = "$(TARGET_NAME)"; TARGETED_DEVICE_FAMILY = 1; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks"); }; name = Release; };
+		A10000000000000000000016 = {isa = PBXBuildFile; fileRef = A10000000000000000000006; };
+		A10000000000000000000017 = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+	};
+	rootObject = A10000000000000000000001;
+}

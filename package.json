@@ -1,0 +1,27 @@
+{
+  "name": "lifeline",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/server.ts",
+    "test": "node --test src/*.test.ts src/providers/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "build:airpods": "zsh native/macos/build.sh",
+    "build:ios": "zsh native/ios/build.sh"
+  },
+  "dependencies": {
+    "@spectrum-ts/core": "^12.10.1",
+    "@spectrum-ts/imessage": "^12.10.1",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.0",
+    "typescript": "^5.9.0"
+  },
+  "overrides": { "@opentelemetry/core": "2.8.0" }
+}

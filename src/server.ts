@@ -1,0 +1,234 @@
+import { createServer } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import type { WriteStream } from 'node:fs';
+import { resolve, extname } from 'node:path';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { networkInterfaces } from 'node:os';
+import { WebSocketServer, WebSocket } from 'ws';
+import { Controller, PolicyError } from './controller.ts';
+import { Motion, validSample } from './motion.ts';
+import { approvedResponder } from './identity.ts';
+import type { ClockPong, Command, Incident, ProviderInbound, Responder, Snapshot, Source } from './contracts.ts';
+import { providerStatus, loadHealth, buildHandoff, answerQuestion, sendMessage, startPhotonListener, prepareCheckinAudio } from './providers/index.ts';
+
+const port = Number(process.env.LIFELINE_PORT ?? 8877);
+const host = process.env.LIFELINE_HOST ?? '127.0.0.1';
+const dataDir = resolve(process.env.LIFELINE_DATA_DIR ?? 'data');
+mkdirSync(dataDir, { recursive: true }); mkdirSync(resolve(dataDir, 'recordings'), { recursive: true });
+const tokenFile = resolve(dataDir, 'pairing-token');
+if (!existsSync(tokenFile)) writeFileSync(tokenFile, randomBytes(24).toString('hex'), { mode: 0o600 });
+const token = readFileSync(tokenFile, 'utf8').trim();
+const sameToken = (candidate: string) => {
+  const a = Buffer.from(candidate), b = Buffer.from(token);
+  return a.length === b.length && timingSafeEqual(a, b);
+};
+const authorized = (req: IncomingMessage) => sameToken(req.headers.authorization?.replace(/^Bearer /, '') ?? '');
+const loopback = (req: IncomingMessage) => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '');
+const responderConfig: unknown = process.env.LIFELINE_RESPONDERS_JSON ? JSON.parse(process.env.LIFELINE_RESPONDERS_JSON)
+  : [{ id: 'maya', name: 'Maya', phone: null }, { id: 'jordan', name: 'Jordan', phone: null }];
+if (!Array.isArray(responderConfig) || responderConfig.some(r => !r || typeof r.id !== 'string' || typeof r.name !== 'string'
+  || !(r.phone === null || (typeof r.phone === 'string' && /^\+[1-9]\d{7,14}$/.test(r.phone))))) throw new Error('Invalid approved responder configuration. Use E.164 phone numbers or null for development simulation.');
+const responders = responderConfig as Responder[];
+if (new Set(responders.filter(r => r.phone).map(r => r.phone)).size !== responders.filter(r => r.phone).length) throw new Error('Approved phone numbers must be unique.');
+function duration(name: string, fallback: number): number {
+  const n = Number(process.env[name] ?? fallback);
+  if (!Number.isFinite(n) || n < 1000 || n > 86_400_000) throw new Error(`Invalid duration: ${name}`);
+  return n;
+}
+const controller = new Controller(resolve(dataDir, 'lifeline.sqlite'), responders, Date.now, {
+  checkinMs: duration('LIFELINE_CHECKIN_MS', 20_000), acceptMs: duration('LIFELINE_ACCEPT_MS', 60_000), progressMs: duration('LIFELINE_PROGRESS_MS', 120_000)
+});
+const motion = new Motion();
+const producers = new Map<Source, WebSocket>();
+const recorders = new Map<string, WriteStream>();
+let healthPromise = loadHealth();
+let audio: Uint8Array | null = null;
+let audioPreparing = false;
+let workerBusy = false;
+let stopPhoton: (() => Promise<void>) | null = null;
+let handoffIncident: string | null = null;
+let stopping = false;
+
+function snapshot(): Snapshot {
+  const incident = controller.latest();
+  return { serverTime: Date.now(), incident, responders: responders.map(r => ({ ...r, phone: r.phone ? 'configured' : null })),
+    timeline: incident ? controller.events(incident.id) : [], actions: incident ? controller.actions(incident.id) : [],
+    sensors: motion.views(), providers: providerStatus() };
+}
+const live = new WebSocketServer({ noServer: true, maxPayload: 1024 });
+const ingest = new WebSocketServer({ noServer: true, maxPayload: 8192 });
+function broadcast(): void {
+  if (stopping || !live.clients.size) return;
+  const data = JSON.stringify(snapshot());
+  for (const ws of live.clients) if (ws.readyState === WebSocket.OPEN && ws.bufferedAmount < 100_000) ws.send(data);
+}
+function prepareIncident(i: Incident): void {
+  if (handoffIncident !== i.id) {
+    handoffIncident = i.id;
+    void healthPromise.then(h => buildHandoff(i, h)).then(text => {
+      if (!stopping && controller.active()?.id === i.id) { controller.setHandoff(i.id, text); broadcast(); }
+    }).catch(() => { if (!stopping && controller.active()?.id === i.id) controller.setHandoff(i.id, 'Synthetic health record unavailable. Response continues.'); });
+  }
+  if (!audio && !audioPreparing) {
+    audioPreparing = true;
+    void prepareCheckinAudio().then(bytes => { audio = bytes; }).catch(() => {}).finally(() => { audioPreparing = false; });
+  }
+}
+async function providerWorker(): Promise<void> {
+  if (workerBusy || stopping || !providerStatus().photon?.configured) return;
+  workerBusy = true;
+  try {
+    const a = controller.claimAction(); if (!a) return;
+    const r = responders.find(r => r.id === a.recipientId);
+    if (!r?.phone) { controller.finishAction(a.id, 'failed', 'No approved phone configured; development simulation only.'); return; }
+    const result = await sendMessage(r.phone, a.text);
+    if (!stopping) controller.finishAction(a.id, result.status, result.detail, result.messageId);
+  } catch { /* attempt remains attempting; startup recovery preserves an unknown outcome */ }
+  finally { workerBusy = false; if (!stopping) broadcast(); }
+}
+async function inbound(e: ProviderInbound): Promise<void> {
+  if (stopping || controller.seenInbound(e.messageId)) return;
+  const r = approvedResponder(e.sender, responders);
+  const i = controller.active(); if (!r || !i || e.removed) return;
+  const target = e.targetMessageId ? controller.incidentForMessage(e.targetMessageId, r.id) : null;
+  try {
+    if (e.kind === 'reaction') {
+      if (target && ['like', '👍'].includes(e.reaction ?? '')) controller.accept(target.id, r.id, e.messageId);
+      return;
+    }
+    const text = (e.text ?? '').trim();
+    if (text === `ON IT ${i.id}` || (target && text === 'ON IT')) controller.accept(i.id, r.id, e.messageId);
+    else if (text === `DEPART ${i.id}`) { controller.progress(i.id, r.id, 'depart'); controller.rememberInbound(e.messageId); }
+    else if (text === `ARRIVED ${i.id}`) { controller.progress(i.id, r.id, 'arrive'); controller.rememberInbound(e.messageId); }
+    else if (text === `DECLINE ${i.id}`) { controller.decline(i.id, r.id); controller.rememberInbound(e.messageId); }
+    else if (text.startsWith(`RESOLVED ${i.id} `)) { controller.resolve(i.id, r.id, text.slice(`RESOLVED ${i.id} `.length)); controller.rememberInbound(e.messageId); }
+    else if (text && i.contacted.includes(r.id)) {
+      controller.rememberInbound(e.messageId);
+      const reply = await answerQuestion(i, await healthPromise, text);
+      if (!stopping && controller.active()?.id === i.id && r.phone) await sendMessage(r.phone, `${i.id}: ${reply}`);
+    }
+  } catch (error) {
+    if (!(error instanceof PolicyError)) console.error('Provider processing failed; incident remains unresolved.');
+  } finally { if (!stopping) broadcast(); }
+}
+
+function json(res: ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body));
+}
+async function commandBody(req: IncomingMessage): Promise<Command> {
+  let text = '';
+  for await (const chunk of req) { text += chunk; if (text.length > 8000) throw new PolicyError('Request is too large.'); }
+  const parsed: unknown = JSON.parse(text);
+  if (!parsed || typeof parsed !== 'object' || typeof (parsed as Command).type !== 'string') throw new PolicyError('Invalid command.');
+  return parsed as Command;
+}
+function execute(c: Command): void {
+  switch (c.type) {
+    case 'trigger': {
+      if (!['synthetic', 'manual'].includes(c.kind) || (c.summary !== undefined && (typeof c.summary !== 'string' || c.summary.length > 1000))) throw new PolicyError('Invalid trigger.');
+      prepareIncident(controller.trigger({ kind: c.kind, summary: c.summary ?? (c.kind === 'synthetic' ? 'Development simulation — not a real sensor event.' : 'Explicit manual help request.') })); break;
+    }
+    case 'cancel': controller.cancel(c.incidentId, c.checkinId); break;
+    case 'accept': controller.accept(c.incidentId, c.responderId); break;
+    case 'depart': case 'arrive': controller.progress(c.incidentId, c.responderId, c.type); break;
+    case 'decline': controller.decline(c.incidentId, c.responderId); break;
+    case 'resolve': controller.resolve(c.incidentId, c.responderId, c.outcome); break;
+    case 'calibrate': {
+      if (!motion.calibrate().length) throw new PolicyError('Calibration requires at least five fresh real samples while standing still.'); break;
+    }
+    case 'reset': controller.reset(); motion.reset(); handoffIncident = null; break;
+    default: throw new PolicyError('Unsupported command.');
+  }
+}
+const mime: Record<string, string> = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml' };
+const server = createServer(async (req, res) => {
+  try {
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    if (url.pathname === '/health' && req.method === 'GET') return json(res, 200, { status: 'ok', motionSources: motion.views().filter(v => v.fresh).map(v => v.source) });
+    if (url.pathname === '/api/state' && req.method === 'GET') return json(res, 200, snapshot());
+    if (url.pathname === '/api/setup' && req.method === 'GET') {
+      const origin = req.headers.origin;
+      const requestHost = new URL(`http://${req.headers.host ?? ''}`).hostname;
+      if (!loopback(req) || !['localhost', '127.0.0.1', '[::1]'].includes(requestHost)
+        || (origin && new URL(origin).host !== req.headers.host)) return json(res, 403, { error: 'Pairing setup is available only from this Mac.' });
+      const addresses = Object.values(networkInterfaces()).flat().filter(a => a && a.family === 'IPv4' && !a.internal).map(a => a!.address);
+      return json(res, 200, { token, port: req.socket.localPort ?? port, addresses });
+    }
+    if (url.pathname === '/api/commands' && req.method === 'POST') {
+      if (!authorized(req)) return json(res, 401, { error: 'Operator/pairing token required.' });
+      execute(await commandBody(req)); broadcast(); return json(res, 200, { ok: true });
+    }
+    if (url.pathname === '/api/checkin' && req.method === 'GET') {
+      if (!authorized(req)) return json(res, 401, { error: 'Pairing token required.' });
+      const i = controller.active(); if (i) prepareIncident(i);
+      return json(res, 200, { incident: i, audioUrl: audio ? '/api/audio/checkin' : null });
+    }
+    if (url.pathname === '/api/audio/checkin' && req.method === 'GET') {
+      if (!authorized(req)) return json(res, 401, { error: 'Pairing token required.' });
+      if (!audio) return json(res, 404, { error: 'ElevenLabs clip is unavailable; native fallback is development-only.' });
+      res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'private, max-age=3600' }); return res.end(Buffer.from(audio));
+    }
+    if (url.pathname.startsWith('/api/')) return json(res, 404, { error: 'Unknown API endpoint.' });
+    const allowed = new Set(['/index.html', '/styles.css', '/app.js']);
+    const path = url.pathname === '/' ? '/index.html' : url.pathname;
+    if (req.method !== 'GET' || !allowed.has(path)) return json(res, 404, { error: 'Not found.' });
+    res.writeHead(200, { 'Content-Type': mime[extname(path)], 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' });
+    res.end(readFileSync(resolve('public', path.slice(1))));
+  } catch (error) { json(res, error instanceof PolicyError || error instanceof SyntaxError ? 400 : 500,
+    { error: error instanceof PolicyError || error instanceof SyntaxError ? error.message : 'Request failed; incident state is preserved.' }); }
+});
+
+server.on('upgrade', (req, socket, head) => {
+  const url = new URL(req.url ?? '/', 'http://localhost');
+  if (url.pathname === '/live') { live.handleUpgrade(req, socket, head, ws => { live.emit('connection', ws); ws.send(JSON.stringify(snapshot())); }); return; }
+  const source = url.searchParams.get('source') as Source;
+  if (url.pathname !== '/motion' || !['chest-phone', 'waist-airpod'].includes(source) || !sameToken(url.searchParams.get('token') ?? '') || producers.has(source)) {
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); socket.destroy(); return;
+  }
+  ingest.handleUpgrade(req, socket, head, ws => {
+    producers.set(source, ws); motion.connected(source); let session: string | null = null;
+    const ping = () => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(motion.ping(source))); };
+    const timer = setInterval(ping, 2000); ping();
+    ws.on('error', () => ws.close());
+    ws.on('message', bytes => {
+      try {
+        const p: unknown = JSON.parse(bytes.toString());
+        if (p && typeof p === 'object' && (p as ClockPong).type === 'clock.pong') { motion.pong(source, p as ClockPong); return; }
+        if (!validSample(p, source) || (session && p.sessionId !== session)) return;
+        if (!motion.sample(source, p)) return; session = p.sessionId;
+        const key = `${source}-${session}`;
+        if (!recorders.has(key)) {
+          const recorder = createWriteStream(resolve(dataDir, 'recordings', `${key}.jsonl`), { flags: 'a', mode: 0o600 });
+          recorder.on('error', () => console.error('Motion recording failed; check storage.')); recorders.set(key, recorder);
+        }
+        recorders.get(key)!.write(JSON.stringify({ ...p, receivedAt: Date.now(), hostMonotonicMs: performance.now() }) + '\n');
+      } catch { /* invalid packets never become evidence */ }
+    });
+    ws.on('close', () => { clearInterval(timer); if (producers.get(source) === ws) { producers.delete(source); motion.disconnected(source); broadcast(); } });
+  });
+});
+live.on('connection', ws => ws.on('error', () => ws.close()));
+const heartbeat = setInterval(() => {
+  controller.tick(); const evidence = motion.candidate(); if (evidence) prepareIncident(controller.trigger(evidence));
+  broadcast(); void providerWorker();
+}, 100);
+
+server.listen(port, host, () => {
+  const actualPort = (server.address() as { port: number }).port;
+  console.log(`LIFELINE running at http://${host}:${actualPort}. Native pairing token is available in the local dashboard; not logged.`);
+  const i = controller.active(); if (i) prepareIncident(i);
+  void startPhotonListener(inbound).then(async stop => {
+    if (stopping) await stop(); else stopPhoton = stop;
+  }).catch(() => { if (!stopping) console.error('Photon listener unavailable; provider status and incident state remain visible.'); });
+});
+server.on('error', error => { console.error(error.message); process.exitCode = 1; void shutdown(); });
+async function shutdown(): Promise<void> {
+  if (stopping) return; stopping = true; clearInterval(heartbeat);
+  for (const ws of [...live.clients, ...ingest.clients, ...producers.values()]) ws.terminate();
+  for (const recorder of recorders.values()) recorder.end();
+  await stopPhoton?.().catch(() => {});
+  // A send in progress is left recoverable as unknown if interrupted.
+  server.close(); controller.close();
+}
+process.on('SIGINT', () => { void shutdown(); }); process.on('SIGTERM', () => { void shutdown(); });
