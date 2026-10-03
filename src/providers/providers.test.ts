@@ -104,12 +104,28 @@ test('AI composes an incident-grounded answer with selected source fields and un
   const providers = createProviders({
     env: { LIFELINE_LLM_API_KEY: 'mock', LIFELINE_LLM_BASE_URL: 'https://model.example/v1', LIFELINE_LLM_MODEL: 'mock-model' },
     fetch: fetchStub((url, init) => {
-      if (url === FINCH_DEMO_URL) return json(fixture);
+      if (url === FINCH_DEMO_URL) return json({ ...fixture, data: { ...fixture.data,
+        allergies: [{ ...fixture.data.allergies[0], codes: [{ code: 'hidden-raw-code' }], details: 'hidden-raw-detail' }],
+      } });
       requests++;
       assert.equal(url, 'https://model.example/v1/chat/completions');
       const body = JSON.parse(String(init?.body));
       assert.equal(body.tools, undefined);
-      assert.deepEqual(body.response_format, { type: 'json_object' });
+      assert.equal(body.response_format.type, 'json_schema');
+      assert.equal(body.response_format.json_schema.strict, true);
+      const schema = body.response_format.json_schema.schema;
+      assert.deepEqual(schema.required, ['facts', 'incidentFields', 'unavailable']);
+      assert.equal(schema.additionalProperties, false);
+      assert.deepEqual(schema.properties.facts.items.properties.recordId.enum, ['med-1', 'allergy-1']);
+      assert.equal(schema.properties.facts.items.additionalProperties, false);
+      assert.ok(schema.properties.facts.items.properties.fields.items.enum.includes('reaction'));
+      assert.ok(!schema.properties.facts.items.properties.fields.items.enum.includes('details'));
+      assert.deepEqual(schema.properties.incidentFields.items.enum, ['evidence', 'createdAt', 'phase', 'owner']);
+      assert.deepEqual(schema.properties.unavailable.items.enum, ['location', 'currentVitals', 'responderEta', 'liveRecordFreshness']);
+      const records = JSON.parse(body.messages[1].content).records;
+      assert.deepEqual(records.find((record: { id: string }) => record.id === 'allergy-1').data,
+        { substance: 'Penicillin', status: 'active', reaction: 'Fixture rash' });
+      assert.doesNotMatch(body.messages[1].content, /hidden-raw-code|hidden-raw-detail/);
       assert.match(body.messages[1].content, /allergy-1/);
       assert.match(body.messages[1].content, /Chest impact and waist posture change/);
       return json({ choices: [{ message: { content: JSON.stringify({ facts: [{ recordId: 'allergy-1', fields: ['substance', 'reaction', 'severity'] }], incidentFields: [], unavailable: ['location'], answer: 'Invented diagnosis' }) } }] });
@@ -243,13 +259,91 @@ test('invented AI records or fields fall back visibly to actual records', async 
   }
 });
 
+test('empty or wrong-category AI plans cannot omit existing requested records', async () => {
+  for (const facts of [[], [{ recordId: 'med-1', fields: ['name'] }]]) {
+    const providers = createProviders({
+      env: { LIFELINE_LLM_API_KEY: 'mock', LIFELINE_LLM_BASE_URL: 'https://model.example/v1', LIFELINE_LLM_MODEL: 'mock' },
+      fetch: fetchStub(url => url === FINCH_DEMO_URL ? json(fixture) : json({ choices: [{ message: { content: JSON.stringify({
+        facts, incidentFields: ['evidence'], unavailable: ['location', 'currentVitals', 'responderEta', 'liveRecordFreshness'],
+      }) } }] })),
+    });
+    const answer = await providers.answerQuestionDetailed(incident, await providers.loadHealth(),
+      'What should I tell the responder about the recorded allergies?');
+    assert.equal(answer.generation, 'degraded');
+    assert.match(answer.text, /Penicillin.*Fixture rash.*\[allergy-1\]/);
+    assert.doesNotMatch(answer.text, /Example medication/);
+    assert.match(providers.providerStatus().llm.detail, /AI demo requirement unmet/);
+  }
+});
+
+test('handoffs omitting an available health category visibly degrade to complete source facts', async () => {
+  for (const recordId of ['med-1', 'allergy-1']) {
+    const providers = createProviders({
+      env: { LIFELINE_LLM_API_KEY: 'mock', LIFELINE_LLM_BASE_URL: 'https://model.example/v1', LIFELINE_LLM_MODEL: 'mock' },
+      fetch: fetchStub(url => url === FINCH_DEMO_URL ? json(fixture) : json({ choices: [{ message: { content: JSON.stringify({
+        facts: [{ recordId, fields: ['status'] }], incidentFields: ['evidence'], unavailable: ['currentVitals'],
+      }) } }] })),
+    });
+    const handoff = await providers.buildHandoff(incident, await providers.loadHealth());
+    assert.match(handoff, /source template fallback/);
+    assert.match(handoff, /\[med-1\]/);
+    assert.match(handoff, /\[allergy-1\]/);
+    assert.match(providers.providerStatus().llm.detail, /AI demo requirement unmet/);
+  }
+});
+
+test('empty health selection remains valid for incident and unavailable-vitals questions', async () => {
+  const providers = createProviders({
+    env: { LIFELINE_LLM_API_KEY: 'mock', LIFELINE_LLM_BASE_URL: 'https://model.example/v1', LIFELINE_LLM_MODEL: 'mock' },
+    fetch: fetchStub((url, init) => {
+      if (url === FINCH_DEMO_URL) return json(fixture);
+      const fields = JSON.parse(String(init?.body)).response_format.json_schema.schema.properties.incidentFields.items.enum;
+      return json({ choices: [{ message: { content: JSON.stringify({
+        facts: [], incidentFields: fields.includes('phase') ? ['phase', 'owner'] : ['evidence'], unavailable: ['currentVitals'],
+      }) } }] });
+    }),
+  });
+  const health = await providers.loadHealth();
+  for (const question of ['What is the incident status and owner?', 'What is the current heart rate?']) {
+    const answer = await providers.answerQuestionDetailed(incident, health, question);
+    assert.equal(answer.generation, 'ai');
+    assert.match(answer.text, /No responder has accepted ownership/);
+    assert.match(answer.text, /Current vital signs not provided/);
+  }
+  const handoff = await providers.buildHandoff(incident, health);
+  assert.match(handoff, /source template fallback/);
+  assert.match(handoff, /\[allergy-1\]/);
+});
+
+test('no returned health records produces a valid empty-array schema and preserves unknowns', async () => {
+  const providers = createProviders({
+    env: { LIFELINE_LLM_API_KEY: 'mock', LIFELINE_LLM_BASE_URL: 'https://model.example/v1', LIFELINE_LLM_MODEL: 'mock' },
+    fetch: fetchStub((url, init) => {
+      if (url === FINCH_DEMO_URL) return json({ ...fixture, data: { medications: [], conditions: [], allergies: [] } });
+      const schema = JSON.parse(String(init?.body)).response_format.json_schema.schema;
+      assert.equal(schema.properties.facts.maxItems, 0);
+      assert.equal(schema.properties.facts.items.properties.recordId.enum, undefined);
+      return json({ choices: [{ message: { content: JSON.stringify({ facts: [], incidentFields: ['evidence'], unavailable: [] }) } }] });
+    }),
+  });
+  const health = await providers.loadHealth();
+  assert.equal(health.available, true);
+  assert.deepEqual(health.recordIds, []);
+  const answer = await providers.answerQuestionDetailed(incident, health, 'What allergies were recorded?');
+  assert.equal(answer.generation, 'ai');
+  assert.match(answer.text, /missing entries do not establish absence/);
+  assert.match(await providers.buildHandoff(incident, health), /AI-composed synthetic health handoff/);
+});
+
 test('AI handoff uses physical incident context and produces source-cited facts with explicit unavailable information', async () => {
   const providers = createProviders({
     env: { LIFELINE_LLM_API_KEY: 'mock', LIFELINE_LLM_BASE_URL: 'https://model.example/v1', LIFELINE_LLM_MODEL: 'mock' },
     fetch: fetchStub((url, init) => {
       if (url === FINCH_DEMO_URL) return json(fixture);
       const request = JSON.parse(String(init?.body));
-      assert.deepEqual(request.response_format, { type: 'json_object' });
+      assert.equal(request.response_format.type, 'json_schema');
+      assert.deepEqual(request.response_format.json_schema.schema.properties.incidentFields.items.enum, ['evidence', 'createdAt']);
+      assert.deepEqual(request.response_format.json_schema.schema.properties.facts.items.properties.recordId.enum, ['med-1', 'allergy-1']);
       assert.match(request.messages[0].content, /responder handoff/);
       assert.match(request.messages[1].content, /Chest impact and waist posture change/);
       return json({ choices: [{ message: { content: JSON.stringify({
