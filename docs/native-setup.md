@@ -74,7 +74,9 @@ before retrying. That account restriction prevents certificate/profile creation.
    Grant Microphone and Speech Recognition during setup. If either is denied,
    or on-device English recognition is unsupported, use the explicit controls.
    Enable denied permissions in Settings and stop/start monitoring to refresh.
-5. With both sources mounted and stable, calibrate on the dashboard. Repeat
+5. With both sources mounted and stable for at least one second, tap
+   **Calibrate sensors** in the iPhone app or above the console's sensor cards.
+   The phone reports whether both sources or only one was calibrated. Repeat
    after reconnecting, changing the reporting bud, or remounting.
 
 The token is saved in each development app's own UserDefaults so setup

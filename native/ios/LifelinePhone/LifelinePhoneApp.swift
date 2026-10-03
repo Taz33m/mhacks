@@ -31,6 +31,15 @@ import AVFoundation
                     Button(model.monitoring ? "Stop monitoring" : "Start monitoring") {
                         if model.monitoring { model.stop() } else { model.start() }
                     }.buttonStyle(.borderedProminent).controlSize(.large)
+                    Button(model.calibrating ? "Calibrating…" : "Calibrate sensors") {
+                        Task { await model.calibrateSensors() }
+                    }.buttonStyle(.bordered).controlSize(.large)
+                        .disabled(!model.monitoring || !model.checkinAvailable || model.calibrating)
+                    Text("Mount the phone and waist AirPod, stand still for at least one second, then tap Calibrate sensors.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if !model.calibrationStatus.isEmpty {
+                        Text(model.calibrationStatus).font(.caption).fixedSize(horizontal: false, vertical: true)
+                    }
                     Text(model.status).fixedSize(horizontal: false, vertical: true)
                     Text(model.connectionStatus).font(.caption).fixedSize(horizontal: false, vertical: true)
                     if let policy = model.demoPolicyExplanation {
@@ -81,7 +90,7 @@ import AVFoundation
                     }
                     Text(model.checkinStatus).foregroundStyle(.secondary)
                     CheckinVoiceStatusView(voice: model.voice)
-                    Text("Keep this app foregrounded with the phone mounted on your chest. Calibrate both sources on the dashboard after mounting or reconnecting.")
+                    Text("Keep this app foregrounded with the phone mounted on your chest. Calibrate both sources after mounting or reconnecting.")
                         .font(.caption).foregroundStyle(.secondary)
                 }.padding(24)
             }
@@ -120,6 +129,10 @@ struct PhoneCheckinPolicy: Decodable {
 }
 struct PhoneResponder: Decodable { let id: String; let name: String }
 struct SpokenReplyResponse: Decodable { let decision: String }
+private struct CalibrationState: Decodable {
+    struct Sensor: Decodable { let source: String; let fresh: Bool; let calibrated: Bool }
+    let sensors: [Sensor]
+}
 private enum CheckinResponseError: Error { case unreadable }
 struct PhoneIncident: Decodable {
     struct Evidence: Decodable { let summary: String }
@@ -152,6 +165,8 @@ struct PhoneIncident: Decodable {
     @Published var checkinAvailable = false
     @Published var cancelling = false
     @Published var requestingHelp = false
+    @Published var calibrating = false
+    @Published var calibrationStatus = ""
     @Published var responders: [PhoneResponder] = []
     @Published var checkinPolicy: PhoneCheckinPolicy?
     let voice = CheckinVoiceSession()
@@ -407,6 +422,7 @@ struct PhoneIncident: Decodable {
         guard monitoring, socket === task else { return }
         connectionStatus = reason + " Retrying in 2 seconds. Recalibrate after reconnection."
         retryNotBefore = ProcessInfo.processInfo.systemUptime + 2
+        calibrationStatus = "Connection changed. Calibrate again once both mounted sensors are streaming."
         disconnect()
     }
 
@@ -539,6 +555,50 @@ struct PhoneIncident: Decodable {
         }
     }
 
+    func calibrateSensors() async {
+        guard monitoring, checkinAvailable, !calibrating,
+              let body = try? JSONSerialization.data(withJSONObject: ["type": "calibrate"]),
+              let request = authenticatedRequest("/api/commands", method: "POST", body: body) else { return }
+        calibrating = true
+        calibrationStatus = "Requesting standing calibration…"
+        let epoch = monitoringEpoch
+        let currentSocket = socket
+        var accepted = false
+        defer { calibrating = false }
+        do {
+            let (_, response) = try await controllerSession.data(for: request)
+            guard monitoring, monitoringEpoch == epoch, currentSocket === socket else { return }
+            let code = (response as? HTTPURLResponse)?.statusCode
+            guard code == 200 else {
+                calibrationStatus = code == 401 || code == 403
+                    ? "Calibration rejected. Check the pairing token."
+                    : "Calibration needs fresh, continuous still samples. Hold both mounted sensors still for one second and try again."
+                return
+            }
+            accepted = true
+            guard let stateRequest = authenticatedRequest("/api/state") else { return }
+            let (data, stateResponse) = try await controllerSession.data(for: stateRequest)
+            guard monitoring, monitoringEpoch == epoch, currentSocket === socket else { return }
+            guard (stateResponse as? HTTPURLResponse)?.statusCode == 200 else { throw CheckinResponseError.unreadable }
+            let state = try JSONDecoder().decode(CalibrationState.self, from: data)
+            let sources = state.sensors.filter { $0.fresh && $0.calibrated }.map {
+                $0.source == "chest-phone" ? "chest iPhone" : "waist AirPod"
+            }
+            if sources.count == 2 {
+                calibrationStatus = "Chest iPhone and waist AirPod calibrated. Recalibrate after remounting or reconnecting."
+            } else if let source = sources.first {
+                calibrationStatus = "Only \(source) is calibrated. Keep the other sensor streaming and still, then try again."
+            } else {
+                calibrationStatus = "Calibration was accepted, but no fresh calibrated source is reported. Check the streams and try again."
+            }
+        } catch {
+            guard monitoring, monitoringEpoch == epoch, currentSocket === socket else { return }
+            calibrationStatus = accepted
+                ? "Calibration was accepted; current sensor status is unavailable. Check the console."
+                : "Calibration result is unknown. Check connectivity and the console before retrying."
+        }
+    }
+
     func cancelCurrentCheckin() async {
         guard let current = incident, current.phase == "CONFIRMING", !cancelling,
               let body = try? JSONSerialization.data(withJSONObject: ["type": "cancel", "incidentId": current.id, "checkinId": current.checkinId]),
@@ -644,6 +704,7 @@ struct PhoneIncident: Decodable {
         incident = nil
         checkinAvailable = false
         checkinPolicy = nil
+        calibrationStatus = "Monitoring stopped. Calibrate again after reconnecting."
         UIApplication.shared.isIdleTimerDisabled = false
         status = "Stopped. Sensor unavailability does not resolve an incident."
         connectionStatus = "Relay socket stopped."
@@ -653,6 +714,6 @@ struct PhoneIncident: Decodable {
     func stopForBackground() {
         guard monitoring else { return }
         stop()
-        status = "App moved to the background. Return here and start again; recalibrate on the dashboard."
+        status = "App moved to the background. Return here and start again, then recalibrate."
     }
 }

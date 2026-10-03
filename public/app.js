@@ -307,20 +307,25 @@
 
   async function command(payload) {
     if (!token || busy) return;
+    const message = payload.type === 'calibrate' ? '#calibration-message' : '#command-message';
     busy = true;
     updateControls();
-    text('#command-message', 'Applying command…');
-    $('#command-message').classList.remove('error');
+    text(message, payload.type === 'calibrate' ? 'Requesting standing calibration…' : 'Applying command…');
+    $(message).classList.remove('error');
     try {
       const response = await fetch('/api/commands', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload), signal: AbortSignal.timeout(12000) });
       const result = await response.json();
       if (!response.ok || result.error) throw new Error(result.error || `Command failed (${response.status})`);
-      text('#command-message', 'Command accepted by the controller.');
+      text(message, payload.type === 'calibrate'
+        ? 'Calibration recorded for available still sensors. Check both sensor cards below.'
+        : 'Command accepted by the controller.');
       if (payload.type === 'resolve' || payload.type === 'reset') $('#outcome-input').value = '';
       await loadState().catch(() => {});
     } catch (error) {
-      $('#command-message').classList.add('error');
-      text('#command-message', error.name === 'TimeoutError' ? 'Request timed out. Check incident state before repeating the command.' : error.message || 'Command failed.');
+      $(message).classList.add('error');
+      text(message, error.name === 'TimeoutError'
+        ? payload.type === 'calibrate' ? 'Request timed out. Check sensor calibration before retrying.' : 'Request timed out. Check incident state before repeating the command.'
+        : error.message || 'Command failed.');
     } finally {
       busy = false;
       updateControls();

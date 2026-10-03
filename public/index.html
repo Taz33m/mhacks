@@ -20,6 +20,8 @@
       <div id="policy-banner" class="policy-banner" role="status" hidden><span id="policy-mode" class="badge"></span><p id="policy-detail"></p></div>
       <div class="layout">
         <div class="main-column">
+          <div class="calibration-controls"><div><h2>Sensor calibration</h2><p>Mount both sensors and stand still for at least one second.</p></div><button id="calibrate" class="button button-primary" type="button" disabled>Calibrate sensors</button></div>
+          <p id="calibration-message" class="command-message" role="status" aria-live="polite"></p>
           <section class="sensor-grid" aria-label="Motion sources">
             <article class="card sensor-card" id="chest-phone">
               <div class="card-top"><div><p class="eyebrow">SOURCE 01</p><h2>Chest iPhone</h2></div><span class="badge sensor-status">No signal</span></div>
@@ -41,7 +43,7 @@
 
           <section class="card trial-card" aria-labelledby="trial-title">
             <div class="card-top"><div><p class="eyebrow">MEASURED DATA CAPTURE</p><h2 id="trial-title">Motion trials</h2></div><span id="trial-status" class="badge">NO RECORDING</span></div>
-            <p class="section-note">Start recording → mount both sensors and stand still → use <strong>Calibrate standing</strong> → perform a controlled movement → stop recording.</p>
+            <p class="section-note">Start recording → mount both sensors and stand still → use <strong>Calibrate sensors</strong> → perform a controlled movement → stop recording.</p>
             <div class="trial-inputs"><div><label for="trial-label">Trial label</label><input id="trial-label" maxlength="80" placeholder="e.g. Phone drop, trial 01" autocomplete="off"></div><div><label for="trial-scenario">Scenario label</label><select id="trial-scenario"><option value="standing">Standing</option><option value="phone-drop">Phone drop</option><option value="sit">Sit</option><option value="bend">Bend</option><option value="staged-fall">Staged fall</option><option value="other">Other</option></select></div></div>
             <div class="trial-buttons"><button id="trial-start" class="button button-primary" type="button" disabled>Begin recording</button><button id="trial-stop" class="button" type="button" disabled>Stop recording</button><button id="trial-download" class="button button-quiet" type="button" disabled>Download JSONL</button></div>
             <div class="trial-facts"><div><span class="eyebrow">ELAPSED</span><strong id="trial-elapsed">—</strong></div><div><span class="eyebrow">CHEST SAMPLES</span><strong id="trial-chest-count">—</strong></div><div><span class="eyebrow">WAIST SAMPLES</span><strong id="trial-waist-count">—</strong></div></div>
@@ -73,7 +75,7 @@
             <div class="control-section"><p class="control-label">Start an incident</p><button id="trigger" class="button button-primary button-wide" type="button">Simulate incident</button><button id="manual-help" class="button button-wide" type="button">Request help manually</button></div>
             <div class="control-section"><p class="control-label">Current check-in</p><button id="cancel" class="button button-wide" type="button" disabled>I don’t need help</button><p class="field-note">Available during check-in only. After escalation, the responder must record the outcome.</p></div>
             <div class="control-section"><label class="control-label" for="responder">Simulated responder</label><select id="responder" disabled><option value="">No approved responders</option></select><div class="button-grid"><button id="accept" class="button" type="button" disabled>Accept</button><button id="depart" class="button" type="button" disabled>On my way</button><button id="arrive" class="button" type="button" disabled>Arrived</button><button id="decline" class="button" type="button" disabled>Decline</button></div><label for="outcome-input">Resolution outcome</label><textarea id="outcome-input" rows="2" placeholder="Describe the observed outcome (at least 5 characters)…" minlength="5" maxlength="2000"></textarea><button id="resolve" class="button button-wide" type="button" disabled>Record outcome & resolve</button></div>
-            <div class="control-section utility-controls"><button id="calibrate" class="button button-small" type="button">Calibrate standing</button><button id="reset" class="button button-small button-quiet" type="button">Reset demo</button></div>
+            <div class="control-section utility-controls"><button id="reset" class="button button-small button-quiet" type="button">Reset demo</button></div>
             <p id="command-message" class="command-message" role="status" aria-live="polite"></p>
           </section>
 
