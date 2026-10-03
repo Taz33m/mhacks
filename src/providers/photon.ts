@@ -49,6 +49,38 @@ export const createCloudPhoton: PhotonFactory = async (projectId, projectSecret)
 function object(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' ? value as Record<string, unknown> : null;
 }
+const sdkErrorNames = new Set(['IMessageError', 'AuthenticationError', 'NotFoundError', 'RateLimitError', 'ValidationError', 'ConnectionError']);
+// Fixed public codes from the installed SDK; diagnostics must not eagerly load it.
+// Unknown future codes are intentionally omitted until reviewed.
+const sdkErrorCodes = new Set([
+  'unauthenticated', 'tokenExpired', 'tokenBlocked', 'unauthorized',
+  'dailyLimitExceeded', 'recipientLimitExceeded', 'uploadRateExceeded', 'contentDuplicateExceeded',
+  'recipientCoolingDown', 'recipientLocked', 'burstRateExceeded', 'newContactThrottled',
+  'sendReceiveRatioExceeded', 'duplicateMessage', 'chatNotFound', 'messageNotFound',
+  'attachmentNotFound', 'addressNotFound', 'sharedFriendLocationNotFound', 'groupIconNotFound',
+  'pollNotFound', 'invalidArgument', 'preconditionFailed', 'operationNotSupported',
+  'attachmentNotReady', 'privateApiUnavailable', 'serviceUnavailable', 'timeout',
+  'internalError', 'databaseError', 'networkError',
+]);
+const sdkErrorSources = new Set(['upstream', 'spectrum-imessage', 'middleware', 'intermediary']);
+const grpcStatuses = ['OK', 'CANCELLED', 'UNKNOWN', 'INVALID_ARGUMENT', 'DEADLINE_EXCEEDED', 'NOT_FOUND',
+  'ALREADY_EXISTS', 'PERMISSION_DENIED', 'RESOURCE_EXHAUSTED', 'FAILED_PRECONDITION', 'ABORTED', 'OUT_OF_RANGE',
+  'UNIMPLEMENTED', 'INTERNAL', 'UNAVAILABLE', 'DATA_LOSS', 'UNAUTHENTICATED'];
+/** Never expose arbitrary SDK messages, payloads, context, addresses or request IDs. */
+function safeErrorDetail(error: unknown, method: 'space.prepare' | 'space.send' | 'message.reply'): string {
+  const e = object(error), facts: string[] = [];
+  if (typeof e?.name === 'string' && sdkErrorNames.has(e.name)) facts.push(e.name);
+  if (typeof e?.code === 'string' && sdkErrorCodes.has(e.code)) facts.push(e.code);
+  if (typeof e?.grpcCode === 'number' && Number.isInteger(e.grpcCode) && e.grpcCode >= 0 && e.grpcCode < grpcStatuses.length)
+    facts.push(`gRPC ${e.grpcCode} ${grpcStatuses[e.grpcCode]}`);
+  if (typeof e?.source === 'string' && sdkErrorSources.has(e.source)) facts.push(`source ${e.source}`);
+  if (typeof e?.retryable === 'boolean') facts.push(`SDK retryable=${e.retryable}`);
+  if (error instanceof Error && error.message === 'provider timeout') facts.push('adapter deadline exceeded');
+  // This is a fixed service explanation, never a copy of surrounding raw text.
+  if (typeof e?.message === 'string' && /Target not allowed for this project/.test(e.message))
+    facts.push('Target not allowed for this project; verify registered Photon project Users');
+  return ` [${method}${facts.length ? ': ' + facts.join('; ') : ': no safe SDK error metadata'}]`;
+}
 function targetId(content: Record<string, unknown>): string | undefined {
   const id = object(content.target)?.id;
   return typeof id === 'string' && id.length > 0 ? id : undefined;
@@ -224,9 +256,10 @@ export function createPhotonAdapter(options: {
           }
         } else space = await withDeadline(client.openDm(phone), timeoutMs);
         if (!space) throw new Error('no DM');
-      } catch {
+      } catch (error) {
         detail = bound ? 'Photon bound conversation/reply target unavailable or mismatched; no send attempted'
           : 'Photon connection/DM unavailable before message send';
+        detail += safeErrorDetail(error, 'space.prepare');
         return { status: 'failed', detail };
       }
       if (shutdown || (canSubmit && !canSubmit())) {
@@ -245,8 +278,9 @@ export function createPhotonAdapter(options: {
         }
         detail = 'Cloud accepted a message; recipient delivery is not established';
         return { status: 'provider_accepted', messageId: sent.id, ...identities, detail };
-      } catch {
+      } catch (error) {
         detail = 'Send failed or timed out after submission; outcome unknown, reconcile before retry';
+        detail += safeErrorDetail(error, replyTarget ? 'message.reply' : 'space.send');
         return { status: 'unknown', detail };
       }
     },

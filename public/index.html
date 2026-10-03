@@ -17,6 +17,7 @@
     <main class="shell">
       <div class="page-heading"><div><p class="eyebrow">CLINICAL CONTEXT → HUMAN FOLLOW-THROUGH</p><h1>Care console</h1><p class="page-intro">Understand the record. Coordinate help. Record the outcome.</p></div><span id="last-update" class="last-update">Waiting for live state</span></div>
       <div id="connection-error" class="notice" role="status" hidden></div>
+      <div id="demo-next-step" class="notice" role="status" hidden></div>
       <div id="policy-banner" class="policy-banner" role="status" hidden><span id="policy-mode" class="badge"></span><p id="policy-detail"></p></div>
       <div class="layout">
         <div class="main-column">
@@ -62,16 +63,17 @@
           </section>
 
           <section class="card incident-card" aria-labelledby="incident-title">
-            <div class="card-top"><p class="eyebrow">CURRENT INCIDENT</p><span id="incident-id" class="mono">NO ACTIVE INCIDENT</span></div>
+            <div class="card-top"><p id="incident-scope" class="eyebrow">INCIDENT LOOP</p><span id="incident-id" class="mono">NO ACTIVE INCIDENT</span></div>
             <div class="incident-heading"><div><h2 id="incident-title">Ready for an incident</h2><p id="incident-summary">Connect the motion sources to begin. No incident has been reported.</p></div><span id="evidence-badge" class="badge" hidden></span></div>
             <div id="incident-evidence" class="wearer-reply" hidden><div class="card-top"><h3>Measured trigger evidence</h3><span class="badge">FROZEN AT DETECTION</span></div><dl id="incident-evidence-facts" class="clinical-fields"></dl><p id="incident-evidence-timing" class="field-note"></p><details class="clinical-source"><summary>Measurement sources and timestamps</summary><p id="incident-evidence-sources"></p></details></div>
             <ol id="phase-list" class="phase-list" aria-label="Response phases"></ol>
             <div class="incident-facts"><div><span class="eyebrow">RESPONSIBILITY</span><strong id="owner">Unassigned</strong><span id="owner-detail">An alert alone does not establish ownership.</span></div><div><span class="eyebrow">NEXT DEADLINE</span><strong id="deadline">—</strong><span id="deadline-detail">No deadline scheduled</span></div></div>
+            <p id="incident-next-step" class="field-note">Start a live rehearsal after the phone contacts and motion streams are ready.</p>
             <div class="wearer-reply"><div class="card-top"><h3>Latest wearer reply</h3><span id="reply-decision" class="badge">NO REPLY</span></div><p id="reply-transcript">No wearer reply received for this incident.</p><p id="reply-meta" class="field-note">iMessage and WILi microphone replies can request help or preserve the check-in. Cancellation requires the explicit current check-in control.</p></div>
             <div id="outcome-panel" class="outcome-panel" hidden><span class="eyebrow">RECORDED OUTCOME</span><p id="outcome"></p><small id="outcome-source"></small></div>
           </section>
 
-          <section class="card handoff-card" aria-labelledby="handoff-title"><div class="card-top"><h2 id="handoff-title">Contextual handoff</h2><div class="handoff-tags"><span class="badge">SYNTHETIC HEALTH RECORDS</span><span id="handoff-generation" class="badge">PROVENANCE UNAVAILABLE</span></div></div><div id="handoff" class="handoff-text"><p>A record-grounded handoff will appear here when it is available.</p></div></section>
+          <section class="card handoff-card" aria-labelledby="handoff-title"><div class="card-top"><h2 id="handoff-title">Responder handoff</h2><div class="handoff-tags"><span class="badge">FINCH SYNTHETIC RECORDS</span><span id="handoff-generation" class="badge">PROVENANCE UNAVAILABLE</span></div></div><p id="handoff-source-context" class="field-note">Clinical facts come from Finch; incident observations come from LIFELINE.</p><div id="handoff" class="handoff-text"><p>A record-grounded handoff will appear here when it is available.</p></div></section>
 
           <section class="card context-card" aria-labelledby="questions-title">
             <div class="card-top"><h2 id="questions-title">Responder questions</h2><span id="question-count" class="count">0</span></div>

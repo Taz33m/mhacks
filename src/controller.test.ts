@@ -51,6 +51,28 @@ test('lost owner triggers reassignment; missing progress does not resolve', () =
   advance(120); assert.equal(c.active()?.phase, 'HELP_REQUESTED'); assert.equal(c.active()?.ownerId, null);
   assert.throws(() => c.accept(i.id, 'maya'), /accepting/); c.accept(i.id, 'jordan'); assert.equal(c.active()?.ownerId, 'jordan'); c.close();
 });
+test('exhausted contacts stay unresolved without repeated timeout messages and can still accept', () => {
+  const { c, advance } = setup();
+  try {
+    const i = c.trigger({ kind: 'manual', summary: 'No reply from approved contacts.' });
+    const alert = c.claimAction('responders')!;
+    c.finishAction(alert.id, 'unknown', 'Submission outcome unknown.');
+    advance(60);
+    assert.equal(c.active()?.phase, 'HELP_REQUESTED');
+    assert.equal(c.active()?.ownerId, null);
+    assert.equal(c.active()?.progressDeadline, null);
+    assert.match(c.actions(i.id).filter(a => a.type === 'wearer_status').at(-1)!.text, /No additional approved contact is available/);
+    const count = c.actions(i.id).length, version = c.active()?.version;
+    for (let n = 0; n < 10; n++) advance(60);
+    assert.equal(c.actions(i.id).length, count);
+    assert.equal(c.active()?.version, version);
+    assert.equal(c.actions(i.id).find(a => a.id === alert.id)?.status, 'unknown');
+    c.accept(i.id, 'jordan');
+    assert.equal(c.active()?.phase, 'ACKNOWLEDGED');
+    assert.equal(c.active()?.ownerId, 'jordan');
+    assert.ok(c.active()!.progressDeadline! > 0);
+  } finally { c.close(); }
+});
 test('confirmed failures retry but unknown outcomes do not', () => {
   const { c, advance } = setup(); const i = c.trigger({ kind: 'manual', summary: 'help' });
   const a = c.claimAction('responders')!; assert.equal(a.type, 'alert'); c.finishAction(a.id, 'failed', 'Confirmed rejection');
@@ -170,6 +192,18 @@ test('initial and health-updated alerts retain exact acceptance and decline guid
     assert.match(queued[0].text, /Source-grounded synthetic record fields/);
     guidance(queued[0].text);
     assert.equal(c.actions(i.id).filter(action => action.type === 'handoff').length, 1, 'existing handoff follow-up count is unchanged');
+  } finally { c.close(); }
+});
+test('completed sourced handoff carries the observation once while pending alerts retain it', () => {
+  const { c } = setup();
+  try {
+    const summary = 'Labelled synthetic observation for message rehearsal.';
+    const i = c.trigger({ kind: 'manual', summary });
+    assert.ok(c.actions(i.id).find(a => a.type === 'alert')!.text.includes(summary));
+    c.setHandoff(i.id, `Observation (manual): ${summary}\nSynthetic clinical context.`, { generation: 'ai' });
+    const alert = c.actions(i.id).find(a => a.type === 'alert')!;
+    assert.equal(alert.text.split(summary).length - 1, 1);
+    assert.ok(alert.text.includes(`ON IT ${i.id}`));
   } finally { c.close(); }
 });
 

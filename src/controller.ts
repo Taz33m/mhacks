@@ -107,14 +107,21 @@ export class Controller {
     i.ownerId = null; i.progressDeadline = this.now() + this.policy.acceptMs;
     this.phase(i, 'HELP_REQUESTED', 'policy', why);
     const eligible = this.responders.filter(r => !i.contacted.includes(r.id) && !i.declined.includes(r.id)).slice(0, 2);
+    // Once the approved list is exhausted, wait for a reply without producing
+    // a new wearer message on every acceptance timeout.
+    if (!eligible.length) i.progressDeadline = null;
     for (const r of eligible) {
       i.contacted.push(r.id);
-      this.enqueue(i, 'alert', r.id, `LIFELINE ${i.id}: Possible incident. ${i.evidence.summary}\n${i.handoff}\nReact 👍 to this alert to accept responsibility, or reply ON IT ${i.id}. If unavailable, reply DECLINE ${i.id}.`);
+      this.enqueue(i, 'alert', r.id, this.alertText(i));
     }
     this.save(i);
-    this.enqueue(i, 'wearer_status', null, `${i.id}: Help requested. ${i.ownerId ? '' : 'No responder has accepted yet.'} Approved contacts are being notified.`,
+    this.enqueue(i, 'wearer_status', null, `${i.id}: Help requested. No responder has accepted yet. ${eligible.length ? 'Approved contacts are being notified.' : 'No additional approved contact is available.'}`,
       `${i.id}:${i.version}:wearer_status:help`);
     if (!eligible.length) this.event(i, 'UNASSIGNED', 'policy', 'No additional approved responder is available; incident remains unresolved.');
+  }
+  private alertText(i: Incident): string {
+    const evidence = i.handoffGeneration ? '' : `${i.evidence.summary}\n`;
+    return `LIFELINE ${i.id}: Possible incident.\n${evidence}${i.handoff}\nReact 👍 to this alert to accept responsibility, or reply ON IT ${i.id}. If unavailable, reply DECLINE ${i.id}.`;
   }
 
   trigger(evidence: Evidence): Incident {
@@ -275,7 +282,7 @@ export class Controller {
         generation: provenance.generation, clinicalRevision: provenance.healthRevision ?? null,
       }));
       for (const a of this.actions(id).filter(a => a.type === 'alert' && a.status === 'queued')) {
-        a.text = `LIFELINE ${i.id}: ${i.evidence.summary}\n${handoff}\nReact 👍 to this alert to accept responsibility, or reply ON IT ${i.id}. If unavailable, reply DECLINE ${i.id}.`; this.saveAction(a);
+        a.text = this.alertText(i); this.saveAction(a);
       }
       const alreadyAttempted = new Set(this.actions(id).filter(a => a.type === 'alert'
         && ['attempting', 'provider_accepted', 'unknown'].includes(a.status)).map(a => a.recipientId));

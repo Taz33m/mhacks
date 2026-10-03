@@ -61,6 +61,7 @@
     snapshot?.sensors.forEach(renderSensor);
     renderWili();
     renderReadiness();
+    renderDemoNextStep();
     updateControls();
   }
 
@@ -78,6 +79,7 @@
     renderResponders();
     renderProviders();
     renderReadiness();
+    renderDemoNextStep();
     renderTimeline();
     renderActions();
     renderQuestions();
@@ -156,6 +158,24 @@
     return { ready, detail };
   }
 
+  function renderDemoNextStep() {
+    const panel = $('#demo-next-step');
+    panel.hidden = !snapshot || !online;
+    if (panel.hidden) return;
+    const next = [];
+    if (!snapshot.providers?.photon?.configured) next.push('configure Photon iMessage credentials');
+    else if (snapshot.providers.photon.detail?.includes('Target not allowed for this project')) next.push('register the approved demo phones in Photon project Users');
+    if (!snapshot.wearerMessaging?.configured) next.push('configure the approved wearer phone for iMessage');
+    if (!snapshot.responders.some(person => typeof person.phone === 'string' && person.phone.trim())) next.push('add at least one approved responder phone for live alerts');
+    const waist = snapshot.sensors.find(sensor => sensor.source === 'waist-airpod');
+    if (!waist?.connected) next.push('connect the waist AirPod and start motion in the Mac bridge');
+    else if (!waist.fresh) next.push('restore fresh waist measurements');
+    else if (!finite(waist.alignmentUncertaintyMs) || waist.alignmentUncertaintyMs > 100) next.push('wait for valid waist clock alignment');
+    if (!snapshot.wili?.usable) next.push('restore usable FREE-WILi measurements');
+    panel.hidden = !next.length;
+    text('#demo-next-step', next.length ? `Next for the live demo: ${next.join('; ')}. Local record questions and labelled console simulations remain available.` : '');
+  }
+
   function drawChart(card, rawTrace) {
     const trace = rawTrace.filter((point) => finite(point.at) && finite(point.totalG)).sort((a, b) => a.at - b.at);
     const width = 400, top = 7, bottom = 91, left = 27, right = 397;
@@ -192,8 +212,10 @@
 
   function renderIncident() {
     const incident = snapshot.incident;
+    const developmentReset = incident?.resolutionActor === 'development-operator';
+    text('#incident-scope', !incident ? 'INCIDENT LOOP' : terminal(incident) ? 'SAVED INCIDENT' : 'CURRENT INCIDENT');
     text('#incident-id', incident ? `ID ${incident.id}` : 'NO ACTIVE INCIDENT');
-    text('#incident-title', incident ? titles[incident.phase] || incident.phase : 'Ready for an incident');
+    text('#incident-title', developmentReset ? 'Rehearsal ended' : incident ? titles[incident.phase] || incident.phase : 'Ready for an incident');
     text('#incident-summary', incident ? incident.evidence.summary : 'Connect the motion sources to begin. No incident has been reported.');
     const evidence = $('#evidence-badge');
     evidence.hidden = !incident;
@@ -213,7 +235,20 @@
       RESPONDER_EN_ROUTE: 'Departure recorded; arrival not confirmed.',
       ON_SCENE: 'Arrival recorded; outcome pending.', RESOLVED: 'Outcome recorded.',
       CANCELLED_FALSE_ALARM: 'Incident cancelled.',
-    }[incident.phase] || 'Owner recorded for this incident.' : 'An alert alone does not establish ownership.');
+    }[incident.phase] || 'Owner recorded for this incident.' : developmentReset ? 'Development reset; no safety determination was made.' : incident?.phase === 'CANCELLED_FALSE_ALARM' ? 'Check-in explicitly cancelled; no responder was assigned.' : 'An alert alone does not establish ownership.');
+    const owner = incident?.ownerId ? nameFor(incident.ownerId) : 'The approved responder';
+    const code = incident?.id || '';
+    const nextSteps = {
+      DETECTED: 'The wearer check-in is opening. Incident observations do not establish a diagnosis.',
+      CONFIRMING: 'Wearer: request help by speech, iMessage or the red board button. To cancel before the deadline, use the explicit green board button or current phone control.',
+      HELP_REQUESTED: `Waiting for an approved responder to receive and accept the alert. Reply ON IT ${code}; provider acceptance alone does not assign responsibility.`,
+      ACKNOWLEDGED: `${owner}: reply DEPART ${code} when leaving, or ARRIVED ${code} if already beside the wearer.`,
+      RESPONDER_EN_ROUTE: `${owner}: reply ARRIVED ${code} when on scene.`,
+      ON_SCENE: `${owner}: reply RESOLVED ${code} followed by the concrete observed outcome.`,
+      RESOLVED: 'Outcome saved. Download the care brief to review the retained clinical snapshot and separately attributed local reports.',
+      CANCELLED_FALSE_ALARM: 'This saved check-in was explicitly cancelled. A new physical event or labelled development trigger starts a new incident.',
+    };
+    text('#incident-next-step', developmentReset ? 'The operator ended this rehearsal. Its evidence and send outcomes remain saved.' : incident && Object.hasOwn(nextSteps, incident.phase) ? nextSteps[incident.phase] : 'Start a live rehearsal after the phone contacts and motion streams are ready.');
     renderHandoff();
     $('#outcome-panel').hidden = !incident?.outcome;
     text('#outcome', incident?.outcome || '');
@@ -382,6 +417,9 @@
   function renderHandoff() {
     const [generation, color] = generationFor(snapshot.incident?.handoffGeneration);
     text('#handoff-generation', generation); $('#handoff-generation').className = `badge ${color}`;
+    text('#handoff-source-context', snapshot.incident?.healthRevision
+      ? `Clinical source: saved Finch synthetic snapshot ${snapshot.incident.healthRevision}. LIFELINE supplies incident observations; historical vitals are not current measurements.`
+      : 'Clinical source revision has not been bound. LIFELINE observations and unavailable health information remain separate.');
     const content = snapshot.incident?.handoff || 'A record-grounded handoff will appear here when it is available.';
     const signature = JSON.stringify([snapshot.incident?.id, content]);
     if (signature === handoffSignature) return;
@@ -565,7 +603,7 @@
   function renderResponders() {
     const responders = snapshot.responders;
     const ownerId = snapshot.incident?.ownerId;
-    $('#responders').innerHTML = responders.length ? responders.map((person) => `<li class="responder-item"><span class="avatar">${escaped(initials(person.name))}</span><div><strong>${escaped(person.name)}</strong><p>${escaped(person.phone ? 'Configured contact' : 'No delivery contact configured')}</p></div>${person.id === ownerId ? '<span class="badge good">OWNER</span>' : ''}</li>`).join('') : '<li class="empty-list">No approved responders configured.</li>';
+    $('#responders').innerHTML = responders.length ? responders.map((person) => `<li class="responder-item"><span class="avatar">${escaped(initials(person.name))}</span><div><strong>${escaped(person.name)}</strong><p>${escaped(person.phone ? 'Approved phone configured; send result in Delivery activity' : 'Approved phone needed for live alerts')}</p></div>${person.id === ownerId ? '<span class="badge good">OWNER</span>' : ''}</li>`).join('') : '<li class="empty-list">Add an approved responder with a phone for live alerts.</li>';
     const signature = responders.map((person) => `${person.id}:${person.name}`).join('|');
     if (signature !== responderSignature) {
       const selected = $('#responder').value;
@@ -577,7 +615,8 @@
 
   function renderProviders() {
     const providers = Object.entries(snapshot.providers || {});
-    $('#providers').innerHTML = providers.length ? providers.map(([name, status]) => `<li class="provider-item"><div class="provider-head"><strong>${escaped(name)}</strong><span class="badge ${status.configured ? 'good' : ''}">${status.configured ? 'Configured' : 'Unavailable'}</span></div><p>${escaped(status.detail)}</p></li>`).join('') : '<li class="empty-list">No provider status available.</li>';
+    const names = { photon: 'Photon iMessage', finchnode: 'Finch synthetic records', elevenlabs: 'ElevenLabs API', llm: 'Grounded AI', wiliVoice: 'WILi voice cache' };
+    $('#providers').innerHTML = providers.length ? providers.map(([name, status]) => `<li class="provider-item"><div class="provider-head"><strong>${escaped(Object.hasOwn(names, name) ? names[name] : name)}</strong><span class="badge ${status.configured ? 'good' : ''}">${status.configured ? name === 'wiliVoice' ? 'Prepared' : 'Configured' : 'Unavailable'}</span></div><p>${escaped(status.detail)}</p></li>`).join('') : '<li class="empty-list">No provider status available.</li>';
   }
 
   function renderTimeline() {

@@ -164,3 +164,38 @@ test('submitted reply with contradictory returned channel is unknown and preserv
   assert.equal(result.chatId, 'different-chat'); assert.equal(result.lineId, 'different-line');
   assert.equal(counts.reply, 1); assert.equal(counts.dm + counts.plain, 0);
 });
+
+test('submitted service authorization errors remain unknown with safe method/code diagnostics and no private payload', async () => {
+  const { adapter, counts, space } = transport();
+  const privateValue = 'private-secret-value';
+  space.send = async () => {
+    counts.plain++;
+    throw Object.assign(new Error(`Target not allowed for this project: ${phone} ${privateValue}`), {
+      name: 'AuthenticationError', code: 'internalError', grpcCode: 7, retryable: false,
+      source: 'spectrum-imessage', context: { phone, token: privateValue }, requestId: privateValue,
+    });
+  };
+  const result = await adapter.sendMessage(phone, 'Alert');
+  assert.equal(result.status, 'unknown'); assert.equal(counts.plain, 1);
+  assert.match(result.detail, /space\.send/); assert.match(result.detail, /AuthenticationError/);
+  assert.match(result.detail, /internalError/); assert.match(result.detail, /gRPC 7 PERMISSION_DENIED/);
+  assert.match(result.detail, /Target not allowed for this project/); assert.match(result.detail, /registered Photon project Users/);
+  assert.equal(result.detail.includes(phone), false); assert.equal(result.detail.includes(privateValue), false);
+  assert.equal(result.messageId, undefined);
+});
+
+test('arbitrary error fields are omitted and native reply failures still cannot fall back or retry', async () => {
+  const privateValue = 'private-secret-value';
+  const { adapter, counts } = transport(inbound({ reply: async () => {
+    counts.reply++;
+    throw Object.assign(new Error(`${phone} ${privateValue}`), {
+      name: privateValue, code: privateValue, grpcCode: 12345678,
+      source: privateValue, context: { recipient: phone }, requestId: privateValue,
+    });
+  } }));
+  const result = await adapter.sendMessage(phone, 'Reply', () => true, replyOptions);
+  assert.equal(result.status, 'unknown'); assert.equal(counts.reply, 1);
+  assert.equal(counts.dm + counts.plain, 0); assert.match(result.detail, /message\.reply/);
+  assert.equal(result.detail.includes(privateValue), false); assert.equal(result.detail.includes(phone), false);
+  assert.equal(result.detail.includes('12345678'), false);
+});
