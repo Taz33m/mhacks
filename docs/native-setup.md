@@ -53,6 +53,10 @@ Alternatively, open `native/ios/LifelinePhone.xcodeproj`, select the signing
 team and connected iPhone, then build/run `LifelinePhone`. Minimum deployment
 target: iOS 17.
 
+If automatic signing reports `PLA Update available`, review the pending
+Program License Agreement in the [Apple developer account](https://developer.apple.com/account/)
+before retrying. That account restriction prevents certificate/profile creation.
+
 ## Connect
 
 1. Run `npm run setup:local` for the local Mac setup, then open the local
@@ -203,9 +207,13 @@ must remain visible and must not resolve the incident.
 - Simulator app installation/launch and initial-screen visual inspection
   passed on the simulated iPhone 18 Pro. This does not verify real motion,
   microphone capture, on-device recognition, or phone/Mac audio interaction.
-- Installer preflight correctly reported no existing signing identity and
-  stopped for an unavailable physical iPhone. No signed iPhone installation
-  was attempted.
+- Signed physical installation passed on the iPhone 15 running iOS 26.6.2.
+  Automatic signing created the development certificate/profile after the
+  pending Apple agreement was accepted. Signature and profile validation
+  passed before installation; the app launched on the phone. Its private
+  relay address and pairing token were copied into the app's preferences and
+  verified without displaying the token. Installation does not establish
+  phone-to-Mac reachability or physical motion/voice behavior.
 - Plists and Xcode project passed `plutil -lint`.
 - `KeepAlive.swift` matches the source file byte-for-byte.
 - The Mac app briefly acquired real Right AirPod samples through local setup,

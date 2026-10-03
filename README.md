@@ -74,7 +74,7 @@ Tests cover deadlines/restart, stale and unauthorized acceptance, atomic ownersh
 
 ## Current boundary
 
-This is a working development foundation, not validated fall-detection accuracy. The initial detector uses tentative impact/tilt/stillness thresholds, preserves both streams, and requires bounded alignment for a cross-body candidate. Source failures remain explicit unknowns. Physical trials, signed iPhone installation, actual audio-route behavior, on-device recognition, and real provider sends require device/configuration validation.
+This is a working development foundation, not validated fall-detection accuracy. The initial detector uses tentative impact/tilt/stillness thresholds, preserves both streams, and requires bounded alignment for a cross-body candidate. Source failures remain explicit unknowns. Signed installation and launch passed on the physical iPhone 15. Physical trials, phone-to-Mac reachability, actual audio-route behavior, on-device recognition, and real provider sends still require device/configuration validation.
 
 Final on-device spoken replies are recorded against the current check-in. Exact help commands escalate immediately; positive replies ask the wearer to confirm using the cancel control; ambiguous replies leave the incident and deadline unchanged. Voice never resolves an incident. Stale replies and cancellation after the deadline are rejected.
 
