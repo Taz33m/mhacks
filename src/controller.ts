@@ -82,12 +82,13 @@ export class Controller {
   private notify(i: StoredIncident, text: string): void {
     for (const id of i.contacted) this.enqueue(i, 'status', id, text);
   }
-  private stopPending(i: Incident): void {
-    for (const a of this.actions(i.id).filter(a => a.status === 'queued' || a.status === 'failed')) {
+  private stopPending(i: Incident, types?: ActionType[]): void {
+    for (const a of this.actions(i.id).filter(a => (a.status === 'queued' || a.status === 'failed') && (!types || types.includes(a.type)))) {
       a.status = 'cancelled'; a.providerResult = 'Action no longer permitted by current incident state.'; this.saveAction(a);
     }
   }
   private requestHelp(i: StoredIncident, why: string): void {
+    this.stopPending(i, ['checkin', 'wearer_checkin']);
     i.ownerId = null; i.progressDeadline = this.now() + this.policy.acceptMs;
     this.phase(i, 'HELP_REQUESTED', 'policy', why);
     const eligible = this.responders.filter(r => !i.contacted.includes(r.id) && !i.declined.includes(r.id)).slice(0, 2);
@@ -116,6 +117,7 @@ export class Controller {
       this.save(i); this.event(i, 'DETECTED', 'sensor-or-operator', evidence.summary);
       this.phase(i, 'CONFIRMING', 'policy', 'Current check-in opened. Explicit cancellation is required.');
       this.enqueue(i, 'checkin', null, "I detected a possible fall. Do you need help? You can say I need help, or tap I don't need help to cancel.");
+      this.enqueue(i, 'wearer_checkin', null, `LIFELINE ${i.id}: I detected a possible fall. Are you okay?\nReply I NEED HELP ${i.id} to request help. If you are okay, tap I don't need help in LIFELINE before the check-in ends.`);
       if (evidence.kind === 'manual') this.requestHelp(i, 'Explicit manual help request.');
       return i;
     });
@@ -129,17 +131,28 @@ export class Controller {
     });
   }
   recordCheckinReply(reply: CheckinReply): CheckinDecision {
+    if (reply.source !== 'ios-on-device-speech') throw new PolicyError('A final on-device transcript of 1–500 characters is required.');
+    return this.applyCheckinReply(reply, 'ios-on-device-speech')!;
+  }
+  recordWearerCheckinReply(reply: Omit<CheckinReply, 'source'>, inboundId: string): CheckinDecision | null {
+    if (typeof inboundId !== 'string' || !inboundId.trim() || inboundId.length > 500) throw new PolicyError('A provider message ID is required.');
+    return this.applyCheckinReply(reply, 'photon-imessage', inboundId);
+  }
+  private applyCheckinReply(reply: Omit<CheckinReply, 'source'>, source: 'ios-on-device-speech' | 'photon-imessage', inboundId?: string): CheckinDecision | null {
     return this.transaction(() => {
+      if (inboundId && this.seenInbound(inboundId)) return null;
       const i = this.current(reply.incidentId);
       if (i.phase !== 'CONFIRMING' || i.checkinId !== reply.checkinId || this.now() >= i.checkinDeadline)
         throw new PolicyError('Reply must target the current check-in before its deadline.');
-      if (reply.source !== 'ios-on-device-speech' || typeof reply.transcript !== 'string'
+      if (typeof reply.transcript !== 'string'
         || !reply.transcript.trim() || reply.transcript.length > 500)
-        throw new PolicyError('A final on-device transcript of 1–500 characters is required.');
+        throw new PolicyError('A check-in reply of 1–500 characters is required.');
       const transcript = reply.transcript.trim();
       const decision = classifyCheckinReply(transcript);
-      this.event(i, 'CHECKIN_REPLY', reply.source, JSON.stringify({ transcript, decision }));
-      if (decision === 'help_requested') this.requestHelp(i, 'Subject requested help in the current spoken check-in.');
+      this.event(i, 'CHECKIN_REPLY', source, JSON.stringify({ transcript, decision }));
+      if (decision === 'help_requested') this.requestHelp(i, source === 'photon-imessage'
+        ? 'Wearer requested help in the current Photon iMessage check-in.' : 'Subject requested help in the current spoken check-in.');
+      if (inboundId) this.rememberInbound(inboundId);
       return decision;
     });
   }
@@ -235,16 +248,36 @@ export class Controller {
     this.db.prepare('UPDATE actions SET status=?,next_at=?,provider_message_id=?,body=? WHERE id=?')
       .run(a.status, a.nextAttemptAt, a.providerMessageId, JSON.stringify(a), a.id);
   }
-  claimAction(): Action | null {
+  actionPermitted(a: Action): boolean {
+    const row = this.db.prepare('SELECT body FROM incidents WHERE id=?').get(a.incidentId);
+    if (!row) return false;
+    const i = JSON.parse(String(row.body)) as StoredIncident;
+    if (a.type === 'wearer_checkin') return i.phase === 'CONFIRMING' && this.now() < i.checkinDeadline;
+    if (!a.recipientId || !this.responders.some(r => r.id === a.recipientId) || !i.contacted.includes(a.recipientId)) return false;
+    if (a.type === 'alert') return i.phase === 'HELP_REQUESTED' && !i.ownerId && !i.declined.includes(a.recipientId);
+    if (a.type === 'handoff') return !terminal(i.phase) && !i.declined.includes(a.recipientId);
+    if (a.type === 'status') {
+      const action = this.db.prepare('SELECT dedupe_key FROM actions WHERE id=?').get(a.id);
+      return action !== undefined && Number(String(action.dedupe_key).split(':')[1]) === i.version;
+    }
+    return false;
+  }
+  claimAction(channel: 'any' | 'wearer' | 'responders' = 'any'): Action | null {
     return this.transaction(() => {
-      const row = this.db.prepare("SELECT body FROM actions WHERE status IN ('queued','failed') AND next_at<=? ORDER BY rowid").all(this.now())
-        .find(row => { const a = JSON.parse(String(row.body)) as Action; return a.type !== 'checkin' && a.attempts < 3; });
-      if (!row) return null;
-      const a = JSON.parse(String(row.body)) as Action;
-      a.status = 'attempting'; a.attempts++; this.saveAction(a); return a;
+      for (const row of this.db.prepare("SELECT body FROM actions WHERE status IN ('queued','failed') AND next_at<=? ORDER BY rowid").all(this.now())) {
+        const a = JSON.parse(String(row.body)) as Action;
+        if (a.type === 'checkin' || a.attempts >= 3) continue;
+        if (channel === 'wearer' && a.type !== 'wearer_checkin') continue;
+        if (channel === 'responders' && a.type === 'wearer_checkin') continue;
+        if (!this.actionPermitted(a)) {
+          a.status = 'cancelled'; a.providerResult = 'Incident authorization ended; message was not submitted.'; this.saveAction(a); continue;
+        }
+        a.status = 'attempting'; a.attempts++; this.saveAction(a); return a;
+      }
+      return null;
     });
   }
-  finishAction(id: string, status: 'provider_accepted' | 'failed' | 'unknown', detail: string, messageId?: string): void {
+  finishAction(id: string, status: 'provider_accepted' | 'failed' | 'unknown' | 'cancelled', detail: string, messageId?: string): void {
     const row = this.db.prepare('SELECT body FROM actions WHERE id=?').get(id); if (!row) return;
     const a = JSON.parse(String(row.body)) as Action;
     a.status = status; a.providerResult = detail; a.providerMessageId = messageId ?? null;
@@ -255,6 +288,13 @@ export class Controller {
     if (!row) return null;
     const a = JSON.parse(String(row.body)) as Action; const i = this.active();
     return i && a.incidentId === i.id && a.recipientId === responderId && a.type === 'alert' ? i : null;
+  }
+  wearerIncidentForMessage(messageId: string): Incident | null {
+    const row = this.db.prepare('SELECT body FROM actions WHERE provider_message_id=?').get(messageId);
+    if (!row) return null;
+    const a = JSON.parse(String(row.body)) as Action; const i = this.active();
+    return i && i.phase === 'CONFIRMING' && this.now() < i.checkinDeadline
+      && a.incidentId === i.id && a.recipientId === null && a.type === 'wearer_checkin' ? i : null;
   }
   seenInbound(id: string): boolean { return Boolean(this.db.prepare('SELECT id FROM inbound WHERE id=?').get(id)); }
   rememberInbound(id: string): void { this.db.prepare('INSERT OR IGNORE INTO inbound VALUES(?)').run(id); }

@@ -15,6 +15,7 @@ test('isolated HTTP/WS server accepts native packets, authenticates commands, an
   const child = spawn(process.execPath, ['--import', './src/test-helpers/offline.ts', './src/server.ts'], {
     cwd: process.cwd(), env: { ...process.env, LIFELINE_DATA_DIR: dir, LIFELINE_PORT: '0', LIFELINE_HOST: '127.0.0.1',
       LIFELINE_CHECKIN_MS: '1000', SPECTRUM_PROJECT_ID: '', SPECTRUM_PROJECT_SECRET: '', ELEVENLABS_API_KEY: '', LIFELINE_LLM_API_KEY: '',
+      LIFELINE_WEARER_PHONE: '+12675550123',
       LIFELINE_RESPONDERS_JSON: JSON.stringify([{ id: 'maya', name: 'Maya', phone: null }, { id: 'jordan', name: 'Jordan', phone: null }]) },
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -70,6 +71,12 @@ test('isolated HTTP/WS server accepts native packets, authenticates commands, an
     assert.equal((await commands({ type: 'trigger', kind: 'synthetic', summary: 'Isolated protocol fixture; not a physical fall.' })).status, 200);
     const confirming = (await state()).incident!;
     assert.equal(confirming.phase, 'CONFIRMING');
+    const companion = await state();
+    assert.equal(companion.actions.filter(a => a.type === 'wearer_checkin').length, 1);
+    assert.equal(companion.actions.filter(a => a.type === 'checkin').length, 1);
+    assert.equal(companion.wearerMessaging.configured, false);
+    assert.match(companion.wearerMessaging.detail, /Photon credentials/);
+    assert.equal(JSON.stringify(companion).includes('+12675550123'), false);
     assert.equal((await trialCommand('start', { label: 'incident active', scenario: 'other' })).status, 400);
     assert.equal((await trialCommand('stop')).status, 200);
     assert.equal((await state()).incident?.phase, 'CONFIRMING');
@@ -85,12 +92,16 @@ test('isolated HTTP/WS server accepts native packets, authenticates commands, an
       body: JSON.stringify({ incidentId: confirming.id, checkinId, transcript, source: 'ios-on-device-speech' })
     });
     assert.equal((await fetch(`${base}/api/checkin/reply`, { method: 'POST', body: '{}' })).status, 401);
+    assert.equal((await fetch(`${base}/api/checkin/reply`, { method: 'POST', headers: {
+      Authorization: `Bearer ${setup.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({
+      incidentId: confirming.id, checkinId: confirming.checkinId, transcript: 'I need help', source: 'photon-imessage' }) })).status, 400);
     assert.equal((await reply('I need help', 'old')).status, 400);
     assert.equal((await (await reply("I'm okay")).json()).decision, 'confirmation_required');
     assert.equal((await (await reply('I am not sure')).json()).decision, 'unresolved');
     assert.equal((await state()).incident?.phase, 'CONFIRMING');
     await new Promise(resolve => setTimeout(resolve, 1150));
     const i = (await state()).incident!; assert.equal(i.phase, 'HELP_REQUESTED');
+    assert.equal((await state()).actions.find(a => a.type === 'wearer_checkin')?.status, 'cancelled');
     assert.equal((await commands({ type: 'accept', incidentId: i.id, responderId: 'maya' })).status, 200);
     assert.equal((await commands({ type: 'accept', incidentId: i.id, responderId: 'jordan' })).status, 400);
     assert.equal((await commands({ type: 'depart', incidentId: i.id, responderId: 'maya' })).status, 200);

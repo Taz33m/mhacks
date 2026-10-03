@@ -23,7 +23,7 @@ export interface Incident {
   handoff: string; outcome: string | null; resolutionActor: string | null;
 }
 export interface Responder { id: string; name: string; phone: string | null }
-export type ActionType = 'checkin' | 'alert' | 'status' | 'handoff';
+export type ActionType = 'checkin' | 'wearer_checkin' | 'alert' | 'status' | 'handoff';
 export interface Action {
   id: string; incidentId: string; type: ActionType; recipientId: string | null;
   text: string; status: 'queued' | 'attempting' | 'provider_accepted' | 'failed' | 'unknown' | 'cancelled';
@@ -46,6 +46,7 @@ export interface Snapshot {
   serverTime: number; incident: Incident | null; responders: Responder[];
   timeline: TimelineEvent[]; actions: Action[]; sensors: SensorView[];
   providers: Record<string, { configured: boolean; detail: string }>;
+  wearerMessaging: { configured: boolean; detail: string };
   trial: TrialView | null;
 }
 export type TrialScenario = 'standing' | 'phone-drop' | 'sit' | 'bend' | 'staged-fall' | 'other';
@@ -67,5 +68,5 @@ export interface ProviderInbound {
   messageId: string; sender: string; targetMessageId?: string;
   kind: 'reaction' | 'text'; text?: string; reaction?: string; removed?: boolean;
 }
-export interface ProviderResult { status: 'provider_accepted' | 'failed' | 'unknown'; messageId?: string; detail: string }
+export interface ProviderResult { status: 'provider_accepted' | 'failed' | 'unknown' | 'cancelled'; messageId?: string; detail: string }
 export interface HealthContext { summary: string; recordIds: string[]; retrievedAt: number; available: boolean }

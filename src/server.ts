@@ -8,7 +8,8 @@ import { networkInterfaces } from 'node:os';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Controller, PolicyError } from './controller.ts';
 import { Motion, validSample } from './motion.ts';
-import { approvedResponder } from './identity.ts';
+import { approvedResponder, phoneIdentity } from './identity.ts';
+import { handleWearerInbound } from './wearer.ts';
 import { Trials } from './trials.ts';
 import type { CheckinReply, ClockPong, Command, Incident, ProviderInbound, Responder, Snapshot, Source } from './contracts.ts';
 import { providerStatus, loadHealth, buildHandoff, answerQuestion, sendMessage, startPhotonListener, prepareCheckinAudio } from './providers/index.ts';
@@ -32,6 +33,10 @@ if (!Array.isArray(responderConfig) || responderConfig.some(r => !r || typeof r.
   || !(r.phone === null || (typeof r.phone === 'string' && /^\+[1-9]\d{7,14}$/.test(r.phone))))) throw new Error('Invalid approved responder configuration. Use E.164 phone numbers or null for development simulation.');
 const responders = responderConfig as Responder[];
 if (new Set(responders.filter(r => r.phone).map(r => r.phone)).size !== responders.filter(r => r.phone).length) throw new Error('Approved phone numbers must be unique.');
+const wearerPhone = process.env.LIFELINE_WEARER_PHONE?.trim() || null;
+if (wearerPhone && !/^\+[1-9]\d{7,14}$/.test(wearerPhone)) throw new Error('LIFELINE_WEARER_PHONE must be an approved E.164 phone number.');
+if (wearerPhone && responders.some(r => r.phone && phoneIdentity(r.phone) === phoneIdentity(wearerPhone)))
+  throw new Error('The wearer and responder phone numbers must be different.');
 function duration(name: string, fallback: number): number {
   const n = Number(process.env[name] ?? fallback);
   if (!Number.isFinite(n) || n < 1000 || n > 86_400_000) throw new Error(`Invalid duration: ${name}`);
@@ -48,16 +53,21 @@ const recorders = new Map<string, WriteStream>();
 let healthPromise = loadHealth();
 let audio: Uint8Array | null = null;
 let audioPreparing = false;
-let workerBusy = false;
+const busyChannels = new Set<'wearer' | 'responders'>();
 let stopPhoton: (() => Promise<void>) | null = null;
 let handoffIncident: string | null = null;
 let stopping = false;
 
 function snapshot(): Snapshot {
   const incident = controller.latest();
+  const providers = providerStatus();
+  const wearerMessaging = { configured: Boolean(wearerPhone && providers.photon?.configured),
+    detail: !wearerPhone ? 'Set LIFELINE_WEARER_PHONE to the approved wearer phone for the companion iMessage check-in.'
+      : !providers.photon?.configured ? 'Wearer phone configured; Photon credentials are required for iMessage check-in.'
+        : 'Wearer phone and Photon credentials configured; verify actual iMessage receipt and replies on the demo phone.' };
   return { serverTime: Date.now(), incident, responders: responders.map(r => ({ ...r, phone: r.phone ? 'configured' : null })),
     timeline: incident ? controller.events(incident.id) : [], actions: incident ? controller.actions(incident.id) : [],
-    sensors: motion.views(), providers: providerStatus(), trial: trials.view() };
+    sensors: motion.views(), providers, wearerMessaging, trial: trials.view() };
 }
 const live = new WebSocketServer({ noServer: true, maxPayload: 1024 });
 const ingest = new WebSocketServer({ noServer: true, maxPayload: 8192 });
@@ -81,24 +91,26 @@ function prepareAudio(): void {
     void prepareCheckinAudio().then(bytes => { audio = bytes; }).catch(() => {}).finally(() => { audioPreparing = false; });
   }
 }
-async function providerWorker(): Promise<void> {
-  if (workerBusy || stopping || !providerStatus().photon?.configured) return;
-  workerBusy = true;
+async function providerWorker(channel: 'wearer' | 'responders'): Promise<void> {
+  if (busyChannels.has(channel) || stopping || !providerStatus().photon?.configured) return;
+  busyChannels.add(channel);
   try {
-    const a = controller.claimAction(); if (!a) return;
-    const r = responders.find(r => r.id === a.recipientId);
-    if (!r?.phone) { controller.finishAction(a.id, 'failed', 'No approved phone configured; development simulation only.'); return; }
-    const result = await sendMessage(r.phone, a.text);
+    const a = controller.claimAction(channel); if (!a) return;
+    const phone = a.type === 'wearer_checkin' ? wearerPhone : responders.find(r => r.id === a.recipientId)?.phone;
+    if (!phone) { controller.finishAction(a.id, 'failed', a.type === 'wearer_checkin'
+      ? 'No approved wearer phone configured; iMessage check-in was not sent.' : 'No approved phone configured; development simulation only.'); return; }
+    const result = await sendMessage(phone, a.text, () => !stopping && controller.actionPermitted(a));
     if (!stopping) controller.finishAction(a.id, result.status, result.detail, result.messageId);
   } catch { /* attempt remains attempting; startup recovery preserves an unknown outcome */ }
-  finally { workerBusy = false; if (!stopping) broadcast(); }
+  finally { busyChannels.delete(channel); if (!stopping) broadcast(); }
 }
 async function inbound(e: ProviderInbound): Promise<void> {
   if (stopping || controller.seenInbound(e.messageId)) return;
-  const r = approvedResponder(e.sender, responders);
-  const i = controller.active(); if (!r || !i || e.removed) return;
-  const target = e.targetMessageId ? controller.incidentForMessage(e.targetMessageId, r.id) : null;
   try {
+    if (handleWearerInbound(e, wearerPhone, controller)) return;
+    const r = approvedResponder(e.sender, responders);
+    const i = controller.active(); if (!r || !i || e.removed) return;
+    const target = e.targetMessageId ? controller.incidentForMessage(e.targetMessageId, r.id) : null;
     if (e.kind === 'reaction') {
       if (target && ['like', '👍'].includes(e.reaction ?? '')) controller.accept(target.id, r.id, e.messageId);
       return;
@@ -272,7 +284,7 @@ const heartbeat = setInterval(() => {
   controller.tick(); const assessedAt = performance.now(); const evidence = motion.candidate();
   trials.record('assessment', { candidate: evidence }, undefined, assessedAt);
   if (evidence) prepareIncident(controller.trigger(evidence));
-  broadcast(); void providerWorker();
+  broadcast(); void providerWorker('wearer'); void providerWorker('responders');
 }, 100);
 
 server.listen(port, host, () => {

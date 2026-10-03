@@ -20,6 +20,8 @@ The phone can POST a final spoken reply to `/api/checkin/reply` with bearer auth
 
 Local `/api/setup` includes `lanEnabled` based on the actual listener address. Advertised addresses do not prove phone reachability.
 
+Snapshot `wearerMessaging:{configured,detail}` reports companion Photon configuration without exposing the wearer phone. `wearer_checkin` actions (null recipient) belong to the configured wearer; existing `checkin` actions are phone audio and never claimed by the messaging worker. Photon wearer replies are routed internally after full-phone and message/incident correlation, then recorded as `CHECKIN_REPLY` with actor `photon-imessage`. The native REST reply endpoint still accepts only `ios-on-device-speech`; it cannot impersonate Photon events. Both channels use the same incident/check-in deadline and explicit cancellation boundary.
+
 ## Trial capture
 
 Authenticated `POST /api/trials/start` accepts `{label,scenario}` and returns `TrialView`. Labels are 1–80 characters; scenarios are `standing`, `phone-drop`, `sit`, `bend`, `staged-fall`, or `other`. Start requires no active incident or recording. It resets detector calibration, buffers, clock estimates, and cooldown, then requests a fresh clock exchange after the first accepted sample from each source. Mount and calibrate after starting.
@@ -36,7 +38,7 @@ Provider adapters live under `src/providers/`. Export from `src/providers/index.
 - `loadHealth(): Promise<HealthContext>` (FinchNode keyless synthetic demo, errors explicitly unavailable)
 - `buildHandoff(incident: Incident, health: HealthContext): Promise<string>` (record-grounded template fallback; optional configured model)
 - `answerQuestion(incident: Incident, health: HealthContext, question: string): Promise<string>` (optional grounded model; unavailable rather than inventing medical conclusions)
-- `sendMessage(phone: string, text: string): Promise<ProviderResult>` (Photon cloud; missing credentials yields failed/unconfigured, never pretend delivery)
+- `sendMessage(phone: string, text: string, canSubmit?: () => boolean): Promise<ProviderResult>` (Photon cloud; missing credentials yields failed/unconfigured, ended authorization yields cancelled before submission)
 - `startPhotonListener(handler: (event: ProviderInbound) => Promise<void>): Promise<() => Promise<void>>`
 - `prepareCheckinAudio(): Promise<Uint8Array | null>` (ElevenLabs; no key yields null)
 

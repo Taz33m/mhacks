@@ -45,6 +45,8 @@ See [native setup](docs/native-setup.md) for off-ear acquisition, reporting-bud 
 
 Copy `.env.example` to `.env` and configure only the integrations being used. Photon uses its cloud provider; responders must have approved phone numbers in `LIFELINE_RESPONDERS_JSON`. Approved phone identity and the alert's provider message ID determine who can accept. Exact incident-coded text commands are `ON IT`, `DEPART`, `ARRIVED`, `DECLINE`, or `RESOLVED`, followed by the full incident ID; resolution also requires an outcome. Removed reactions do not release ownership.
 
+Set `LIFELINE_WEARER_PHONE` to the approved wearer's E.164 number to send a companion Photon iMessage: “I detected a possible fall. Are you okay?” It accompanies the phone's audible check-in and shares its deadline. The wearer can reply to that message with “I need help,” or send `I NEED HELP LF-XXXXXXXX` using the full current incident ID. Positive or ambiguous replies preserve the check-in; cancellation still requires the phone's explicit control. Wearer and responder numbers must differ. The dashboard tracks wearer iMessage configuration and the actual send outcome separately from phone audio.
+
 FinchNode handoffs retain synthetic source record IDs. Optional model calls select relevant existing records; model text cannot clear an incident, invent a clinical claim, or change ownership. ElevenLabs prepares one cached check-in clip. The iPhone has a labelled native speech fallback for development.
 
 Details: [provider setup](docs/providers.md).

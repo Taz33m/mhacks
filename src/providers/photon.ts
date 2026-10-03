@@ -105,7 +105,7 @@ export function createPhotonAdapter(options: {
   };
   return {
     status: () => ({ configured, detail }),
-    async sendMessage(phone: string, text: string): Promise<ProviderResult> {
+    async sendMessage(phone: string, text: string, canSubmit?: () => boolean): Promise<ProviderResult> {
       if (!configured) return { status: 'failed', detail };
       if (!/^\+[1-9]\d{7,14}$/.test(phone) || !text.trim() || text.length > 6_000) {
         return { status: 'failed', detail: 'Invalid recipient or message; no send attempted' };
@@ -118,6 +118,9 @@ export function createPhotonAdapter(options: {
       } catch {
         detail = 'Photon connection/DM unavailable before message send';
         return { status: 'failed', detail };
+      }
+      if (canSubmit && !canSubmit()) {
+        return { status: 'cancelled', detail: 'Incident authorization ended before submission; no message sent.' };
       }
       try {
         const sent = await withDeadline(space.send(text), timeoutMs);

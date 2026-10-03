@@ -80,3 +80,26 @@ test('late health context updates queued alerts and follows an already accepted 
   assert.equal(actions.find(a => a.type === 'alert' && a.status === 'queued')?.text.includes('Record-grounded'), true);
   c.close();
 });
+test('an in-flight alert that fails after resolution never retries, while final closure statuses still send', () => {
+  const { c, advance } = setup();
+  try {
+    const i = c.trigger({ kind: 'manual', summary: 'Late alert failure fixture.' });
+    const alert = c.claimAction('responders')!; assert.equal(alert.type, 'alert');
+    c.accept(i.id, 'maya'); c.progress(i.id, 'maya', 'depart'); c.progress(i.id, 'maya', 'arrive');
+    const outcome = 'On scene; subject confirmed no further assistance required.';
+    c.resolve(i.id, 'maya', outcome); assert.equal(c.latest()?.phase, 'RESOLVED');
+    c.finishAction(alert.id, 'failed', 'Known pre-submit failure completed after incident resolution.');
+    advance(10_001);
+    const closureRecipients: string[] = [];
+    for (let count = 0; count < 10; count++) {
+      const next = c.claimAction('responders'); if (!next) break;
+      assert.notEqual(next.id, alert.id); assert.notEqual(next.type, 'alert');
+      assert.equal(next.type, 'status'); assert.ok(next.text.includes(outcome));
+      closureRecipients.push(next.recipientId!);
+      c.finishAction(next.id, 'provider_accepted', 'Closure status protocol fixture accepted.');
+    }
+    assert.equal(c.claimAction('responders'), null);
+    assert.deepEqual(closureRecipients.sort(), ['jordan', 'maya']);
+    assert.equal(c.actions(i.id).find(a => a.id === alert.id)?.status, 'cancelled');
+  } finally { c.close(); }
+});

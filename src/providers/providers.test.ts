@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Incident, ProviderInbound } from '../contracts.ts';
 import { CHECKIN_TEXT, FINCH_DEMO_URL, createProviders } from './index.ts';
-import { createPhotonAdapter, normalizePhoton, type PhotonClient, type PhotonMessage } from './photon.ts';
+import { createPhotonAdapter, normalizePhoton, type PhotonClient, type PhotonMessage, type PhotonSpace } from './photon.ts';
 
 const incident: Incident = {
   id: 'A17', phase: 'HELP_REQUESTED', version: 1, createdAt: 1_000, updatedAt: 1_020,
@@ -219,6 +219,49 @@ test('Photon failure before send is confirmed failed; timeout after send is unkn
     openDm: async () => ({ send: () => new Promise(() => {}) }),
   }) });
   assert.equal((await after.sendMessage('+15551234567', 'alert')).status, 'unknown');
+});
+
+test('Photon facade checks current authorization after a pending DM resolves and before sending', async () => {
+  for (const allowedAtSubmission of [false, true]) {
+    const opened = Promise.withResolvers<void>();
+    const dm = Promise.withResolvers<PhotonSpace>();
+    let allowed = true;
+    let guardCalls = 0;
+    let sends = 0;
+    const client: PhotonClient = {
+      messages: (async function* () {})(), stop: async () => {},
+      openDm: async () => { opened.resolve(); return dm.promise; },
+    };
+    const providers = createProviders({
+      env: { SPECTRUM_PROJECT_ID: 'mock', SPECTRUM_PROJECT_SECRET: 'mock' },
+      fetch: fetchStub(() => { throw new Error('No HTTP calls in this test'); }),
+      photonFactory: async () => client,
+    });
+    const pending = providers.sendMessage('+15551234567', 'check-in', () => { guardCalls++; return allowed; });
+    await opened.promise;
+    assert.equal(guardCalls, 0, 'authorization must be evaluated after asynchronous DM preparation');
+    allowed = allowedAtSubmission;
+    dm.resolve({ send: async () => { sends++; return { id: 'actual-provider-guid' }; } });
+    const result = await pending;
+    assert.equal(guardCalls, 1);
+    assert.equal(sends, allowedAtSubmission ? 1 : 0);
+    assert.equal(result.status, allowedAtSubmission ? 'provider_accepted' : 'cancelled');
+    assert.equal(result.messageId, allowedAtSubmission ? 'actual-provider-guid' : undefined);
+    if (!allowedAtSubmission) assert.equal(result.detail, 'Incident authorization ended before submission; no message sent.');
+  }
+});
+
+test('authorization ending after Photon submission preserves the actual provider outcome', async () => {
+  let allowed = true;
+  let sends = 0;
+  const adapter = createPhotonAdapter({ projectId: 'mock', projectSecret: 'mock', factory: async () => ({
+    messages: (async function* () {})(), stop: async () => {},
+    openDm: async () => ({ send: async () => { sends++; allowed = false; return { id: 'submitted-guid' }; } }),
+  }) });
+  const result = await adapter.sendMessage('+15551234567', 'check-in', () => allowed);
+  assert.equal(sends, 1);
+  assert.equal(result.status, 'provider_accepted');
+  assert.equal(result.messageId, 'submitted-guid');
 });
 
 test('listener forwards provider facts without authorizing sender or mutating state', async () => {

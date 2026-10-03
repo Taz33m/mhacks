@@ -153,7 +153,7 @@
     if (!reply) {
       text('#reply-decision', 'NO REPLY');
       text('#reply-transcript', 'No wearer reply received for this incident.');
-      text('#reply-meta', 'Spoken replies can request help or preserve the check-in. Voice never cancels an incident.');
+      text('#reply-meta', 'Spoken and iMessage replies can request help or preserve the check-in. Cancellation requires the explicit check-in control.');
       $('#reply-transcript').classList.remove('has-reply');
       return;
     }
@@ -165,7 +165,8 @@
     } catch { /* Preserve the recorded detail if it is not structured. */ }
     text('#reply-decision', decision);
     text('#reply-transcript', transcript);
-    text('#reply-meta', `${time(reply.at)} · ${reply.actor === 'ios-on-device-speech' ? 'iPhone on-device speech' : reply.actor} · Voice cannot cancel the incident.`);
+    const source = reply.actor === 'ios-on-device-speech' ? 'iPhone on-device speech' : reply.actor === 'photon-imessage' ? 'Wearer iMessage via Photon' : reply.actor;
+    text('#reply-meta', `${time(reply.at)} · ${source} · Cancellation requires the explicit check-in control.`);
     $('#reply-transcript').classList.add('has-reply');
   }
 
@@ -183,9 +184,11 @@
       return `${label}: ${finite(uncertainty) ? `±${Math.round(uncertainty)} ms` : 'unknown'}`;
     }).join(' · ');
     const audio = snapshot.providers?.elevenlabs;
+    const wearerMessaging = snapshot.wearerMessaging;
     $('#native-readiness').innerHTML = sourceRows.join('')
       + `<li><div class="readiness-head"><strong>Clock alignment</strong></div><p>${escaped(alignments)}</p></li>`
-      + `<li><div class="readiness-head"><strong>Check-in voice provider</strong><span class="badge">${audio?.configured ? 'Configured' : 'Unavailable'}</span></div><p>${escaped(audio?.detail || 'No voice provider status reported')}</p></li>`;
+      + `<li><div class="readiness-head"><strong>Check-in voice provider</strong><span class="badge">${audio?.configured ? 'Configured' : 'Unavailable'}</span></div><p>${escaped(audio?.detail || 'No voice provider status reported')}</p></li>`
+      + `<li><div class="readiness-head"><strong>Wearer iMessage</strong><span class="badge">${wearerMessaging?.configured ? 'Configured' : 'Unavailable'}</span></div><p>${escaped(wearerMessaging?.detail || 'No wearer messaging configuration reported')}</p></li>`;
     if (nativeSetup) {
       const addresses = nativeSetup.addresses.length ? nativeSetup.addresses.map((address) => `${address}:${nativeSetup.port}`).join('\n') : 'No external IPv4 address reported';
       const binding = nativeSetup.lanEnabled === true ? 'LAN binding enabled' : nativeSetup.lanEnabled === false ? 'Local-only binding' : 'Listener binding not reported';
@@ -224,7 +227,8 @@
     text('#action-count', actions.length);
     $('#actions').innerHTML = actions.length ? actions.map((action) => {
       const [label, color] = actionLabels[action.status] || [action.status, ''];
-      return `<li class="action-item"><div class="action-head"><strong>${escaped(action.type[0].toUpperCase() + action.type.slice(1))}${action.recipientId ? ` · ${escaped(nameFor(action.recipientId))}` : ''}</strong><span class="badge ${color}">${escaped(label)}</span></div><p>${escaped(action.providerResult || action.text || 'No provider result yet.')}</p><span class="action-meta">${escaped(time(action.createdAt))} · ${action.attempts} attempt${action.attempts === 1 ? '' : 's'}${action.providerMessageId ? ` · Message ${escaped(action.providerMessageId.slice(0, 18))}` : ''}</span></li>`;
+      const actionTitle = { wearer_checkin: 'Wearer iMessage', checkin: 'Phone audio check-in' }[action.type] || action.type[0].toUpperCase() + action.type.slice(1);
+      return `<li class="action-item"><div class="action-head"><strong>${escaped(actionTitle)}${action.recipientId ? ` · ${escaped(nameFor(action.recipientId))}` : ''}</strong><span class="badge ${color}">${escaped(label)}</span></div><p>${escaped(action.providerResult || action.text || 'No provider result yet.')}</p><span class="action-meta">${escaped(time(action.createdAt))} · ${action.attempts} attempt${action.attempts === 1 ? '' : 's'}${action.providerMessageId ? ` · Message ${escaped(action.providerMessageId.slice(0, 18))}` : ''}</span></li>`;
     }).join('') : '<li class="empty-list">No external actions queued.</li>';
   }
 
