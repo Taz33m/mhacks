@@ -6,7 +6,7 @@ Prepared 2026-10-03 from source reviews of Nook and Wander, Kinesthetic's native
 
 **Fixed hardware:** a chest-mounted iPhone 15 and a waist-mounted AirPod Pro. These are two distinct motion sources. The AirPod is the waist IMU.
 
-This document specifies the proposed implementation. No LIFELINE application, live provider integration, or fall-detection accuracy has been validated by this review.
+This document specifies the reference architecture. The local prototype now implements the incident loop and native acquisition clients; see [current setup and validation](../README.md). Live provider integration and fall-detection accuracy still need device trials.
 
 ## What the prior projects actually supply
 

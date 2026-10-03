@@ -9,7 +9,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { Controller, PolicyError } from './controller.ts';
 import { Motion, validSample } from './motion.ts';
 import { approvedResponder } from './identity.ts';
-import type { ClockPong, Command, Incident, ProviderInbound, Responder, Snapshot, Source } from './contracts.ts';
+import type { CheckinReply, ClockPong, Command, Incident, ProviderInbound, Responder, Snapshot, Source } from './contracts.ts';
 import { providerStatus, loadHealth, buildHandoff, answerQuestion, sendMessage, startPhotonListener, prepareCheckinAudio } from './providers/index.ts';
 
 const port = Number(process.env.LIFELINE_PORT ?? 8877);
@@ -70,6 +70,9 @@ function prepareIncident(i: Incident): void {
       if (!stopping && controller.active()?.id === i.id) { controller.setHandoff(i.id, text); broadcast(); }
     }).catch(() => { if (!stopping && controller.active()?.id === i.id) controller.setHandoff(i.id, 'Synthetic health record unavailable. Response continues.'); });
   }
+  prepareAudio();
+}
+function prepareAudio(): void {
   if (!audio && !audioPreparing) {
     audioPreparing = true;
     void prepareCheckinAudio().then(bytes => { audio = bytes; }).catch(() => {}).finally(() => { audioPreparing = false; });
@@ -116,10 +119,17 @@ async function inbound(e: ProviderInbound): Promise<void> {
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body));
 }
+async function requestBody(req: IncomingMessage): Promise<unknown> {
+  req.setEncoding('utf8');
+  let text = '', bytes = 0;
+  for await (const chunk of req) {
+    bytes += Buffer.byteLength(chunk); if (bytes > 8000) throw new PolicyError('Request is too large.');
+    text += chunk;
+  }
+  return JSON.parse(text);
+}
 async function commandBody(req: IncomingMessage): Promise<Command> {
-  let text = '';
-  for await (const chunk of req) { text += chunk; if (text.length > 8000) throw new PolicyError('Request is too large.'); }
-  const parsed: unknown = JSON.parse(text);
+  const parsed = await requestBody(req);
   if (!parsed || typeof parsed !== 'object' || typeof (parsed as Command).type !== 'string') throw new PolicyError('Invalid command.');
   return parsed as Command;
 }
@@ -153,7 +163,9 @@ const server = createServer(async (req, res) => {
       if (!loopback(req) || !['localhost', '127.0.0.1', '[::1]'].includes(requestHost)
         || (origin && new URL(origin).host !== req.headers.host)) return json(res, 403, { error: 'Pairing setup is available only from this Mac.' });
       const addresses = Object.values(networkInterfaces()).flat().filter(a => a && a.family === 'IPv4' && !a.internal).map(a => a!.address);
-      return json(res, 200, { token, port: req.socket.localPort ?? port, addresses });
+      const bindAddress = (server.address() as { address: string }).address;
+      return json(res, 200, { token, port: req.socket.localPort ?? port, addresses,
+        lanEnabled: !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(bindAddress) });
     }
     if (url.pathname === '/api/commands' && req.method === 'POST') {
       if (!authorized(req)) return json(res, 401, { error: 'Operator/pairing token required.' });
@@ -161,8 +173,17 @@ const server = createServer(async (req, res) => {
     }
     if (url.pathname === '/api/checkin' && req.method === 'GET') {
       if (!authorized(req)) return json(res, 401, { error: 'Pairing token required.' });
-      const i = controller.active(); if (i) prepareIncident(i);
-      return json(res, 200, { incident: i, audioUrl: audio ? '/api/audio/checkin' : null });
+      const active = controller.active(); if (active) prepareIncident(active);
+      const i = active ?? controller.latest();
+      return json(res, 200, { incident: i, audioUrl: audio ? '/api/audio/checkin' : null,
+        serverTime: Date.now(), responders: responders.map(r => ({ id: r.id, name: r.name })) });
+    }
+    if (url.pathname === '/api/checkin/reply' && req.method === 'POST') {
+      if (!authorized(req)) return json(res, 401, { error: 'Pairing token required.' });
+      const body = await requestBody(req);
+      if (!body || typeof body !== 'object') throw new PolicyError('Invalid check-in reply.');
+      const decision = controller.recordCheckinReply(body as CheckinReply);
+      broadcast(); return json(res, 200, { decision });
     }
     if (url.pathname === '/api/audio/checkin' && req.method === 'GET') {
       if (!authorized(req)) return json(res, 401, { error: 'Pairing token required.' });
@@ -217,6 +238,7 @@ const heartbeat = setInterval(() => {
 server.listen(port, host, () => {
   const actualPort = (server.address() as { port: number }).port;
   console.log(`LIFELINE running at http://${host}:${actualPort}. Native pairing token is available in the local dashboard; not logged.`);
+  prepareAudio();
   const i = controller.active(); if (i) prepareIncident(i);
   void startPhotonListener(inbound).then(async stop => {
     if (stopping) await stop(); else stopPhoton = stop;

@@ -18,6 +18,7 @@ const fixture = {
     conditions: [],
   },
 };
+const mp3 = new Uint8Array([0x49, 0x44, 0x33, 4, 0, 0, 0, 0, 0, 0, 0xff, 0xfb, 0x90, 0]);
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
 }
@@ -67,6 +68,37 @@ test('lookup errors, missing categories and non-synthetic payloads remain unavai
   }
 });
 
+test('malformed Finch nested fields and duplicate IDs cannot become available health context', async () => {
+  const invalid = [
+    { ...fixture, data: { ...fixture.data, medications: [{ id: 'med-1', name: { text: 'Nested name' } }] } },
+    { ...fixture, data: { ...fixture.data, medications: [{ id: 'med-1', name: 'Medication', status: { code: 'active' } }] } },
+    { ...fixture, data: { ...fixture.data, medications: [{ id: 'med-1', name: 'Medication', dosage: ['nested dosage'] }] } },
+    { ...fixture, data: { ...fixture.data, allergies: [{ id: 'allergy-1', substance: 'Penicillin', severity: 3 }] } },
+    { ...fixture, data: { ...fixture.data, conditions: [null] } },
+    { ...fixture, data: { ...fixture.data, conditions: [{ id: 'med-1', name: 'Duplicate record ID' }] } },
+    { ...fixture, meta: { dataAsOf: { date: '2026-08-25' } } },
+  ];
+  for (const payload of invalid) {
+    const providers = createProviders({ env: {}, fetch: fetchStub(() => json(payload)) });
+    const health = await providers.loadHealth();
+    assert.equal(health.available, false);
+    assert.deepEqual(health.recordIds, []);
+    assert.match(providers.providerStatus().finchnode.detail, /unavailable/);
+    assert.match(await providers.answerQuestion(incident, health, 'What medications are recorded?'), /unavailable/);
+  }
+});
+
+test('bounded Finch read rejects oversized and non-JSON bodies', async () => {
+  for (const response of [
+    new Response('<html>error</html>', { headers: { 'Content-Type': 'text/html' } }),
+    new Response('x'.repeat(1_000_001), { headers: { 'Content-Type': 'application/json' } }),
+    new Response(JSON.stringify(fixture), { headers: { 'Content-Type': 'application/json', 'Content-Length': '2000000' } }),
+  ]) {
+    const providers = createProviders({ env: {}, fetch: fetchStub(() => response) });
+    assert.equal((await providers.loadHealth()).available, false);
+  }
+});
+
 test('bounded LLM ranks only known records; model medical prose is never rendered', async () => {
   let requests = 0;
   const providers = createProviders({
@@ -110,14 +142,38 @@ test('audio is cached and failures do not repeatedly generate clips', async () =
         calls++;
         assert.equal(url, 'https://api.elevenlabs.io/v1/text-to-speech/voice-1?output_format=mp3_44100_128');
         assert.deepEqual(JSON.parse(String(init?.body)), { text: CHECKIN_TEXT, model_id: 'eleven_multilingual_v2' });
-        return new Response(new Uint8Array([1, 2, 3]), { status, headers: { 'Content-Type': status === 200 ? 'audio/mpeg' : 'application/json' } });
+        return new Response(mp3, { status, headers: { 'Content-Type': status === 200 ? 'audio/mpeg' : 'application/json' } });
       }),
     });
     const [first, second] = await Promise.all([providers.prepareCheckinAudio(), providers.prepareCheckinAudio()]);
     assert.equal(calls, 1);
     assert.equal(first, second);
-    if (status === 200) assert.deepEqual(first, new Uint8Array([1, 2, 3]));
+    if (status === 200) assert.deepEqual(first, mp3);
     else assert.equal(first, null);
+  }
+});
+
+test('speech rejects JSON/errors, wrong output format, empty and oversized responses', async () => {
+  const responses = [
+    json({ error: 'quota unavailable' }),
+    new Response(JSON.stringify({ error: 'upstream error' }), { headers: { 'Content-Type': 'audio/mpeg' } }),
+    new Response(mp3, { status: 401, headers: { 'Content-Type': 'audio/mpeg' } }),
+    new Response(mp3, { headers: { 'Content-Type': 'audio/wav' } }),
+    new Response(new Uint8Array(), { headers: { 'Content-Type': 'audio/mpeg' } }),
+    new Response(mp3, { headers: { 'Content-Type': 'audio/mpeg', 'Content-Length': '5000001' } }),
+    new Response(new Uint8Array(5_000_001), { headers: { 'Content-Type': 'audio/mpeg' } }),
+  ];
+  for (const response of responses) {
+    let calls = 0;
+    const providers = createProviders({
+      env: { ELEVENLABS_API_KEY: 'mock', ELEVENLABS_VOICE_ID: 'voice-1' },
+      fetch: fetchStub(() => { calls++; return response; }),
+    });
+    assert.equal(await providers.prepareCheckinAudio(), null);
+    assert.equal(await providers.prepareCheckinAudio(), null);
+    assert.equal(calls, 1);
+    assert.equal(providers.providerStatus().elevenlabs.configured, true);
+    assert.match(providers.providerStatus().elevenlabs.detail, /failed; audio unavailable/);
   }
 });
 

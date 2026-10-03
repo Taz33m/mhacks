@@ -26,6 +26,12 @@ test('manual help skips waiting and repeated trigger does not create another act
   const { c } = setup(); const i = c.trigger({ kind: 'manual', summary: 'Help requested' });
   assert.equal(i.phase, 'HELP_REQUESTED'); assert.equal(c.trigger({ kind: 'synthetic', summary: 'again' }).id, i.id); c.close();
 });
+test('manual help during confirmation escalates the same incident immediately', () => {
+  const { c } = setup(); const i = c.trigger({ kind: 'synthetic', summary: 'Possible incident.' });
+  assert.equal(c.active()?.phase, 'CONFIRMING');
+  assert.equal(c.trigger({ kind: 'manual', summary: 'Subject requested help.' }).id, i.id);
+  assert.equal(c.active()?.phase, 'HELP_REQUESTED'); c.close();
+});
 test('first eligible acceptance wins; duplicates and stale incidents cannot replace owner', () => {
   const { c } = setup(); const i = c.trigger({ kind: 'manual', summary: 'help' });
   assert.throws(() => c.accept(i.id, 'stranger'), /approved/); c.accept(i.id, 'maya', 'inbound1'); c.accept(i.id, 'maya', 'inbound1');

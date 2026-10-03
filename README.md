@@ -7,9 +7,12 @@ MHacks 2026 — Actually Intelligent (AI). Chest iPhone + waist AirPod evidence 
 Requires Node 24+ and npm. Native builds require Xcode on macOS.
 
 ```sh
-npm install
+npm ci
+npm run setup:local
 npm start
 ```
+
+`setup:local` creates a private `.env` for phone access on the development network, pairs the Mac app without printing its token, and builds/installs it in `~/Applications`. Existing environment settings are preserved. Connect the AirPods and start motion in the installed app.
 
 Open **http://127.0.0.1:8877**. The dashboard shows real source availability, incident state, provider configuration, and explicitly labelled development controls. Trigger a synthetic incident or manual help, accept as a development responder, report departure/arrival, and record an outcome. These controls simulate authenticated actors for development; they are not production identity verification.
 
@@ -25,6 +28,14 @@ npm run build:ios
 The Mac app directly incorporates Kinesthetic's acquisition and audio route keeper. `KeepAlive.swift` is unchanged; the bridge adds acceleration/gravity, LIFELINE packets, clock synchronization, and source/session validation. See [native provenance](native/PROVENANCE.md).
 
 For the actual phone, open `native/ios/LifelinePhone.xcodeproj` in Xcode, select your signing team and connected iPhone, then build/run. The automated build checks the simulator target without launching it; it does not establish hardware sensing.
+
+The installer can build/sign/install once the phone is connected and your Xcode account is available:
+
+```sh
+npm run install:ios -- TEAM_ID DEVICE_UDID
+```
+
+`npm run build:ios:device` checks the physical target without signing; it cannot install on a real iPhone.
 
 For phone-to-Mac access, run with `LIFELINE_HOST=0.0.0.0 npm start` on a trusted development network. Visit the dashboard from this Mac to obtain the pairing token and LAN address, then enter them in the native apps. The server's default binding is local-only. Test venue connectivity before relying on it. Keep the phone app foregrounded. Mount the phone at the chest and the reporting AirPod at the waist; calibrate while standing still after both sources are fresh. Disconnects, source changes, and remounts require calibration again.
 
@@ -49,6 +60,8 @@ Tests cover deadlines/restart, stale and unauthorized acceptance, atomic ownersh
 
 ## Current boundary
 
-This is a working development foundation, not validated fall-detection accuracy. The initial detector uses tentative impact/tilt/stillness thresholds, preserves both streams, and requires bounded alignment for a cross-body candidate. Source failures remain explicit unknowns. Physical trials, iPhone installation, actual audio-route behavior, and real provider sends require device/configuration validation. Spoken reply recording is not implemented yet.
+This is a working development foundation, not validated fall-detection accuracy. The initial detector uses tentative impact/tilt/stillness thresholds, preserves both streams, and requires bounded alignment for a cross-body candidate. Source failures remain explicit unknowns. Physical trials, signed iPhone installation, actual audio-route behavior, on-device recognition, and real provider sends require device/configuration validation.
+
+Final on-device spoken replies are recorded against the current check-in. Exact help commands escalate immediately; positive replies ask the wearer to confirm using the cancel control; ambiguous replies leave the incident and deadline unchanged. Voice never resolves an incident. Stale replies and cancellation after the deadline are rejected.
 
 The controller, native clients, dashboard, and providers use the shared [interfaces](docs/interfaces.md). See the [development plan](docs/development-plan.md) and [reference architecture](docs/LIFELINE-reference-architecture.md).

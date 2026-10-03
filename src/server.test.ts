@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { get } from 'node:http';
+import { get, request } from 'node:http';
 import { WebSocket } from 'ws';
 import type { Snapshot, Source } from './contracts.ts';
 
@@ -37,8 +37,9 @@ test('isolated HTTP/WS server accepts native packets, authenticates commands, an
       }).on('error', reject);
     });
     assert.equal(blockedHostStatus, 403);
-    const setup = await (await fetch(`${base}/api/setup`)).json() as { token: string; port: number };
+    const setup = await (await fetch(`${base}/api/setup`)).json() as { token: string; port: number; lanEnabled: boolean };
     assert.equal(setup.port, port);
+    assert.equal(setup.lanEnabled, false);
     const commands = async (body: unknown) => fetch(`${base}/api/commands`, { method: 'POST', headers: { Authorization: `Bearer ${setup.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const state = async () => await (await fetch(`${base}/api/state`)).json() as Snapshot;
     for (const source of ['chest-phone', 'waist-airpod'] as Source[]) {
@@ -58,6 +59,16 @@ test('isolated HTTP/WS server accepts native packets, authenticates commands, an
     const measured = await state();
     assert.equal(measured.sensors.every(s => s.fresh && s.calibrated && s.alignmentUncertaintyMs !== null), true);
     assert.equal((await commands({ type: 'trigger', kind: 'synthetic', summary: 'Isolated protocol fixture; not a physical fall.' })).status, 200);
+    const confirming = (await state()).incident!;
+    assert.equal(confirming.phase, 'CONFIRMING');
+    const reply = async (transcript: string, checkinId = confirming.checkinId) => fetch(`${base}/api/checkin/reply`, {
+      method: 'POST', headers: { Authorization: `Bearer ${setup.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ incidentId: confirming.id, checkinId, transcript, source: 'ios-on-device-speech' })
+    });
+    assert.equal((await fetch(`${base}/api/checkin/reply`, { method: 'POST', body: '{}' })).status, 401);
+    assert.equal((await reply('I need help', 'old')).status, 400);
+    assert.equal((await (await reply("I'm okay")).json()).decision, 'confirmation_required');
+    assert.equal((await (await reply('I am not sure')).json()).decision, 'unresolved');
     assert.equal((await state()).incident?.phase, 'CONFIRMING');
     await new Promise(resolve => setTimeout(resolve, 1150));
     const i = (await state()).incident!; assert.equal(i.phase, 'HELP_REQUESTED');
@@ -68,6 +79,28 @@ test('isolated HTTP/WS server accepts native packets, authenticates commands, an
     assert.equal((await commands({ type: 'resolve', incidentId: i.id, responderId: 'maya', outcome: 'Protocol test outcome recorded by assigned owner.' })).status, 200);
     assert.equal((await state()).incident?.phase, 'RESOLVED');
     assert.equal((await state()).actions.some(a => a.status === 'provider_accepted'), false);
+    const wearer = await (await fetch(`${base}/api/checkin`, { headers: { Authorization: `Bearer ${setup.token}` } })).json();
+    assert.equal(wearer.incident.phase, 'RESOLVED');
+    assert.equal(wearer.incident.outcome, 'Protocol test outcome recorded by assigned owner.');
+    assert.equal(typeof wearer.serverTime, 'number');
+    assert.deepEqual(wearer.responders, [{ id: 'maya', name: 'Maya' }, { id: 'jordan', name: 'Jordan' }]);
+    assert.equal((await commands({ type: 'trigger', kind: 'synthetic', summary: 'Voice escalation fixture.' })).status, 200);
+    const next = (await state()).incident!;
+    const voiced = await new Promise<{status: number; body: {decision: string}}>((resolve, reject) => {
+      const body = Buffer.from(JSON.stringify({ incidentId: next.id, checkinId: next.checkinId,
+        transcript: 'I’m not safe', source: 'ios-on-device-speech' }));
+      const split = body.indexOf(Buffer.from('’')) + 1;
+      const req = request(`${base}/api/checkin/reply`, { method: 'POST', headers: {
+        Authorization: `Bearer ${setup.token}`, 'Content-Type': 'application/json' } }, res => {
+        res.setEncoding('utf8'); let text = '';
+        res.on('data', chunk => { text += chunk; });
+        res.on('end', () => { try { resolve({status:res.statusCode!,body:JSON.parse(text)}); } catch (e) { reject(e); } });
+      });
+      req.on('error', reject); req.write(body.subarray(0, split));
+      setTimeout(() => req.end(body.subarray(split)), 15);
+    });
+    assert.equal(voiced.status, 200); assert.equal(voiced.body.decision, 'help_requested');
+    assert.equal((await state()).incident?.phase, 'HELP_REQUESTED');
   } finally {
     intervals.forEach(clearInterval); sockets.forEach(ws => ws.terminate());
     child.kill('SIGTERM'); await exit; rmSync(dir, { recursive: true, force: true });

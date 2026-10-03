@@ -11,7 +11,11 @@ import AVFoundation
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     Text("LIFELINE").font(.largeTitle.bold())
+#if targetEnvironment(simulator)
+                    Text("Simulator UI · physical motion and speech unverified").font(.caption).foregroundStyle(.orange)
+#else
                     Text("Chest iPhone · real motion").foregroundStyle(.secondary)
+#endif
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Relay Mac address (port 8877)").font(.caption)
                         TextField("Mac LAN or Tailscale IP", text: $model.host)
@@ -26,8 +30,13 @@ import AVFoundation
                     Text(model.status).fixedSize(horizontal: false, vertical: true)
                     Text("Sent \(model.samples) samples · skipped \(model.dropped)")
                         .font(.caption.monospacedDigit())
-                    Text(String(format: "Total acceleration: %.2f g", model.totalG))
+                    Text(model.totalG.map { String(format: "Latest real acceleration: %.2f g", $0) } ?? "No motion sample available")
                         .font(.caption.monospacedDigit())
+                    Button("I NEED HELP") { Task { await model.requestManualHelp() } }
+                        .font(.title2.bold()).buttonStyle(.borderedProminent)
+                        .controlSize(.large).tint(.red)
+                        .disabled(model.requestingHelp || model.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || model.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Divider()
                     if let incident = model.incident {
                         Text("Incident: \(incident.phase)").font(.headline)
@@ -35,6 +44,7 @@ import AVFoundation
                         if incident.phase == "CONFIRMING" {
                             Text("Possible fall. Do you need help?").font(.title2.bold())
                             Text("If you don't respond, LIFELINE will request help from approved responders.")
+                            Text("You can say ‘I need help.’ Spoken replies never cancel the incident.")
                             Button("I DON'T NEED HELP") { Task { await model.cancelCurrentCheckin() } }
                                 .font(.title2.bold()).buttonStyle(.borderedProminent)
                                 .controlSize(.large).tint(.green).disabled(model.cancelling)
@@ -43,13 +53,24 @@ import AVFoundation
                                     .font(.caption)
                             }
                         }
+                        if incident.ownerId != nil {
+                            Text("Responder: \(model.ownerName)").font(.headline)
+                            Text(model.progressExplanation)
+                        } else if incident.phase == "HELP_REQUESTED" {
+                            Text("Help requested. No responder has accepted responsibility yet.")
+                        }
+                        if let deadline = incident.progressDeadline {
+                            Text("Next response/progress deadline: \(Date(timeIntervalSince1970: deadline / 1000), style: .time)")
+                                .font(.caption)
+                        }
+                        if let outcome = incident.outcome, !outcome.isEmpty {
+                            Text("Recorded outcome: \(outcome)")
+                        }
                     } else {
-                        Text("No active incident").font(.headline)
+                        Text(model.checkinAvailable ? "No active incident" : "Incident state not available").font(.headline)
                     }
                     Text(model.checkinStatus).foregroundStyle(.secondary)
-                    if !model.audioStatus.isEmpty {
-                        Text(model.audioStatus).font(.caption).foregroundStyle(.secondary)
-                    }
+                    CheckinVoiceStatusView(voice: model.voice)
                     Text("Keep this app foregrounded with the phone mounted on your chest. Calibrate both sources on the dashboard after mounting or reconnecting.")
                         .font(.caption).foregroundStyle(.secondary)
                 }.padding(24)
@@ -61,10 +82,27 @@ import AVFoundation
     }
 }
 
+struct CheckinVoiceStatusView: View {
+    @ObservedObject var voice: CheckinVoiceSession
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(voice.status).font(.caption).foregroundStyle(.secondary)
+            if !voice.transcript.isEmpty {
+                Text(voice.transcriptIsFinal ? "Final transcript" : "Partial transcript — not submitted").font(.caption.bold())
+                Text(voice.transcript)
+            }
+        }
+    }
+}
+
 struct CheckinResponse: Decodable {
     let incident: PhoneIncident?
     let audioUrl: String?
+    let serverTime: Double?
+    let responders: [PhoneResponder]?
 }
+struct PhoneResponder: Decodable { let id: String; let name: String }
+struct SpokenReplyResponse: Decodable { let decision: String }
 struct PhoneIncident: Decodable {
     struct Evidence: Decodable { let summary: String }
     let id: String
@@ -72,6 +110,9 @@ struct PhoneIncident: Decodable {
     let checkinId: String
     let checkinDeadline: Double?
     let evidence: Evidence
+    let ownerId: String?
+    let progressDeadline: Double?
+    let outcome: String?
 }
 
 /// A native foreground producer. Simulator/non-motion devices send no fabricated samples.
@@ -86,11 +127,14 @@ struct PhoneIncident: Decodable {
     @Published var status = "Enter the Mac address and pairing token."
     @Published var samples = 0
     @Published var dropped = 0
-    @Published var totalG = 0.0
+    @Published var totalG: Double?
     @Published var incident: PhoneIncident?
     @Published var checkinStatus = "Check-ins are fetched when monitoring starts."
-    @Published var audioStatus = ""
+    @Published var checkinAvailable = false
     @Published var cancelling = false
+    @Published var requestingHelp = false
+    @Published var responders: [PhoneResponder] = []
+    let voice = CheckinVoiceSession()
 
     private let motion = CMMotionManager()
     private let motionQueue = OperationQueue()
@@ -104,9 +148,30 @@ struct PhoneIncident: Decodable {
     private var sending = false
     private var polling = false
     private var playedCheckins = Set<String>()
-    private var audioPlayer: AVAudioPlayer?
-    private let speech = AVSpeechSynthesizer()
-    private let prompt = "I detected a possible fall. Do you need help? Tap I don't need help to cancel this check-in."
+    private var replyTask: Task<Void, Never>?
+
+    init() {
+        voice.onFinalTranscript = { [weak self] identity, transcript in
+            guard let self else { return }
+            self.replyTask?.cancel()
+            self.replyTask = Task { await self.submitSpokenReply(identity, transcript: transcript) }
+        }
+        voice.onInvalidated = { [weak self] in self?.replyTask?.cancel(); self?.replyTask = nil }
+    }
+
+    var ownerName: String {
+        guard let owner = incident?.ownerId else { return "Not assigned" }
+        return responders.first(where: { $0.id == owner })?.name ?? owner
+    }
+    var progressExplanation: String {
+        switch incident?.phase {
+        case "ACKNOWLEDGED": return "Accepted responsibility. Departure has not been confirmed."
+        case "RESPONDER_EN_ROUTE": return "The assigned responder confirmed they are on their way."
+        case "ON_SCENE": return "The assigned responder confirmed arrival. Waiting for a recorded outcome."
+        case "RESOLVED": return "The responder recorded an outcome."
+        default: return "Waiting for the controller's next progress update."
+        }
+    }
 
     private func url(_ scheme: String, path: String, producer: Bool = false) -> URL? {
         var components = URLComponents()
@@ -131,6 +196,9 @@ struct PhoneIncident: Decodable {
         }
         monitoring = true
         monitoringEpoch = UUID().uuidString
+        playedCheckins.removeAll()
+        voice.refreshPermissionState()
+        Task { await voice.preparePermissions() }
         UIApplication.shared.isIdleTimerDisabled = true
         connect()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -252,6 +320,7 @@ struct PhoneIncident: Decodable {
     private func pollCheckin() async {
         guard monitoring, !polling, let request = authenticatedRequest("/api/checkin") else { return }
         let epoch = monitoringEpoch
+        let requestStarted = Date()
         polling = true
         defer { polling = false }
         do {
@@ -259,21 +328,42 @@ struct PhoneIncident: Decodable {
             guard monitoring, monitoringEpoch == epoch else { return }
             guard (response as? HTTPURLResponse)?.statusCode == 200 else {
                 incident = nil
+                checkinAvailable = false
+                voice.suspendForConnection(reason: "Check-in connection unavailable. Voice paused; incident safety is unknown.")
                 checkinStatus = "Check-in unavailable. Verify pairing token and relay."
                 return
             }
             let checkin = try JSONDecoder().decode(CheckinResponse.self, from: data)
             incident = checkin.incident
-            if checkin.incident?.phase != "CONFIRMING" { stopAudio() }
+            checkinAvailable = true
+            responders = checkin.responders ?? []
+            if let activeIdentity = voice.identity,
+               checkin.incident?.phase != "CONFIRMING" || checkin.incident?.id != activeIdentity.incidentId
+                || checkin.incident?.checkinId != activeIdentity.checkinId {
+                voice.cancel(reason: "The check-in changed. Voice stopped; controller state remains authoritative.")
+            }
+            if let activeIdentity = voice.identity, checkin.incident?.phase == "CONFIRMING",
+               checkin.incident?.id == activeIdentity.incidentId, checkin.incident?.checkinId == activeIdentity.checkinId {
+                voice.resumeAfterConnection(activeIdentity)
+            }
             checkinStatus = "Connected to the incident controller."
             if let current = checkin.incident, current.phase == "CONFIRMING",
                !playedCheckins.contains(current.checkinId) {
                 playedCheckins.insert(current.checkinId)
-                await playCheckin(current.checkinId, path: checkin.audioUrl, epoch: epoch)
+                let remoteNow = checkin.serverTime ?? Date().timeIntervalSince1970 * 1000
+                let remaining = max(0, ((current.checkinDeadline ?? remoteNow) - remoteNow) / 1000)
+                let identity = CheckinIdentity(incidentId: current.id, checkinId: current.checkinId, monitoringEpoch: epoch)
+                let audioRequest: URLRequest?
+                if let path = checkin.audioUrl, path.hasPrefix("/"), !path.hasPrefix("//") {
+                    audioRequest = authenticatedRequest(path)
+                } else { audioRequest = nil }
+                voice.begin(identity, deadline: requestStarted.addingTimeInterval(remaining), audioRequest: audioRequest)
             }
         } catch {
             guard monitoring, monitoringEpoch == epoch else { return }
             incident = nil
+            checkinAvailable = false
+            voice.suspendForConnection(reason: "Check-in connection unavailable. Voice paused; the incident remains with the controller.")
             checkinStatus = "Check-in connection unavailable; this does not mean the incident is safe."
         }
     }
@@ -283,6 +373,7 @@ struct PhoneIncident: Decodable {
               let body = try? JSONSerialization.data(withJSONObject: ["type": "cancel", "incidentId": current.id, "checkinId": current.checkinId]),
               let request = authenticatedRequest("/api/commands", method: "POST", body: body) else { return }
         cancelling = true
+        voice.cancel(reason: "Explicit cancellation sent. Waiting for controller confirmation.")
         let epoch = monitoringEpoch
         defer { cancelling = false }
         do {
@@ -293,7 +384,6 @@ struct PhoneIncident: Decodable {
                 await pollCheckin()
                 return
             }
-            stopAudio()
             // Invalidate an in-flight audio fetch immediately after the controller
             // accepts cancellation; the next poll supplies authoritative state.
             incident = nil
@@ -305,36 +395,62 @@ struct PhoneIncident: Decodable {
         }
     }
 
-    private func playCheckin(_ checkinId: String, path: String?, epoch: String) async {
-        // The chest phone owns wearer speech. Verify its physical audio route
-        // while the Mac is holding the waist AirPod; compilation cannot prove it.
+    private func submitSpokenReply(_ identity: CheckinIdentity, transcript: String) async {
+        guard current(identity), !Task.isCancelled,
+              let body = try? JSONSerialization.data(withJSONObject: [
+                "incidentId": identity.incidentId, "checkinId": identity.checkinId,
+                "transcript": transcript, "source": "ios-on-device-speech"
+              ]), let request = authenticatedRequest("/api/checkin/reply", method: "POST", body: body) else { return }
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio)
-            try AVAudioSession.sharedInstance().setActive(true)
-        } catch { audioStatus = "Phone audio session unavailable." }
-        if let path, path.hasPrefix("/"), !path.hasPrefix("//"),
-           let request = authenticatedRequest(path) {
-            do {
-                let (data, response) = try await URLSession.shared.data(for: request)
-                guard monitoring, monitoringEpoch == epoch, incident?.phase == "CONFIRMING", incident?.checkinId == checkinId else { return }
-                guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
-                let player = try AVAudioPlayer(data: data)
-                player.prepareToPlay()
-                guard player.play() else { throw URLError(.cannotDecodeContentData) }
-                audioPlayer = player
-                audioStatus = "Playing the server-provided ElevenLabs check-in."
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard current(identity), !Task.isCancelled else { return }
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                voice.submissionUnavailable(identity)
+                await pollCheckin()
                 return
-            } catch {
-                // Provider/network failures retain the check-in and visibly use native speech.
             }
+            let reply = try JSONDecoder().decode(SpokenReplyResponse.self, from: data)
+            voice.receivedDecision(reply.decision, expected: identity)
+            if !Task.isCancelled { await pollCheckin() }
+        } catch {
+            guard current(identity), !Task.isCancelled else { return }
+            voice.submissionUnavailable(identity)
+            await pollCheckin()
         }
-        guard monitoring, monitoringEpoch == epoch, incident?.phase == "CONFIRMING", incident?.checkinId == checkinId else { return }
-        audioStatus = "Development fallback: native iPhone speech (ElevenLabs audio unavailable)."
-        speech.speak(AVSpeechUtterance(string: prompt))
+    }
+
+    private func current(_ identity: CheckinIdentity) -> Bool {
+        monitoring && monitoringEpoch == identity.monitoringEpoch && incident?.phase == "CONFIRMING"
+            && incident?.id == identity.incidentId && incident?.checkinId == identity.checkinId && voice.isCurrent(identity)
+    }
+
+    func requestManualHelp() async {
+        guard !requestingHelp else { return }
+        if !monitoring { start() }
+        guard monitoring, let body = try? JSONSerialization.data(withJSONObject: [
+            "type": "trigger", "kind": "manual", "summary": "Wearer explicitly pressed I NEED HELP on the chest iPhone."
+        ]), let request = authenticatedRequest("/api/commands", method: "POST", body: body) else { return }
+        requestingHelp = true
+        voice.cancel(reason: "Manual help request sent. Waiting for controller confirmation.")
+        let epoch = monitoringEpoch
+        defer { requestingHelp = false }
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard monitoring, monitoringEpoch == epoch else { return }
+            checkinStatus = (response as? HTTPURLResponse)?.statusCode == 200
+                ? "The controller accepted your manual help request. Waiting for responder updates."
+                : "Manual help request was rejected. Check connectivity and pairing."
+            await pollCheckin()
+        } catch {
+            guard monitoring, monitoringEpoch == epoch else { return }
+            checkinStatus = "Manual help result is unknown. Reconnecting to check controller state."
+            await pollCheckin()
+        }
     }
 
     private func disconnect() {
         motion.stopDeviceMotionUpdates()
+        totalG = nil
         receiveTask?.cancel()
         receiveTask = nil
         socket?.cancel(with: .goingAway, reason: nil)
@@ -342,19 +458,14 @@ struct PhoneIncident: Decodable {
         sending = false
     }
 
-    private func stopAudio() {
-        audioPlayer?.stop()
-        audioPlayer = nil
-        speech.stopSpeaking(at: .immediate)
-    }
-
     func stop() {
         monitoring = false
         timer?.invalidate()
         timer = nil
         disconnect()
-        stopAudio()
+        voice.cancel(reason: "Monitoring stopped. Voice and microphone are off.")
         incident = nil
+        checkinAvailable = false
         UIApplication.shared.isIdleTimerDisabled = false
         status = "Stopped. Sensor unavailability does not resolve an incident."
         checkinStatus = "Monitoring stopped. Existing incidents remain with the controller."

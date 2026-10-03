@@ -2,11 +2,48 @@ import type { HealthContext, Incident } from '../contracts.ts';
 import { createPhotonAdapter, type PhotonFactory } from './photon.ts';
 
 export const FINCH_DEMO_URL = 'https://api.finchnode.com/demo/v1/users/patient-demo-001/records?categories=medications,conditions,allergies';
-export const CHECKIN_TEXT = "I detected a possible fall. Do you need help? Tap I don't need help to cancel this check-in.";
+export const CHECKIN_TEXT = "I detected a possible fall. Do you need help? You can say I need help, or tap I don't need help to cancel.";
 type Fetcher = typeof fetch;
 type RecordData = Record<string, unknown>;
 type HealthRecord = { category: 'medications' | 'conditions' | 'allergies'; id: string; raw: RecordData };
 const categories = ['medications', 'conditions', 'allergies'] as const;
+const recordFields = ['status', 'dosage', 'frequency', 'reaction', 'severity', 'verificationStatus', 'onsetDate', 'sourceName', 'sourceUpdatedAt', 'syncedAt'] as const;
+const MAX_JSON_BYTES = 1_000_000;
+const MAX_AUDIO_BYTES = 5_000_000;
+
+async function readBounded(response: Response, limit: number): Promise<Uint8Array> {
+  const length = response.headers.get('content-length');
+  if (length !== null && (!/^\d+$/.test(length) || Number(length) > limit)) {
+    await response.body?.cancel();
+    throw new Error('Response exceeds limit');
+  }
+  if (!response.body) throw new Error('Empty response');
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      size += next.value.byteLength;
+      if (size > limit) throw new Error('Response exceeds limit');
+      chunks.push(next.value);
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
+  } finally { reader.releaseLock(); }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+  return bytes;
+}
+
+async function readJson(response: Response): Promise<unknown> {
+  const mime = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
+  if (mime !== 'application/json') throw new Error('Expected JSON response');
+  return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(await readBounded(response, MAX_JSON_BYTES)));
+}
 
 function object(value: unknown): RecordData | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as RecordData : null;
@@ -18,8 +55,7 @@ function healthKey(health: HealthContext): string { return `${health.retrievedAt
 function recordText(record: HealthRecord): string {
   const raw = record.raw;
   const label = text(raw.name) ?? text(raw.substance) ?? 'Unnamed returned record';
-  const fields = ['status', 'dosage', 'frequency', 'reaction', 'severity', 'verificationStatus', 'onsetDate', 'sourceName', 'sourceUpdatedAt', 'syncedAt'];
-  const details = fields.flatMap((key) => text(raw[key]) ? [`${key}: ${raw[key]}`] : []);
+  const details = recordFields.flatMap((key) => text(raw[key]) ? [`${key}: ${raw[key]}`] : []);
   return `${record.category}: ${label}${details.length ? `; ${details.join('; ')}` : ''} [${record.id}]`;
 }
 function clinicalQuestion(question: string): boolean {
@@ -68,7 +104,7 @@ export function createProviders(options: {
         }),
       });
       if (!response.ok) throw new Error('model unavailable');
-      const payload = object(await response.json());
+      const payload = object(await readJson(response));
       const choice = object(Array.isArray(payload?.choices) ? payload.choices[0] : null);
       const content = text(object(choice?.message)?.content);
       const parsed = object(JSON.parse(content ?? 'null'));
@@ -88,20 +124,30 @@ export function createProviders(options: {
     try {
       const response = await fetcher(FINCH_DEMO_URL, { signal: AbortSignal.timeout(timeoutMs), redirect: 'error' });
       if (!response.ok) throw new Error('lookup failed');
-      const raw = object(await response.json());
+      const raw = object(await readJson(response));
       const data = object(raw?.data);
       if (!raw || raw.synthetic !== true || raw.environment !== 'demo' || !data) throw new Error('not synthetic demo');
       const extracted: HealthRecord[] = [];
+      const seenIds = new Set<string>();
       for (const category of categories) {
         if (!Array.isArray(data[category])) throw new Error('missing category');
         for (const entry of data[category]) {
           const record = object(entry);
           const id = text(record?.id);
-          if (!record || !id) throw new Error('invalid record');
+          if (!record || !id || id.length > 256 || /[\[\]\r\n]/.test(id) || seenIds.has(id)) throw new Error('invalid record ID');
+          const label = record[category === 'allergies' ? 'substance' : 'name'];
+          if (!text(label) || (label as string).length > 2_000) throw new Error('invalid record label');
+          for (const field of recordFields) {
+            const value = record[field];
+            if (value !== undefined && value !== null && (typeof value !== 'string' || value.length > 2_000)) throw new Error('invalid record field');
+          }
+          seenIds.add(id);
           extracted.push({ category, id, raw: record });
         }
       }
       const meta = object(raw.meta);
+      if (raw.meta !== undefined && !meta) throw new Error('invalid record metadata');
+      if (meta?.dataAsOf !== undefined && meta.dataAsOf !== null && (typeof meta.dataAsOf !== 'string' || !Number.isFinite(Date.parse(meta.dataAsOf)))) throw new Error('invalid fixture timestamp');
       const summary = [
         'Synthetic FinchNode demo record; not a live medical record.',
         `Retrieved ${new Date(retrievedAt).toISOString()}; fixture data as of ${text(meta?.dataAsOf) ?? 'unknown'}.`,
@@ -167,9 +213,11 @@ export function createProviders(options: {
           headers: { 'xi-api-key': env.ELEVENLABS_API_KEY!, 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
           body: JSON.stringify({ text: CHECKIN_TEXT, model_id: 'eleven_multilingual_v2' }),
         });
-        if (!response.ok || !response.headers.get('content-type')?.startsWith('audio/')) throw new Error('speech unavailable');
-        const bytes = new Uint8Array(await response.arrayBuffer());
-        if (!bytes.length || bytes.length > 5_000_000) throw new Error('invalid audio');
+        if (!response.ok || response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'audio/mpeg') throw new Error('speech unavailable');
+        const bytes = await readBounded(response, MAX_AUDIO_BYTES);
+        const id3 = bytes.length >= 10 && bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33;
+        const frame = bytes.length >= 4 && bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0;
+        if (!id3 && !frame) throw new Error('invalid MP3 response');
         audioDetail = 'ElevenLabs check-in MP3 prepared and cached for this process';
         return bytes;
       } catch {

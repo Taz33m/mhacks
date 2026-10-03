@@ -15,6 +15,8 @@ The model base URL is the API prefix, such as `https://provider.example/v1`; the
 
 Status `configured` means configuration exists, not that a live integration has passed. The detail records lookup/preparation/listener failures. SDK errors, credentials, incoming bodies, and recipient numbers are not copied into status details.
 
+For setup, configure a managed Photon cloud line and the two Spectrum project values; add approved E.164 responders through `LIFELINE_RESPONDERS_JSON`. Confirm an actual incoming text and reaction from those phones. For ElevenLabs, use a key with text-to-speech access and an existing voice ID. A failed preparation returns no clip and remains cached for that process; after fixing configuration, restart to prepare it once. FinchNode needs no credential. The optional model needs an API key, an API base URL, and the exact model name; an invalid response falls back to source fields. Check provider detail alongside `configured`; a configured provider can be unavailable.
+
 ## Photon
 
 Use `@spectrum-ts/core@12.10.1` and `@spectrum-ts/imessage@12.10.1`; cloud discovery renews line tokens. [Official cloud setup](https://photon.codes/docs/spectrum-ts/providers/imessage)
@@ -33,10 +35,14 @@ Read `https://api.finchnode.com/demo/v1/users/patient-demo-001/records?categorie
 
 Fixture dates and consent/synchronization are simulated. Empty categories say “no records returned”; absent data does not establish no medications, conditions, or allergies. Lookup failures return unavailable and never block escalation.
 
+JSON reads are capped at 1 MB before parsing. Each returned record needs a unique ID, the category's text label, and nullable text fields for displayed status/dosage/reaction data. Malformed nested values invalidate the context instead of being silently omitted from an apparently available handoff.
+
 The optional model selects existing record IDs in relevance order. Unknown IDs or invalid output cause a fallback. Responses render original record fields with their IDs, rather than model-authored clinical prose. Treatment and diagnosis questions receive an explicit limitation. Models have no tools to mutate phase, assign ownership, clear a check-in, or send messages.
 
 ## ElevenLabs
 
 Prepare a fixed check-in with `POST /v1/text-to-speech/{voice_id}?output_format=mp3_44100_128`, the `xi-api-key` header, and `eleven_multilingual_v2`. Return the MP3 bytes; the server owns the authenticated audio route. Preparation is cached once per process, including a failure, so a polling phone does not generate repeated paid clips. [Official conversion API](https://elevenlabs.io/docs/api-reference/text-to-speech/convert)
+
+The clip says: “I detected a possible fall. Do you need help? You can say I need help, or tap I don't need help to cancel.” Spoken text cannot clear an incident; the controller handles the explicit cancellation control. The response must be a successful `audio/mpeg` body with an MP3 signature. Header and streamed body sizes are bounded to 5 MB; JSON errors, empty output, and a different audio format produce no clip.
 
 Offline tests inject fetch/SDK clients. They make no real message sends or speech/model generations. Public synthetic fixture lookup was read during implementation to confirm its schema; paid/authenticated integration remains to be verified with configured credentials.

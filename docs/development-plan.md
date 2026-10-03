@@ -20,3 +20,11 @@ Main track: Actually Intelligent (AI). Fixed hardware: chest iPhone 15, waist Ai
 Node 24 + SQLite are the initial runtime/backend. Avoid additional app frameworks. Spacetime is outside this first slice. Camera, FREE-WILi, Fetch/ASI:One, and multi-patient features are deferred.
 
 Shared interfaces are defined in `src/contracts.ts` and `docs/interfaces.md`. Components use separate directories and one shared root package manifest.
+
+## Current progress
+
+The backend, native clients, dashboard, and provider adapters are implemented. Automated tests cover the incident loop, speech policy, authentication, raw motion protocol, and provider failures. `npm run setup:local` installs/pairs the Mac app and prepares network access; iPhone device installation uses the signing/device steps in [native setup](native-setup.md).
+
+Spoken check-ins use final on-device English transcripts. Help requests escalate; positive replies require the explicit cancel control; ambiguity preserves the deadline. The dashboard displays the recorded reply and actual source/configuration status.
+
+Remaining physical work: connect the real devices, select an Apple signing team, install on the iPhone, confirm the reporting bud, calibrate, and measure actual sensing/voice behavior. Live Photon/ElevenLabs need credentials in the private `.env` and an approved responder phone. Compilation and simulator installation do not establish physical sensing or recognition accuracy.

@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
-import type { Action, ActionType, Evidence, Incident, Phase, Responder, TimelineEvent } from './contracts.ts';
+import type { Action, ActionType, CheckinDecision, CheckinReply, Evidence, Incident, Phase, Responder, TimelineEvent } from './contracts.ts';
+import { classifyCheckinReply } from './checkin.ts';
 
 export const terminal = (phase: Phase) => phase === 'RESOLVED' || phase === 'CANCELLED_FALSE_ALARM';
 type StoredIncident = Incident & { contacted: string[]; declined: string[] };
@@ -114,7 +115,7 @@ export class Controller {
       };
       this.save(i); this.event(i, 'DETECTED', 'sensor-or-operator', evidence.summary);
       this.phase(i, 'CONFIRMING', 'policy', 'Current check-in opened. Explicit cancellation is required.');
-      this.enqueue(i, 'checkin', null, 'I detected a possible fall. Do you need help? Tap I do not need help to cancel this check-in.');
+      this.enqueue(i, 'checkin', null, "I detected a possible fall. Do you need help? You can say I need help, or tap I don't need help to cancel.");
       if (evidence.kind === 'manual') this.requestHelp(i, 'Explicit manual help request.');
       return i;
     });
@@ -122,9 +123,24 @@ export class Controller {
   cancel(id: string, checkinId: string): void {
     this.transaction(() => {
       const i = this.current(id);
-      if (i.checkinId !== checkinId || i.phase !== 'CONFIRMING')
+      if (i.checkinId !== checkinId || i.phase !== 'CONFIRMING' || this.now() >= i.checkinDeadline)
         throw new PolicyError('Cancellation must target the current unresolved check-in. After escalation, responder outcome is required.');
       i.progressDeadline = null; this.phase(i, 'CANCELLED_FALSE_ALARM', 'subject-control', 'Subject explicitly cancelled the current check-in.'); this.stopPending(i);
+    });
+  }
+  recordCheckinReply(reply: CheckinReply): CheckinDecision {
+    return this.transaction(() => {
+      const i = this.current(reply.incidentId);
+      if (i.phase !== 'CONFIRMING' || i.checkinId !== reply.checkinId || this.now() >= i.checkinDeadline)
+        throw new PolicyError('Reply must target the current check-in before its deadline.');
+      if (reply.source !== 'ios-on-device-speech' || typeof reply.transcript !== 'string'
+        || !reply.transcript.trim() || reply.transcript.length > 500)
+        throw new PolicyError('A final on-device transcript of 1–500 characters is required.');
+      const transcript = reply.transcript.trim();
+      const decision = classifyCheckinReply(transcript);
+      this.event(i, 'CHECKIN_REPLY', reply.source, JSON.stringify({ transcript, decision }));
+      if (decision === 'help_requested') this.requestHelp(i, 'Subject requested help in the current spoken check-in.');
+      return decision;
     });
   }
   accept(id: string, responderId: string, inboundId?: string): void {

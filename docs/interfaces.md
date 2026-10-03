@@ -14,6 +14,12 @@ Server sends `ClockPing` approximately every two seconds. Respond with `ClockPon
 
 Static files owned under `public/`. `GET /api/state` returns `Snapshot`; WebSocket `/live` pushes full snapshots, at most 10 Hz. GET state and live view are read-only. `POST /api/commands` receives `Command`, returning `{ok:true}` or `{error:string}`. Commands require bearer token; localhost dashboard can obtain it through `GET /api/setup` which returns `{token, port, addresses}` and is rejected for non-loopback clients. No token in logs, recordings, or public snapshots. Clearly label trigger/responder buttons as development simulation; actor identity on those controls is operator simulation, not production identity proof.
 
+## Phone check-in replies
+
+The phone can POST a final spoken reply to `/api/checkin/reply` with bearer authentication and `{incidentId,checkinId,transcript,source:"ios-on-device-speech"}`. A transcript is 1–500 characters and must target the current confirming check-in before its deadline. The response is `{decision:"help_requested"|"confirmation_required"|"unresolved"}`. Help escalates immediately; every other decision preserves the incident/deadline. Positive replies require explicit cancellation. `CHECKIN_REPLY` timeline details contain JSON `{transcript,decision}` with the declared source as actor. `GET /api/checkin` also supplies `serverTime` and approved responder names (no phone numbers).
+
+Local `/api/setup` includes `lanEnabled` based on the actual listener address. Advertised addresses do not prove phone reachability.
+
 ## Providers
 
 Provider adapters live under `src/providers/`. Export from `src/providers/index.ts`:

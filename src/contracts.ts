@@ -31,6 +31,10 @@ export interface Action {
   nextAttemptAt: number; createdAt: number;
 }
 export interface TimelineEvent { id: string; incidentId: string; type: string; actor: string; at: number; detail: string }
+export type CheckinDecision = 'help_requested' | 'confirmation_required' | 'unresolved';
+export interface CheckinReply {
+  incidentId: string; checkinId: string; transcript: string; source: 'ios-on-device-speech';
+}
 export interface SensorView {
   source: Source; connected: boolean; fresh: boolean; calibrated: boolean;
   sensorLocation: string | null; sessionId: string | null; ageMs: number | null;

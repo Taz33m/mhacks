@@ -11,6 +11,8 @@
 <key>UILaunchScreen</key><dict/>
 <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string></array>
 <key>NSMotionUsageDescription</key><string>LIFELINE reads real chest-mounted iPhone motion to assess a possible incident.</string>
+<key>NSMicrophoneUsageDescription</key><string>LIFELINE listens for your response after a fall check-in finishes speaking.</string>
+<key>NSSpeechRecognitionUsageDescription</key><string>LIFELINE recognizes your check-in response on this iPhone. A spoken response cannot cancel an incident.</string>
 <key>NSLocalNetworkUsageDescription</key><string>LIFELINE sends motion to your Mac and receives current check-ins from it.</string>
 <key>NSAppTransportSecurity</key><dict>
 <!-- Development relay supports LAN/Tailscale IPs over plain HTTP/WebSocket. -->

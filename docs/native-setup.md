@@ -12,27 +12,53 @@ From the repository root:
 ```sh
 zsh native/macos/build.sh
 zsh native/ios/build.sh
+zsh native/ios/build-device.sh
 ```
 
 Artifacts:
 
 - `native/macos/build/LIFELINE Waist Motion.app`
 - `native/ios/build/Build/Products/Debug-iphonesimulator/LifelinePhone.app`
+- `native/ios/build-device/Build/Products/Debug-iphoneos/LifelinePhone.app`
+
+`build-device.sh` compiles against the physical iPhone SDK without signing. Its
+artifact cannot be installed on a physical phone. `build.sh` creates the
+simulator artifact. Neither build script installs or launches anything.
 
 The Mac build retains Kinesthetic's temporary VFS overlay for duplicate CLT
 SwiftBridging module maps. It does not edit the toolchain. The iOS script
 compiles for a generic simulator with signing disabled; it does not launch a
 simulator, install an app, or demonstrate real motion.
 
-To run on the iPhone, open `native/ios/LifelinePhone.xcodeproj`, select an
-available signing team and the connected iPhone, then build/run the
-`LifelinePhone` scheme. The device build and installation need that signing
-setup. Minimum deployment target: iOS 17.
+To run on the iPhone, add your Apple ID in Xcode > Settings > Accounts and
+confirm the selected team. Automatic signing can create its development
+certificate/profile. Connect and
+unlock the iPhone, trust this Mac, and enable Developer Mode. Then run:
+
+```sh
+zsh native/ios/install-device.sh TEAM_ID DEVICE_UDID
+```
+
+Replace both arguments with the actual 10-character team ID and physical
+device UDID (`xcrun devicectl list devices`). The installer checks local signing
+state and device connectivity, then builds for that device with automatic signing.
+An absent certificate does not block an available device: Xcode may create it
+for an already signed-in team, and the actual signing error determines failure.
+The script
+verifies the signature and profile/team/device/expiry, and only then calls
+`devicectl` installation. It does not install an unsigned artifact or claim
+success after a failed preflight.
+
+Alternatively, open `native/ios/LifelinePhone.xcodeproj`, select the signing
+team and connected iPhone, then build/run `LifelinePhone`. Minimum deployment
+target: iOS 17.
 
 ## Connect
 
-1. Start the backend and open its local dashboard on the Mac. Obtain the
-   persistent development pairing token through its localhost setup.
+1. Run `npm run setup:local` for the local Mac setup, then open the local
+   dashboard. Setup installs/privately pairs the Mac motion app. Obtain the
+   persistent development pairing token through the localhost setup for the
+   iPhone; no token needs to be printed in logs.
 2. Open the Mac waist app, enter the host (`127.0.0.1` when the backend is on
    this Mac) and token, and press **Start motion**.
 3. Enter the Mac LAN/Tailscale hostname or IP and the same token in the chest
@@ -41,6 +67,9 @@ setup. Minimum deployment target: iOS 17.
 4. Keep the iPhone app foregrounded. It disables screen sleep while monitoring
    and explicitly stops when backgrounded. Check-in polling continues when a
    device has no motion support, but it emits no fabricated motion.
+   Grant Microphone and Speech Recognition during setup. If either is denied,
+   or on-device English recognition is unsupported, use the explicit controls.
+   Enable denied permissions in Settings and stop/start monitoring to refresh.
 5. With both sources mounted and stable, calibrate on the dashboard. Repeat
    after reconnecting, changing the reporting bud, or remounting.
 
@@ -91,28 +120,96 @@ detection accuracy.
   calibration, alignment, and measured cadence.
 - iPhone requests a 100 Hz interval; delivered/transmitted cadence needs
   measurement. It polls authenticated `/api/checkin` every second while
-  monitoring and plays each current `checkinId` once.
+  monitoring and plays each current `checkinId` once per monitoring session.
+  The response includes `serverTime` and responder names. A conservative local
+  voice deadline is derived from server time and local request-start time.
 - Explicit cancellation sends `type: cancel`, the current `incidentId`, and
   `checkinId` with bearer authentication. The server must reject stale IDs
   and phases. A failed/unknown request never locally resolves an incident.
 - Provider audio must be a relative authenticated URL (normally
   `/api/audio/checkin`). If unavailable, the UI explicitly identifies native
-  iPhone speech as a development fallback. This slice does not record or
-  classify spoken replies. Cancellation requires the explicit control.
+  iPhone speech as a development fallback. The prompt is:
+  “I detected a possible fall. Do you need help? You can say I need help, or
+  tap I don't need help to cancel.”
+
+## Spoken replies and responder progress
+
+The microphone tap is absent during the prompt. Capture starts only after the
+provider player or native synthesizer reports completion and a 450 ms pause.
+The iPhone prefers its built-in microphone and speaker, with no Bluetooth
+recording route requested, so the waist bud remains a Mac sensor. This audio
+arrangement still requires physical validation.
+
+Recognition uses Apple's `SFSpeechRecognizer` for `en-US`. It checks
+`supportsOnDeviceRecognition`, recognition availability, and both permissions;
+each request sets `requiresOnDeviceRecognition = true`. It has **no cloud
+speech fallback**. See Apple's [support check](https://developer.apple.com/documentation/speech/sfspeechrecognizer/supportsondevicerecognition)
+and [request requirement](https://developer.apple.com/documentation/speech/sfspeechrecognitionrequest/requiresondevicerecognition).
+
+Partial words appear as “not submitted.” Only a final result posts, with bearer
+authentication, to `/api/checkin/reply`:
+
+```json
+{
+  "incidentId": "current incident ID",
+  "checkinId": "current check-in ID",
+  "transcript": "final on-device recognition result",
+  "source": "ios-on-device-speech"
+}
+```
+
+The server classifies the reply:
+
+- `help_requested`: stop voice and wait for responder updates.
+- `confirmation_required`: ask the wearer to tap **I DON'T NEED HELP**; voice
+  has not cancelled anything.
+- `unresolved`: keep the incident open, with at most one additional capture
+  attempt if time remains.
+
+There are at most two capture attempts per voice session. Each listens for at
+most six seconds, followed by up to 1.3 seconds for a final result. The check-in
+deadline takes precedence. Capture and pending callbacks are invalidated on a
+phase/ID change, deadline, button command, or backgrounding. A lost check-in
+connection suspends capture and pending replies while preserving the original
+identity, attempt count, and deadline. Recovery of that same confirming
+check-in resumes listening without replaying the prompt, within the original
+budget. A changed check-in never resumes the old session.
+Capture UUIDs, incident/check-in IDs, and monitoring epochs
+reject stale callbacks. The server remains authoritative if a final reply and
+an explicit button race. Failed submissions never establish safety and are
+not silently retried as successful actions.
+
+**I NEED HELP** posts the existing manual trigger command and immediately
+requests help through the controller. The app shows assigned responder name,
+acceptance versus departure versus arrival, the next progress deadline, and
+the recorded outcome when returned by the controller.
 
 ## First physical checks
 
 Check live traces and source identities on both devices before rehearsing a
 trigger. Then validate speaker audibility while the Mac holds the AirPod,
 phone-to-Mac networking, clock uncertainty, unplug/reconnect recovery,
-background behavior, and current check-in cancellation. Sensor disconnects
+background behavior, spoken help, safe phrases requiring the button,
+ambiguous speech, permission-denial recovery, and current check-in cancellation. Sensor disconnects
 must remain visible and must not resolve the incident.
 
 ## Build verification in this workspace
 
 - Mac: `zsh native/macos/build.sh` passed; arm64 macOS 14 target, ad-hoc signed.
 - iOS: `zsh native/ios/build.sh` passed with Xcode 27.0 / simulator SDK 27.0
-  for arm64 and x86_64, minimum iOS 17. No signing or installation performed.
+  for arm64 and x86_64, minimum iOS 17.
+- Unsigned physical target: `zsh native/ios/build-device.sh` passed for arm64
+  with iPhone SDK 27.0. This is compilation, not physical installation.
+- Simulator app installation/launch and initial-screen visual inspection
+  passed on the simulated iPhone 18 Pro. This does not verify real motion,
+  microphone capture, on-device recognition, or phone/Mac audio interaction.
+- Installer preflight correctly reported no existing signing identity and
+  stopped for an unavailable physical iPhone. No signed iPhone installation
+  was attempted.
 - Plists and Xcode project passed `plutil -lint`.
 - `KeepAlive.swift` matches the source file byte-for-byte.
-- No native apps were launched and no physical sensors/audio were tested.
+- The Mac app briefly acquired real Right AirPod samples through local setup,
+  observed around 38 Hz with roughly 6 ms clock uncertainty. The stream later
+  became stale/disconnected. Sustained off-ear continuity, waist mounting, and
+  calibration remain unvalidated. Physical chest-phone motion, on-device voice
+  recognition, and phone/Mac audio interaction remain unverified.

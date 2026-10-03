@@ -27,6 +27,7 @@
   let clockOffset = 0;
   let lastStateReceived = null;
   let responderSignature = '';
+  let nativeSetup = null;
 
   const escaped = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
   const text = (selector, value, scope = document) => { $(selector, scope).textContent = value; };
@@ -44,6 +45,7 @@
     $('#connection-error').hidden = connected || !detail;
     text('#connection-error', detail || '');
     snapshot?.sensors.forEach(renderSensor);
+    renderReadiness();
     updateControls();
   }
 
@@ -54,8 +56,10 @@
     lastStateReceived = Date.now();
     value.sensors.forEach(renderSensor);
     renderIncident();
+    renderReply();
     renderResponders();
     renderProviders();
+    renderReadiness();
     renderTimeline();
     renderActions();
     updateControls();
@@ -142,6 +146,53 @@
     text('#outcome-source', incident?.outcome ? `Recorded by ${nameFor(incident.resolutionActor)} · ${time(incident.updatedAt)}` : '');
   }
 
+  function renderReply() {
+    const reply = snapshot.timeline.findLast((event) => event.incidentId === snapshot.incident?.id && event.type === 'CHECKIN_REPLY');
+    if (!reply) {
+      text('#reply-decision', 'NO REPLY');
+      text('#reply-transcript', 'No wearer reply received for this incident.');
+      text('#reply-meta', 'Spoken replies can request help or preserve the check-in. Voice never cancels an incident.');
+      $('#reply-transcript').classList.remove('has-reply');
+      return;
+    }
+    let transcript = reply.detail, decision = 'Recorded';
+    try {
+      const detail = JSON.parse(reply.detail);
+      if (typeof detail.transcript === 'string') transcript = detail.transcript;
+      if (typeof detail.decision === 'string') decision = `Decision: ${detail.decision.replaceAll('_', ' ').replaceAll('-', ' ')}`;
+    } catch { /* Preserve the recorded detail if it is not structured. */ }
+    text('#reply-decision', decision);
+    text('#reply-transcript', transcript);
+    text('#reply-meta', `${time(reply.at)} · ${reply.actor === 'ios-on-device-speech' ? 'iPhone on-device speech' : reply.actor} · Voice cannot cancel the incident.`);
+    $('#reply-transcript').classList.add('has-reply');
+  }
+
+  function renderReadiness() {
+    if (!snapshot) return;
+    const sourceRows = [['chest-phone', 'Chest stream'], ['waist-airpod', 'Waist stream']].map(([source, label]) => {
+      const sensor = snapshot.sensors.find((item) => item.source === source);
+      const receiving = online && sensor?.connected && sensor?.fresh;
+      const status = !sensor?.connected ? 'Disconnected' : !online ? 'Last received' : !sensor.fresh ? 'Stale' : 'Receiving';
+      const detail = sensor?.connected ? `${sensor.calibrated ? 'Standing calibration recorded' : 'Standing calibration required'}${source === 'waist-airpod' && sensor.sensorLocation ? ` · reporting ${sensor.sensorLocation} bud` : ''}` : 'No connected source reported';
+      return `<li><div class="readiness-head"><strong>${label}</strong><span class="badge ${receiving ? 'good' : ''}">${status}</span></div><p>${escaped(detail)}</p></li>`;
+    });
+    const alignments = [['chest-phone', 'Chest'], ['waist-airpod', 'Waist']].map(([source, label]) => {
+      const uncertainty = snapshot.sensors.find((sensor) => sensor.source === source)?.alignmentUncertaintyMs;
+      return `${label}: ${finite(uncertainty) ? `±${Math.round(uncertainty)} ms` : 'unknown'}`;
+    }).join(' · ');
+    const audio = snapshot.providers?.elevenlabs;
+    $('#native-readiness').innerHTML = sourceRows.join('')
+      + `<li><div class="readiness-head"><strong>Clock alignment</strong></div><p>${escaped(alignments)}</p></li>`
+      + `<li><div class="readiness-head"><strong>Check-in voice provider</strong><span class="badge">${audio?.configured ? 'Configured' : 'Unavailable'}</span></div><p>${escaped(audio?.detail || 'No voice provider status reported')}</p></li>`;
+    if (nativeSetup) {
+      const addresses = nativeSetup.addresses.length ? nativeSetup.addresses.map((address) => `${address}:${nativeSetup.port}`).join('\n') : 'No external IPv4 address reported';
+      const binding = nativeSetup.lanEnabled === true ? 'LAN binding enabled' : nativeSetup.lanEnabled === false ? 'Local-only binding' : 'Listener binding not reported';
+      text('#setup-addresses', `${binding}\nMac bridge: 127.0.0.1:${nativeSetup.port}\nPhone host candidates:\n${addresses}`);
+    } else {
+      text('#setup-addresses', 'Open this console on the Mac to obtain local pairing and address metadata.');
+    }
+  }
+
   function renderResponders() {
     const responders = snapshot.responders;
     const ownerId = snapshot.incident?.ownerId;
@@ -203,14 +254,15 @@
     const responder = $('#responder').value;
     const isOwner = active && incident.ownerId === responder;
     $('#trigger').disabled = !ready || active;
-    $('#manual-help').disabled = !ready || active;
-    $('#cancel').disabled = !ready || !active;
+    $('#manual-help').disabled = !ready || (active && incident.phase !== 'CONFIRMING');
+    $('#manual-help').textContent = incident?.phase === 'CONFIRMING' ? 'Request help now' : 'Request help manually';
+    $('#cancel').disabled = !ready || incident?.phase !== 'CONFIRMING';
     $('#responder').disabled = !snapshot?.responders.length || busy;
     $('#accept').disabled = !ready || !responder || incident?.phase !== 'HELP_REQUESTED';
     $('#depart').disabled = !ready || !isOwner || incident?.phase !== 'ACKNOWLEDGED';
     $('#arrive').disabled = !ready || !isOwner || incident?.phase !== 'RESPONDER_EN_ROUTE';
     $('#decline').disabled = !ready || !isOwner;
-    $('#resolve').disabled = !ready || !isOwner || incident?.phase !== 'ON_SCENE' || !$('#outcome-input').value.trim();
+    $('#resolve').disabled = !ready || !isOwner || incident?.phase !== 'ON_SCENE' || $('#outcome-input').value.trim().length < 5;
     $('#calibrate').disabled = !ready || !snapshot.sensors.some((sensor) => sensor.connected && sensor.fresh);
     $('#reset').disabled = !ready;
   }
@@ -288,7 +340,18 @@
 
   $('#phase-list').innerHTML = phases.map(([, label]) => `<li>${label}</li>`).join('');
   updateControls();
-  fetch('/api/setup', { cache: 'no-store', signal: AbortSignal.timeout(8000) }).then(async (response) => { if (response.ok) { const setup = await response.json(); if (typeof setup.token === 'string') setToken(setup.token, true); const address = setup.addresses?.[0]; $('#native-connection').textContent = `Mac bridge: 127.0.0.1:${setup.port}. ${address ? `Phone host: ${address}:${setup.port}; enable LAN binding first.` : 'Phone access needs a reachable Mac network address.'}`; } else $('#auth-details').open = true; }).catch(() => { $('#auth-details').open = true; });
+  fetch('/api/setup', { cache: 'no-store', signal: AbortSignal.timeout(8000) }).then(async (response) => {
+    if (!response.ok) { $('#auth-details').open = true; return; }
+    const setup = await response.json();
+    if (typeof setup.token === 'string') setToken(setup.token, true);
+    if (Number.isInteger(setup.port) && setup.port > 0 && setup.port <= 65535) {
+      nativeSetup = { port: setup.port, addresses: Array.isArray(setup.addresses) ? setup.addresses.filter((address) => typeof address === 'string') : [], lanEnabled: typeof setup.lanEnabled === 'boolean' ? setup.lanEnabled : null };
+      const address = nativeSetup.addresses[0];
+      const binding = nativeSetup.lanEnabled === true ? 'LAN binding enabled; device reachability unverified.' : nativeSetup.lanEnabled === false ? 'Local-only binding; enable LAN binding before connecting the phone.' : 'Listener binding not reported.';
+      text('#native-connection', `Mac bridge: 127.0.0.1:${setup.port}. ${binding} ${address ? `Phone host candidate: ${address}:${setup.port}.` : 'No external network address reported.'}`);
+      renderReadiness();
+    }
+  }).catch(() => { $('#auth-details').open = true; });
   loadState().catch(() => setConnection(false, 'Waiting for the LIFELINE server. No sensor data has been received.'));
   connect();
   setInterval(updateTime, 500);
