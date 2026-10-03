@@ -61,6 +61,8 @@ Details: [provider setup](docs/providers.md).
 
 Use **Local AI rehearsal** in **Responder questions** to preview a grounded answer against the latest incident without sending a message. Answers display source record IDs and distinguish validated AI generation, a degraded template, and a policy refusal. Actual responder exchanges appear separately with their original question and persisted delivery result.
 
+Local AI can run through Ollama with `npm run ai:local`; see [local model configuration](docs/providers.md) for the model and private environment settings.
+
 ## Motion trials
 
 Use **Motion trials** on the dashboard to record a labelled trial. Begin recording before calibration, mount both sensors, stand still for at least one continuous second, calibrate, perform the controlled movement, then stop and download JSONL. The capture preserves accepted samples, clock exchanges, calibration/reset events, assessments, and disconnects. Stopping capture leaves incident response running.

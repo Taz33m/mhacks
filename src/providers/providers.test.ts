@@ -109,6 +109,7 @@ test('AI composes an incident-grounded answer with selected source fields and un
       assert.equal(url, 'https://model.example/v1/chat/completions');
       const body = JSON.parse(String(init?.body));
       assert.equal(body.tools, undefined);
+      assert.deepEqual(body.response_format, { type: 'json_object' });
       assert.match(body.messages[1].content, /allergy-1/);
       assert.match(body.messages[1].content, /Chest impact and waist posture change/);
       return json({ choices: [{ message: { content: JSON.stringify({ facts: [{ recordId: 'allergy-1', fields: ['substance', 'reaction', 'severity'] }], incidentFields: [], unavailable: ['location'], answer: 'Invented diagnosis' }) } }] });
@@ -248,6 +249,7 @@ test('AI handoff uses physical incident context and produces source-cited facts 
     fetch: fetchStub((url, init) => {
       if (url === FINCH_DEMO_URL) return json(fixture);
       const request = JSON.parse(String(init?.body));
+      assert.deepEqual(request.response_format, { type: 'json_object' });
       assert.match(request.messages[0].content, /responder handoff/);
       assert.match(request.messages[1].content, /Chest impact and waist posture change/);
       return json({ choices: [{ message: { content: JSON.stringify({

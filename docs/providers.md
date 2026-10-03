@@ -13,6 +13,16 @@
 
 The model base URL is the API prefix, such as `https://provider.example/v1`; the adapter appends `/chat/completions`. Requests require HTTPS, except localhost development. Set server-side API credentials in `.env`.
 
+For local inference, install a compatible [Ollama runtime](https://ollama.com/download/mac), pull [qwen2.5:3b](https://ollama.com/library/qwen2.5:3b), and keep `npm run ai:local` running alongside the backend. The launcher prefers the separately installed native runtime on this development Mac; on another machine it uses `ollama` from PATH, or an explicit `LIFELINE_OLLAMA_BIN`. It binds to this Mac's loopback address and disables cloud inference. Set these private `.env` values, then restart the backend:
+
+```dotenv
+LIFELINE_LLM_API_KEY=local-development
+LIFELINE_LLM_BASE_URL=http://127.0.0.1:11434/v1
+LIFELINE_LLM_MODEL=qwen2.5:3b
+```
+
+The local API key value satisfies the adapter's configuration check; [Ollama ignores it](https://docs.ollama.com/api/openai-compatibility). Model download and generation remain separate from sensor monitoring. Use the local question preview to verify generation and citations before rehearsing live responder messages.
+
 Status `configured` means configuration exists, not that a live integration has passed. The detail records lookup/preparation/listener failures. SDK errors, credentials, incoming bodies, and recipient numbers are not copied into status details.
 
 For setup, configure a managed Photon cloud line and the two Spectrum project values; add approved E.164 responders through `LIFELINE_RESPONDERS_JSON`. Confirm an actual incoming text and reaction from those phones. For ElevenLabs, use a key with text-to-speech access and an existing voice ID. A failed preparation returns no clip and remains cached for that process; after fixing configuration, restart to prepare it once. FinchNode needs no credential. The AI model needs an API key, an API base URL, and the exact model name; an invalid response falls back to source fields and leaves the AI demo requirement unmet. Check provider detail alongside `configured`; a configured provider can be unavailable.
