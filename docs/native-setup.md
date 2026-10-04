@@ -3,9 +3,11 @@
 The Mac waist app retains real AirPod CoreMotion acquisition and the unchanged
 Kinesthetic off-ear keepalive; see `native/PROVENANCE.md`. The iPhone app is a
 communication/check-in companion, not a motion or voice source. FREE-WILi
-has a separate custom acquisition bridge on **8877**; compatible firmware,
-physical sampling, fall detection, speaker playback and microphone/STT still
-need implementation or board validation. See [FREE-WILi setup](../native/freewili/README.md).
+uses a separate stock-SDK acquisition bridge on **8877**. The original board's
+v54 firmware supports the current DISPLAY-port path without custom firmware or
+flashing. Speaker prompts, bounded microphone capture, local Whisper and
+responder speech are implemented; verify their current physical behavior and
+the provisional detector separately. See [FREE-WILi setup](../native/freewili/README.md).
 
 ## Build
 
@@ -76,9 +78,9 @@ before retrying. That account restriction prevents certificate/profile creation.
 5. Use the **Mac dashboard** for sensor calibration. The retained CoreMotion
    calibration does not establish calibration or detection for WILi's separate
    acceleration protocol. Verify the mounted waist reporting bud before use.
-6. Follow the FREE-WILi bridge instructions only with compatible custom firmware
-   and an identified serial port. Synthetic protocol fixtures are offline tests,
-   not proof of a connected board.
+6. Follow the FREE-WILi stock bridge instructions with the identified **DISPLAY**
+   serial port. Synthetic protocol fixtures are offline tests, not proof of a
+   connected board. The optional custom NDJSON transport is a separate path.
 
 The companion shows current incident, assigned responder, reported progress,
 and recorded outcome above connection details. Lost polling labels retained
@@ -134,6 +136,11 @@ accepted with or without brackets.
 - Do not run the Kinesthetic motion app at the same time. Keep the pair on the
   Mac and test automatic switching, the other bud in its case, off-ear
   continuity, reconnect settling, and the actual venue range.
+- A connected relay socket with no reporting bud or fresh samples is not a
+  live waist stream. If Bluetooth says **Not Connected**, wake the charged
+  pair near the Mac and reconnect that existing pair. The app keeps discovering
+  it while monitoring; the pairing token need not be re-entered when it still
+  matches the backend.
 
 KeepAlive's comments report Kinesthetic measurements. We have not re-measured
 them for LIFELINE, validated a five-second recovery time, or measured fall
@@ -151,8 +158,11 @@ detection accuracy.
 - WILi connects separately at `/motion?source=body-wili&token=…`, with a validated
   hello, gravity-inclusive acceleration/range/saturation, clock replies, and
   explicit button events. Its acquisition/freshness appears in the separate
-  dashboard card; these values do not establish a fall. The current server
-  issues no WILi audio commands and has no microphone/STT transport.
+  dashboard card; these values alone do not establish a fall. Incident context
+  selects prepared phase voice, actual local transcripts reach the bounded
+  check-in policy, and authorized responder messages can reach board speech.
+  Playback completion describes an elapsed clip window, not independent
+  confirmation that the wearer heard it.
 - The legacy chest-phone producer/detector path is gated by
   `LIFELINE_LEGACY_PHONE=1`. The current iPhone app never emits motion packets,
   plays check-in audio or submits speech, regardless of that backend setting.
@@ -185,9 +195,9 @@ still require phone verification; configured credentials alone prove neither.
 Verify the actual WILi family, firmware and serial port before calling board
 samples live. Bench-check fresh acceleration, range/saturation, clock alignment,
 source/session ordering and unplug behavior. Confirm the physical mounted AirPod
-matches the reported bud. Board playback, microphone/STT and the new fall
-assessment need separate implementation and physical validation; the iPhone
-cannot substitute for them. Verify companion connectivity, background behavior,
+matches the reported bud. Board playback, microphone/STT and the provisional
+fall assessment need separate physical validation; the iPhone cannot substitute
+for them. Verify companion connectivity, background behavior,
 current-ID help/cancel and Photon responder ownership/progress. Disconnects must
 stay visible and never resolve an incident.
 

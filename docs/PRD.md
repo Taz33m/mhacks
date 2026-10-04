@@ -1,6 +1,6 @@
 # LIFELINE — Product requirements
 
-Updated: October 3, 2026. Primary track: **Actually Intelligent (AI)**.
+Updated: October 4, 2026. Primary track: **Actually Intelligent (AI)**.
 
 ## Product
 
@@ -24,6 +24,8 @@ The iPhone app now handles communication only. Structured synthetic records, imm
 
 The prototype serves one wearer and one active incident, with a configured responder list. It does not enroll real patients or dispatch emergency services.
 
+The demo can use **simulated human dispatch** instead of a second person's phone. Once help is requested, Maya automatically accepts, departs, arrives and records an explicitly simulated outcome through the normal incident state machine. The real product still coordinates human responders through Photon. Demo dispatch is persisted on each new incident and labelled on the dashboard, wearable, wearer messages and care brief. Local simulated receipts never become Photon receipts or measured location. Wearer sensing, speech, clinical retrieval and the actual wearer iMessage channel retain their own sources. No operator performs responder progress during this demo; the existing check-in and explicit wearer controls remain in effect.
+
 ## Scope and fixed decisions
 
 | Area | Decision |
@@ -43,7 +45,9 @@ Photon and FinchNode connect clinical context to human follow-through. Finch’s
 
 ## Core experience
 
-Before an incident, the operator can read the protected synthetic patient view and ask questions against the displayed revision. This currently runs in the dashboard; an explicit Record context selector switches between the current read and the immutable incident snapshot. Photon record Q&A is implemented for approved contacted responders during an incident; a standalone longitudinal wearer conversation is a later step. After an incident, export the clinical snapshot and separately sourced app reports as a care brief for a clinician or caregiver. No automatic hospital writeback or care-plan change is implied.
+Before an incident, the operator can read the protected synthetic patient view and ask questions against the displayed revision. An explicit Record context selector switches between the current read and the immutable incident snapshot. The wearer's everyday private Photon conversation and WILi blue-button voice path also accept record questions outside incidents. Clinical requests use the grounded record engine; social replies use the companion model. Every clinical answer identifies the actual fictional subject and explicitly distinguishes it from the wearer's personal record. Each answer saves its original clinical snapshot, source IDs, revision, retrieval time and generation status. Refreshes cannot rewrite that answer's sources. The protected care journal exports the most recent 40 attributed messages with their linked synthetic snapshots; app reports remain separate from read-only hospital facts. During incidents, approved contacted responders retain correlated record Q&A. After an incident, export its source-separated care brief. No automatic hospital writeback or care-plan change is implied.
+
+Daily wellbeing defaults to 2 p.m. in the configured local timezone, with one persisted prompt per date and no late-night catch-up. Wearers reply by text or hold Blue, speak and release. Loneliness or silence does not trigger an incident; explicit help does. Incident response interrupts everyday-care preparation and submission. Social-model input excludes saved clinical answers, and record Q&A receives the hospital snapshot without the wellbeing journal.
 
 1. Both mounted sources stream to the Mac. The operator verifies freshness, reporting AirPod, range/clipping, and clock alignment. Stock WILi timing is gateway receipt timing; board capture latency remains unknown. Standing AirPod tilt calibration is optional.
 2. A qualifying motion candidate opens one suspected incident. The evidence states whether it is cross-body, single-source, manual, or synthetic.
@@ -56,6 +60,12 @@ Before an incident, the operator can read the protected synthetic patient view a
 9. The on-scene owner records a concrete outcome. The controller closes the incident, records the source, and sends the final update.
 
 The wearer can press **I NEED HELP** independently of the detector. That requests help immediately and does not wait for the check-in timeout.
+
+## Patient workspace
+
+The dedicated `/ehr` workspace organizes the read-only chart into Overview, Medications, Vitals, Care log and Source records. Medication status retains current, historical and unknown groups, including administration and dispense history. Vital charts include only actual numeric values with valid measurement dates and matching units; incomplete rows remain available as literal source records. Current readings never replace a selected incident snapshot. Record questions use the displayed revision and discard stale completions after a context change.
+
+The wearer care log remains visibly separate from the fictional Finch subject. It includes daily conversation, exact incident reports, ownership, recorded outcomes and captured wearable measurements with timing quality. These observations do not become hospital records or live clinical vitals. A protected care-record export includes both the selected chart and the original snapshots behind incident handoffs and clinical conversation answers, labelled by source. The EHR page has no incident controls or messaging actions.
 
 ## Incident policy
 
@@ -94,7 +104,7 @@ All requirements below are P0 unless marked P1. “P0” means required for the 
 | ID | Requirement | Acceptance evidence |
 | --- | --- | --- |
 | S1 | Preserve both real motion streams with source, reporting bud where applicable, session, sequence, capture/receive timing, measured capabilities and units. WILi packets preserve gravity-inclusive acceleration/range; AirPod packets retain fused motion fields. Do not fabricate unsupported fields. | Separate live source views and increasing received sample counts; invalid/out-of-order packets rejected and saturation visible. |
-| S2 | Show freshness, cadence, timing basis and alignment. AirPod standing tilt calibration is optional; reconnect, reporting-bud changes and substantial gaps invalidate that baseline. WILi does not report fused orientation. | Disconnect/reconnect shows stale/unknown state until fresh aligned measurements resume; tilt remains unknown until optionally recalibrated. |
+| S2 | Preserve freshness, cadence, timing basis and alignment in sensor details. WILi's main card starts with a labelled zero and retains its last measured reading between reports; quiet intervals show Idle. This display memory never feeds detection or calibration. AirPod standing tilt calibration is optional; reconnect, reporting-bud changes and substantial gaps invalidate that baseline. WILi does not report fused orientation. | Sensor details preserve stale/unknown acquisition state until fresh aligned measurements resume; tilt remains unknown until optionally recalibrated. Presentation tests verify that held readings do not become detector evidence. |
 | S3 | Cross-body assessment uses WILi acceleration, correlated waist movement/rotation and continuous waist quiet. Stock host-receipt timing is disclosed rather than presented as acquisition time. Thresholds remain provisional: ≥1.65 g for the stock ±2 g profile; clipping is excluded. | A complete recorded staged-event trial reproduces the candidate offline without fabricated gyro/gravity values. |
 | S4 | The current WILi assessment requires both usable streams; it has no single-source fallback. A fresh waist lacking valid alignment cannot supply cross-body evidence. Tilt calibration is not required for its movement/rotation features. | Controlled fixtures and recorded degraded trials preserve unknown evidence; missing data never establishes safety. |
 | C1 | Keep one active incident, deterministic transitions, audit events, and persisted deadlines. Repeated triggers cannot restart its check-in budget. | Injected-clock and restart tests. |
@@ -141,21 +151,23 @@ Exact replies to a current bound alert/status also support “on it”/“I can 
 - A confirmed pre-submission failure can retry within policy. An interrupted or uncertain submission remains `unknown`; it is not blindly resent.
 - Cancellation/phase changes invalidate obsolete pending actions. A final permission check occurs after DM preparation and before submission.
 - FinchNode, AI, audio, and Photon failures must remain visible and must not stop the controller's deadlines. An unavailable record is not evidence that a medication, condition, or allergy is absent.
-- Location is currently **not provided**. The app must not invent a room, address, GPS fix, or responder ETA.
+- Location comes from explicitly granted native Photon Find My sharing, or the optional scoped browser fallback. Captured time, accuracy and incident ownership determine whether a position can support a walking ETA. Missing sharing or insufficient measurements leaves location/ETA unknown. Coordinates never establish responder acceptance, arrival or resolution; simulated dispatch supplies no invented GPS or ETA.
 - Tokens, provider credentials, phone numbers, raw recordings, and build outputs stay out of source control and public logs. The current operator token and read-only LAN console are development access, not production identity/enrollment.
 - Stopping a trial leaves incident response running. A development reset is recorded as an operator action, never as a safety determination.
 
 ## Success criteria and demo gate
 
-The intended demo is about 90 seconds: show the two streams, a controlled candidate, the audible and iMessage wearer check-ins, silence causing escalation, real responder receipt and acceptance, a sourced question/answer, progress, and a recorded outcome.
+The intended demo is about 90 seconds: show the two streams, a controlled candidate, the audible and iMessage wearer check-ins, silence or an exact help request causing escalation, an attributed handoff, acceptance, progress and a recorded outcome. The current profile uses a clearly labelled simulated human dispatcher. A separate live profile uses actual approved responder conversations.
+
+After setup and arming, the judged demo must complete without a dashboard operator. Physical sensing starts the incident; the backend automatically runs check-in, deadlines, escalation, context composition, message relay, wearable updates and follow-up. The wearer interacts through WILi or their phone. In the simulated profile, Maya follows the normal state machine with simulated receipts and outcomes; in the live profile, the authorized human responder acts through their actual Photon conversation. Spectrum/Photon carries the live conversations; the LIFELINE backend owns incident orchestration. The dashboard observes the loop. Development trigger, impersonation and resolution controls do not satisfy this autonomous-demo gate.
 
 Before calling it a live end-to-end demo, establish:
 
 1. Both mounted sources remain usable through a complete rehearsal, including board audio. Measure actual cadence, gaps, saturation and clock uncertainty rather than assuming the requested rates.
 2. A recorded physical candidate starts the response loop. Test an isolated WILi drop separately; report its observed result rather than promising rejection before validation.
 3. The wearer hears FREE-WILi and receives the actual Photon check-in. Silence preserves the original configured timeout; exact help bypasses it.
-4. Approved responder phones receive the handoff. Acceptance is visible across views, later progress is explicit, and the owner's final outcome is persisted.
-5. AI composes the grounded handoff and answers one correlated responder question with source record IDs and explicit unknowns. Observe answer receipt on the phone and its persisted outbound result separately. A template fallback does not pass this AI gate.
+4. The selected dispatch profile receives the handoff. Acceptance is visible across views, later progress is explicit, and the owner's final outcome is persisted. A live-responder claim additionally requires actual alert receipt and acceptance from an approved phone; simulated actions remain labelled throughout.
+5. AI composes the grounded handoff and answers one correlated record question with source record IDs and explicit unknowns. Observe actual phone receipt separately from the persisted outbound result when claiming live messaging. A template fallback does not pass this AI gate.
 6. One injected failure or stale/duplicate input demonstrates the policy boundary without silently resolving or duplicating the incident.
 7. A full backup recording exists. If using an operator trigger or recorded replay, identify it clearly and limit the sensing claim accordingly.
 
@@ -169,7 +181,9 @@ The default runtime disables chest-phone ingestion and phone speech. WILi acquis
 
 Local AI rehearsal and automated provider fixtures validate grounding and workflow behavior; they do not establish phone receipt. The fictional Finch subject is visibly separate from the real wearer. Persisted synthetic revisions do not establish production consent, revocation or retention behavior.
 
-Development priority is the visible live chain:
+Development priority is the autonomous wearer-to-resolution demo. The current demo profile uses a clearly labelled simulated human dispatcher, automatically accepting and reporting progress from the local alert. It needs no second phone or dashboard responder clicks. Simulated receipts and outcomes do not establish a real responder's iMessage delivery, GPS, ETA or physical attendance. The live profile retains approved human contacts for a separate rehearsal.
+
+The live validation chain remains:
 
 1. A real Photon check-in reaches the wearer.
 2. A physical trigger starts the incident.

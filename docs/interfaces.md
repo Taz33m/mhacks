@@ -24,7 +24,11 @@ Local `/api/setup` includes `lanEnabled` based on the actual listener address. A
 
 Snapshot `wearerMessaging:{configured,detail}` reports companion Photon configuration without exposing the wearer phone. `wearer_checkin`, `wearer_ack` and `wearer_status` actions (null recipient) belong to the wearer lane. Existing `checkin` actions are not claimed by messaging workers and do not prove board audio playback. Photon wearer replies require full-phone identity, an accepted current-incident chat/line binding, and message/incident correlation, then are recorded as `CHECKIN_REPLY` with actor `photon-imessage`. Positive replies queue acknowledgements atomically with inbound dedupe, without cancelling or extending the check-in. Phase updates queue wearer status; outdated queued status is not sent. Missing data, silence or reactions never authorize cancellation.
 
+Plain wearer text in the accepted current chat/line is correlated without a copied code. After escalation it becomes a `WEARER_REPORT` and exact attributed `wearer_relay` action for eligible contacted responders. A duplicate provider ID creates neither a second observation nor another relay. Explicit stale reply targets fail even in a reused chat. These reports refresh handoff context but cannot change phase, ownership or deadlines; no closed incident accepts further reports.
+
 Snapshot and `/api/checkin` include `policy:{demoMode,checkinMs,configuredCheckinMs}`. The explicit demo profile accelerates new check-ins to five seconds; metadata never replaces a persisted active incident deadline. The phone displays this acceleration but does not play a prompt.
+
+Use the normal twenty-second window for the physical voice rehearsal. Five seconds is a silence demonstration and cannot fit the check-in prompt, bounded microphone capture and local transcription. Stock bridge readiness must precede forwarding incident context; expired queued check-in context is discarded rather than spoken late.
 
 ## Patient records and care brief
 

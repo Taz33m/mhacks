@@ -1,26 +1,66 @@
 # LIFELINE development plan
 
-Main track: Actually Intelligent (AI). FREE-WILi supplies wearable acceleration, voice, display and buttons. A waist AirPod Pro supplies secondary motion through the existing Kinesthetic acquisition and unchanged AudioRouteKeeper. The iPhone is the Photon/iMessage communication channel. The nearby Mac hosts orchestration and local inference.
+Updated October 4, 2026. Main track: **Actually Intelligent (AI)**.
 
-The [PRD](PRD.md) defines scope and acceptance evidence. Node 24, SQLite and vanilla HTML/CSS/JS remain the stack. Camera acquisition is removed; Spacetime, Fetch/ASI:One and multi-patient features remain deferred.
+The current checkpoint combines incident response and everyday care. The [PRD](PRD.md) defines product behavior; this page records what is implemented, what has been verified, and the next work.
 
-## Implemented
+## Architecture
 
-- Deterministic incident state, check-in deadlines, approved responder ownership, progress and recorded outcomes; persisted outbox distinguishes accepted, failed and unknown sends.
-- Structured read-only Finch synthetic records, immutable per-incident revisions, grounded AI handoffs/Q&A and a source-separated care brief. The fictional patient remains distinct from the real wearer.
-- Official stock WILi SDK bridge without a firmware flash: measured acceleration, timing/quality views, provisional cross-body assessment, help/cancel buttons and phase display.
-- Seven cached ElevenLabs board prompts, verified uploads and intelligible playback confirmed by the wearer; bounded microphone capture and local Whisper recognized a real help request. Acceleration pauses during voice and resumes before listening, with the gap visible.
-- Reused waist-AirPod Mac app and communication-only iPhone client. Both motion streams have reported simultaneously; cadence is measured and varies.
-- Native Photon chat/line binding, correlated replies, phone command guidance, grounded answer outbox and wearer updates. Project authentication succeeds; real receipt and replies remain unverified.
+- FREE-WILi: body acceleration, microphone, speaker, display and explicit help/okay controls. The current stock-SDK bridge uses USB to the nearby Mac.
+- Waist AirPod Pro: secondary motion through the reused Kinesthetic acquisition and unchanged route keeper.
+- iPhone: the wearer's existing Photon/iMessage conversation and explicitly shared Find My location. No phone camera, motion or speech acquisition.
+- Mac: Node 24, SQLite, deterministic incident policy, provider workers, local inference and the web workspace.
+- One LIFELINE agent coordinates separate private wearer and responder conversations around one persisted incident. The dashboard observes the loop.
 
-## Next priorities
+## Delivered
 
-1. Verify wearer check-in and responder handoff receipt, then real acceptance, one source-grounded question, departure, arrival and an explicit outcome. The board must show the resulting state changes. Both approved phones are now registered in Photon project Users; preserve the first rehearsal's unknown send outcomes rather than automatically resending them.
-2. Rehearse a controlled physical candidate with WILi and the mounted waist AirPod, recording actual cadence/gaps and detection timing. Calibration remains deferred and is optional for the provisional detector.
-3. Record the complete demo and a labelled operator-triggered backup. Compare an isolated device drop with the combined stream before making cross-body accuracy claims.
+| Area | Current behavior |
+| --- | --- |
+| Incident policy | Persisted check-in deadlines, exact help, explicit cancellation, atomic responder ownership, departure, arrival, recorded outcomes and reassignment. AI cannot cancel, assign ownership or resolve. |
+| Autonomous dispatch | A labelled simulated human Maya receives the local alert, accepts, departs, arrives and records an outcome without dashboard progress clicks. The live profile retains approved real responders. |
+| Photon | Bound native chat/line identity, threaded replies, wearer reports, clinical answers, delivery evidence and read-only readiness diagnostics. Unknown submissions are preserved rather than blindly resent. |
+| Voice | Cached ElevenLabs prompts, intelligible board playback, bounded microphone capture, local Whisper transcription and dynamic spoken responder replies. Holding Blue supports everyday-care voice messages. |
+| Everyday care | One daily prompt per local date, defaulting to 2 p.m.; text/voice replies and short model follow-ups. Clinical questions use the grounded record engine. Loneliness or missed replies do not open incidents; exact help does. |
+| Finch and EHR | Read-only structured synthetic chart, grouped medication history, dated vitals, grounded questions, immutable incident/answer snapshots and protected care exports. The fictional Finch subject is explicitly separate from the wearer. |
+| Location | Native Photon Find My onboarding and scoped watches; optional browser fallback. Fresh, sufficiently accurate wearer/owner positions can support an Apple Maps walking ETA. Location cannot appoint an owner or confirm arrival. |
+| Sensing and trials | Provisional paired WILi/waist assessment, session/clock validation, three-second standing/walking guide, paired JSONL recording and offline replay. Legacy phone captures preserve their original identities behind an explicit flag. |
+| Wearable reliability | Bounded USB/backend recovery, one reaped serial worker per attempt, ambient status UI and speech/measurement scheduling. |
+| Web experience | Six dashboard care views, separate read-only EHR and optional Developer tools. Overview focuses on the current incident. WILi retains its last measured display value between reports, with a labelled initial zero and acquisition details in a disclosure. |
+| Landing | Scroll-driven desktop/mobile story, reduced-motion/static alternatives, illustrative coordination/signals, supplied logo, local fonts and EHR preview. The Cloudflare bundle excludes operational endpoints and private state. |
 
-Production Finch Connect subject binding follows the working live loop. The public synthetic fixture already provides the read-only clinical context for the judged demo; hospital writeback is not part of the product.
+## Verification at this checkpoint
 
-## Work ownership
+- **452 Node tests**, **51 Python gateway/display tests**, TypeScript checks and frontend JavaScript syntax pass. Automated tests use isolated fixtures and do not claim physical accuracy or cloud receipt.
+- Real board microphone → local Whisper → incident policy and ElevenLabs reply playback passed separate physical voice rehearsals within the normal twenty-second check-in. The wearer confirmed clear playback. Physical Blue hold/release still needs a complete rehearsal.
+- Real Finch/local-model rehearsals covered attributed symptom updates, grounded clinical and report-only answers, immutable snapshots, daily social replies and the incident state chain. These rehearsals used generated inputs and recording transports, with no external messages.
+- Native Photon wearer inbound and return delivery were verified separately. The real responder conversation encountered an upstream new-contact restriction; the complete human-responder incident exchange remains unverified.
+- A native Find My sharing request was sent and delivered. A usable shared position and a live wearer/responder ETA remain unverified. A generated public-campus route checked the routing helper only.
+- Generated paired-protocol tests opened check-in automatically through server ingestion and reproduced captured detector features offline. Mounted physical fall trials have not established accuracy or a cross-body advantage.
+- Dashboard navigation, calm reset state, source-grounded record answers, clinical exports and the supplied branding were inspected in the browser. Generated active-incident fixtures remained labelled. Landing-specific desktop/mobile evidence is recorded in the [production notes](landing-sequence-production.md).
 
-The main agent owns integration, policy and live rehearsals. Parallel implementation assignments use distinct files for device acquisition, provider transport and presentation/context composition. Shared contracts are in `src/contracts.ts`; each agent reports verification before integration.
+## Next work, in order
+
+1. Restore actual waist measurements when the wearer is available. The earlier standing/walking calibration succeeded in a prior session; the current session has reported no measurements. Calibration is optional for the detector, but real paired acquisition is required for a physical-trigger claim.
+2. Record labelled mounted standing, sitting and bending trials, then a controlled low descent onto the mat with continuous timestamped video. Check an isolated WILi drop separately. Preserve gaps, saturation, session identity and replay results beside each trial.
+3. Rehearse the full physical wearer → check-in → help → simulated Maya → outcome loop, including actual wearer Photon receipt, WILi spoken updates and Blue hold/release. No dashboard progress operator.
+4. Record the submission demo and a clearly labelled operator-triggered backup. Use actual measured timings for detection, check-in, escalation and receipt; do not infer accuracy from generated fixtures or average cadence.
+5. Verify real human-responder onboarding and native Find My positions/ETA as separate gates. They do not block the labelled simulated dispatcher profile.
+
+## Boundaries
+
+The current WILi bridge needs USB. Wireless transport remains future work; a Wi-Fi accessory is not part of the working demo. At-rest reporting has been roughly 1 Hz in observed sessions, with faster reports during movement. The detector's 500 ms freshness gate is unchanged; held UI values do not become fresh sensor evidence.
+
+Stock WILi exposes acceleration, not fused orientation. The provisional stock ±2 g profile excludes clipping and uses gateway receipt timing, with unknown board capture latency. Missing evidence never means safe.
+
+Maya's simulated acceptance, arrival and outcome do not establish a real human's attendance, iMessage receipt, GPS or ETA. Finch's fictional records do not become the actual wearer's medical record. Production subject binding, hospital authorization, enrollment and wireless operation follow the working demo. Hospital writeback, seizures and gait-risk detection remain outside the implemented scope.
+
+## Repository map
+
+- `src/`: shared contracts, incident controller, persistence, sensing, everyday care, EHR, location and provider adapters.
+- `native/freewili/`: stock serial worker, audio/transcription, ambient display and recovery; `native/macos/`: reused waist acquisition and route helper; `native/ios/`: communication companion.
+- `public/`: landing, dashboard, EHR, location fallback, fonts and production story assets.
+- `scripts/`: local setup, builds, read-only diagnostics, isolated smoke rehearsals and offline replay.
+- `docs/`: product decisions, setup, interfaces, provider guidance, trial procedure and design provenance.
+- `.env`, `data/`, `output/` and native build folders: private local configuration, persisted state, recordings and generated verification; excluded from Git.
+
+Verification commands are in the [README](../README.md). Provider details: [providers](providers.md). Physical setup: [native setup](native-setup.md). Trial procedure: [motion trials](motion-trials.md). Public packaging: [Cloudflare landing](cloudflare-landing.md).

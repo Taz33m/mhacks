@@ -1,89 +1,97 @@
 # Motion capture and offline replay
 
-The dashboard records the motion detector's inputs and state changes so the same trial can be replayed independently with both sensors, the chest iPhone alone, and the waist AirPod alone. Replay is an offline debugging tool. It does not create incidents, contact responders, call providers, or publish sensor data to a running server.
+The current product uses **FREE-WILi primary acceleration plus a waist-mounted AirPod**. Paired trials record both authenticated input streams in one ordered JSONL file and replay the same provisional combined assessment offline. The iPhone is a communication device; it supplies no motion stream in this mode.
 
-`capture: "native-stream"` means the recorder captured packets accepted at the authenticated native-stream interface. It does not prove device placement, a bodily event, or a correct scenario label. The operator supplies the labels. Protocol fixtures can also be accepted at that interface; keep their provenance distinct from observations of physical devices.
+Replay imports the acquisition adapters and detector, with an injected recorded clock. It does not import the server/controller/providers, create an incident, connect to a running backend, or send messages. Generated fixtures exercise software behavior; observed device packets establish acquisition. Neither `capture: "native-stream"` nor an operator scenario label verifies a bodily event or detector accuracy.
 
-## Record a self-contained trial
+## Record a paired trial
 
-1. Start the backend and pair the native clients using [native-setup.md](native-setup.md). The intended placements are the chest iPhone and waist AirPod. Confirm which AirPod actually reports motion, and check each sensor's freshness and alignment on the dashboard.
-2. Finish any active incident. In **Motion trials**, enter a short **Trial label**, choose a **Scenario label**, and click **Begin recording**. Starting clears calibration, recent motion, and clock estimates. Connected sources are recorded without invented initial samples. The first accepted sample from each source triggers a new recorded clock exchange.
-3. Hold the mounted sensors still for at least one continuous second, then click **Calibrate standing** while recording. Check that the required sensors show **Calibrated** and a fresh signal. Calibration requires sufficiently continuous, low-motion samples; a failed attempt does not manufacture a calibration event. The event lists only sources that actually calibrated successfully. Both sources need current clock estimates for cross-body assessment.
-4. Perform the planned observation and leave enough recording time afterward for the detector's quiet-motion window. Keep sensor placement and trial conditions in your accompanying notes. Use only controlled staging appropriate for the team and equipment; recording a label does not validate a fall.
-5. Click **Stop recording**, wait for **STOPPED**, then **Download JSONL**. The server also keeps the complete file in `data/trials/trial-<id>.jsonl`. Recording stops automatically at ten minutes or the recorder's size/backpressure limit; its final reason is part of the file.
+1. Pair the WILi and native waist clients using [native-setup.md](native-setup.md). Check the actual reporting AirPod, session identities, freshness and clock alignment. A connected socket without samples does not establish acquisition.
+2. Finish any active incident. In **Motion trials**, enter a trial label and scenario, then **Begin recording**. The normal profile creates a version-2 `wili-waist` capture. Initial connected sources and their known sessions are recorded, followed by the retained, actually advertised WILi hello. No initial samples are invented.
+3. Recording start clears earlier sensor history and clock estimates, and removes the assessment cooldown. It retains device connectivity and sequence/replay guards. A **fresh same-session standing calibration is preserved** and annotated with its source/session/bud. An ordinary disconnect, reporting-bud/session change or motion gap still invalidates that baseline. Recording does not automatically calibrate.
+4. The first subsequently accepted sample from each source forces a new recorded clock exchange. Wait for both streams to regain usable alignment before the labelled observation. A periodic pong before the first captured sample can refer to a retained live session; offline replay counts that exchange as unusable bootstrap alignment, then uses the fresh post-sample exchange.
+5. Add explicit operator markers to annotate observation boundaries or notable handling. Markers contain a short label and the host event times. They are annotations, not sensor observations or ground truth. The visible **Device drop** scenario retains the historical API value `phone-drop` for compatibility.
+6. Record the planned observation and enough time afterward for the waist quiet window. Preserve placement, handling and staging notes separately. Click **Stop recording**, wait for **Stopped**, then **Download JSONL**. The server also saves `data/trials/trial-<id>.jsonl` privately.
 
-Stopping capture keeps monitoring and incident response active. It does not clear an incident. **Reset demo** during a trial is recorded as `motion.reset`, so replay reproduces the loss of calibration and the reset cooldown. A calibration from before **Begin recording** cannot be used for replay.
+Recording keeps the normal live incident pipeline enabled: an actual eligible paired candidate can open a check-in. Starting is rejected during an active incident; markers and stop remain available during one. Stopping capture does not resolve an incident or stop monitoring. **Reset demo** is captured as `motion.reset`, including its history/calibration loss and assessment cooldown.
+
+The paired acceleration rule does not require standing tilt calibration. Preserved pre-trial calibration is recorded honestly as metadata; replay does not synthesize its vector. Explicit successful calibration events within the trial are reconstructed and compared against the captured waist samples.
+
+Recording stops at ten minutes, 100 MB, or backpressure before dropping queued stream events. The final reason and completion state remain visible. Storage errors and interrupted files remain incomplete.
 
 ## Replay local files
 
-From the repository directory, with Node 24 or later:
+With Node 24 or later, from the repository:
 
 ```sh
 npm run replay:motion -- data/trials/trial-<id>.jsonl
 npm run replay:motion -- --output /tmp/lifeline-replay.json data/trials/trial-<id>.jsonl another-trial.jsonl
-```
-
-The CLI writes a JSON report to stdout and optionally saves the same report with `--output`. To get pure JSON when redirecting, suppress npm's own script banner:
-
-```sh
 npm run --silent replay:motion -- data/trials/trial-<id>.jsonl > /tmp/lifeline-replay.json
 ```
 
-No backend needs to run. No token or provider key is needed. The report explicitly has `kind: "offline-motion-replay"` and `live: false`, plus SHA-256 hashes of each input and the detector source. Each file is replayed independently; do not concatenate files from different host clock epochs. All three modes use the detector in the current checkout, so differences from recorded output may reflect code changes as well as the available sensors.
+No backend, token or provider key is needed. The CLI writes JSON to stdout and optionally a private output file. Reports declare `kind: "offline-motion-replay"` and `live: false`, and include input hashes and the current detector source hashes. Each file is independent; do not concatenate different host-clock epochs. Candidate discrepancies can reflect changed code or thresholds, unavailable alignment, or missing captured evidence; they are not correctness scores.
 
-The report includes:
+Version-2 paired reports include:
 
-- Sample counts, reporting bud/phone identity, session IDs, host span, average received cadence, within-session sensor cadence, timing gaps over 500 ms, and missing sequence values. Cadence is an average over the recorded window, including pauses; it is not a promised device sampling rate.
-- Recorded clock exchanges and counts of usable/unusable pongs in each mode. A pong before that trial's first sample cannot establish a replay session and is counted unusable. The fresh exchange after the first sample supplies reproducible alignment; no samples or offsets are synthesized.
-- Recorded successful calibration sources compared with what replay can calibrate from the captured samples. Freshness, calibration, and alignment coverage are counted at the recorded assessment times.
-- Candidate timestamps, kinds, and source sessions for each mode. Comparisons with the recorded candidate check presence, kind, and source sessions. They do not compare explanatory prose or infer correctness.
+- Counts and session IDs for raw `body-wili` acceleration and waist `motion.sample`, plus the actual reporting bud and hello/capability history.
+- Host-receive cadence and gaps, declared-clock cadence and gaps, sequence gaps, full-scale range, raw and conservatively inferred saturation counts, and raw framing timestamps retained as decimal strings.
+- Recorded clock exchanges, accepted/rejected and unusable pre-sample pongs, aligned/capture-fresh sample counts, and simultaneous fresh alignment coverage at evaluated assessment times.
+- Scenario and explicit markers, preserved-calibration annotations, and any recorded successful calibration compared with what captured samples can reproduce.
+- Candidate times, exact source sessions and immutable features: primary impact, supporting waist movement, continuous waist quiet, declared timing domain, alignment uncertainty and applied thresholds. Candidate presence and feature discrepancies are reported.
+- Assessments explicitly skipped because an incident was already active. These do not call the offline detector and are not counted as negative detector results.
 
-Statuses make incomplete evidence explicit: `unscored-no-samples`, `unscored-no-calibration`, or `unscored-no-assessments`. The report still shows metadata and any detector diagnostics available. `replayed` means the recorded inputs were evaluated; it is not a validated accuracy score. Calibration mismatches and missing alignment remain visible in the detailed report even when other sources are usable.
+Statuses distinguish `unscored-no-samples`, `unscored-missing-paired-samples`, `unscored-no-assessments` and `unscored-no-paired-alignment`. Missing evidence is listed. `replayed` means inputs were evaluated by the current prototype; it does not establish detection accuracy. There are no paired solo modes or silent single-device fallbacks.
 
-### What the three modes compare
+### Timing and range interpretation
 
-| Mode | Available evidence and prototype rule |
-| --- | --- |
-| `combined` | Chest impact followed by continuous quiet motion, plus calibrated waist tilt and quiet motion with current clock alignment when the waist stream is fresh. It uses the chest-only fallback if the waist is unavailable. A fresh but uncalibrated or unaligned waist stream prevents a cross-body candidate. |
-| `chest-only` | That iPhone's own impact, tilt, and continuous quiet motion. Waist packets are excluded. |
-| `waist-only` | That AirPod's own impact, tilt, and continuous quiet motion. Chest packets are excluded. |
+Every event has host-monotonic `atMs` and wall-clock `at`, both in milliseconds. Sample `sensorTime` is seconds in its explicitly declared domain. Ping/pong events provide the only clock alignment used by replay.
 
-These are prototype comparisons with different available features. They do not establish an accuracy gain from two sensors. Solo candidates can differ intentionally from the recorded combined output; those differences are marked as ablation discrepancies. The CLI produces no accuracy percentages, physical diagnosis, or inferred ground truth.
+For the stock OG SDK bridge, `captureClock: "host-receipt"` identifies **gateway receipt**, not board acquisition. Its stock `frameTimestamp` is preserved exactly; replay does not assume that framing value is nanoseconds or convert it into acquisition time. An aligned host-receipt stream does not establish the board's acquisition latency. Device-monotonic custom-protocol packets retain their separate acquisition clock.
 
-Initial thresholds are 2.5 g total acceleration, 60° calibrated tilt, and about 2.8 seconds of low motion (at most 0.15 g user acceleration and 0.35 rad/s rotation). Quiet motion cannot bridge an arrival gap over 200 ms, including at the end of the window. With a usable clock estimate, samples captured at least 500 ms before receipt or more than 100 ms into the future remain recorded but cannot supply calibration or incident evidence. Cross-body assessment also requires clock uncertainty at most 100 ms and an estimate less than 15 seconds old. These settings need evaluation on mounted-device trials.
+Raw WILi acceleration includes gravity. It is never re-labelled as Core Motion fused gravity, quaternion or rotation. Stock 2 g and custom ranges remain distinct. Saturated/clipped packets remain in the recording for diagnostics and cannot supply eligible impact evidence.
 
-To evaluate the sensing hypothesis, capture separate repeatable standing, phone-drop, sit, bend, and controlled staged-event trials with calibration inside each recording. Preserve placement and timing notes, separate protocol fixtures from physical observations, and keep evaluation recordings separate from those used to tune thresholds. A stream dropout is a missing-data condition, not evidence of safety.
+The current provisional combined rule requires primary impact, correlated waist movement and continuous subsequent waist quiet with current clock alignment. The stock 2 g host-receipt profile uses its recorded 1.65 g prototype threshold; other supported ranges use the 2.5 g threshold. Supporting waist movement is at least 0.4 g linear acceleration or 1.2 rad/s measured rotation within 750 ms. The quiet window is 2.4 seconds with at most 0.15 g linear acceleration and 0.35 rad/s rotation; it cannot bridge a waist gap over 200 ms. Sparse primary events are retained as sparse events, without inventing primary quiet or interpolated samples. Applied settings are also frozen in each candidate's features.
 
-## Recorded format and validation
+## Ordered capture format
 
-Each non-empty JSONL line is one ordered event:
+Each non-empty JSONL line is an ordered event; equal host times are permitted, decreasing times are rejected:
 
 ```json
-{"type":"assessment","atMs":4200,"at":1790000004200,"payload":{"candidate":null}}
+{"type":"assessment","atMs":4200,"at":1790000004200,"payload":{"candidate":null,"evaluated":true,"detector":"wili-waist-provisional-v1"}}
 ```
 
-`atMs` is host monotonic milliseconds and drives the injected replay clock. `at` is a wall-clock timestamp used for display. Equal host timestamps are allowed; decreasing timestamps are rejected. Device `sensorTime` is seconds and is aligned only through recorded ping/pong exchanges.
-
-| Event | Payload |
+| Event | Version-2 payload / interpretation |
 | --- | --- |
-| `trial.start` | `{version:1,id,label,scenario,initialSources,capture:"native-stream"}` |
-| `source.connected` / `source.disconnected` | Explicit `source`; no motion packet required |
-| `clock.ping` | Recorded `ClockPing`, with explicit `source` |
-| `clock.pong` | Recorded `ClockPong`, with explicit `source` and matching pending ping |
-| `motion.sample` | Accepted `MotionSample`, with matching explicit `source` |
-| `calibration` | `{sources:[...]}` containing successfully calibrated sources |
+| `trial.start` | `{version:2,id,label,scenario,capture:"native-stream",captureMode:"wili-waist",initialSources,initialSessions,stateBoundary:"fresh-history-and-clocks",preservedCalibration}` |
+| `source.connected` / `source.disconnected` | Explicit `body-wili` or `waist-airpod`; acquisition failure records disconnect as soon as invalidated |
+| `device.hello` | Actual advertised WILi model, boot/session, protocol version, range, transport and capabilities |
+| `clock.ping` / `clock.pong` | Original clock packet with explicit source; ping event time equals its host send time |
+| `accel.sample` | Original accepted raw WILi acceleration packet with explicit `body-wili` source |
+| `motion.sample` | Original accepted waist Core Motion packet with explicit `waist-airpod` source |
+| `calibration` | `{sources:[...]}` listing successfully calibrated waist sources |
 | `motion.reset` | Explicit `{clocks:boolean,cooldown:boolean}` |
-| `assessment` | `{candidate:Evidence\|null}`; only these events call `candidate()` during replay |
+| `trial.marker` | `{label:"operator annotation"}` |
+| `assessment` | `{candidate:Evidence\|null,evaluated:boolean,detector:"wili-waist-provisional-v1"}` |
 | `trial.stop` | `{reason:"..."}` |
 
-The parser rejects unsafe session IDs, reporting-bud changes within a session, non-increasing sequence/device time, stale session reappearance, non-finite numeric values, malformed vectors, unknown event types, invalid scenarios, events outside trial boundaries, and unfinished trials. Errors identify the exact file and line. Do not hand-add clocks or calibration to repair missing evidence; recapture a complete trial.
+Authenticated trial APIs are `POST /api/trials/start {label,scenario}`, `POST /api/trials/marker {label}`, `POST /api/trials/stop`, and `GET /api/trials/<id>/download`. Markers require a current paired recording and a 1–80 character label without control characters. `TrialView.sampleCounts` retains `chest-phone` for compatibility and adds `body-wili`; it also reports `captureMode` and `markerCount`.
 
-Inputs are bounded to 32 regular local files, 128 MiB per file, 256 MiB combined, 64 KiB per line, 250,000 lines per file, and 500,000 combined records. Files must be valid UTF-8 JSONL. The output destination cannot overwrite an input recording. Stop capture before replaying so file contents are stable.
+The parser enforces trial boundaries, supported versions/sources/scenarios, bounded labels, finite clocks, hello/session/range/transport consistency, valid vectors, monotonic sequence/device time, no retired-session reappearance, actual reporting bud consistency and matching clock exchanges. Errors identify file and line. Missing history is never repaired with fabricated packets, calibration or offsets.
 
-## Older sample-only recordings
+Inputs are bounded to 32 regular local files, 128 MiB per file, 256 MiB combined, 64 KiB per line, 250,000 lines per file and 500,000 combined records, with valid UTF-8 and bounded JSON nesting. Output cannot overwrite an input through a path or alias. Stop recording before replaying. An interrupted recording without `trial.stop` is rejected as unfinished.
 
-Files under `data/recordings/` can contain only raw `MotionSample` packets plus `receivedAt` and `hostMonotonicMs`. The CLI accepts this legacy format for cadence, gaps, sessions, and packet validation. It reports `unscored`, with `candidates: null` for every mode, because trial boundaries, clock exchanges, calibration, and assessment history are missing. It never infers those missing events.
+## Legacy Core Motion and sample-only files
 
-The locally observed legacy Right AirPod recording `waist-airpod-4FFAA6BD-FB0E-46FE-9395-D0E54C13F6A9.jsonl` contains 1,113 accepted samples over 24.623 seconds: average received cadence 45.162 Hz, maximum host-arrival interval 213.047 ms, no host-arrival gap over 500 ms, and no skipped sequence values. It contains no chest samples, clock exchanges, or calibration and remains unscored. These are transport metadata for a brief acquisition; sustained off-ear continuity, waist mounting, cross-body performance, and physical incident detection remain unverified.
+Version-1 trials remain readable and retain the earlier chest-iPhone/waist-AirPod algorithm. Those recordings reset their calibration at trial start and need successful calibration within the capture. Their three diagnostic modes are:
 
-Historical download endpoints can return a raw file after restart, when the in-memory trial view is unavailable. An interrupted file can lack `trial.stop`; the replay parser rejects it as unfinished rather than assuming the capture completed.
+| Legacy mode | Available evidence and prototype rule |
+| --- | --- |
+| `combined` | Chest impact plus quiet and calibrated waist tilt/quiet when fresh and aligned; historical chest-only fallback when waist is unavailable |
+| `chest-only` | That phone's own impact, tilt and continuous quiet |
+| `waist-only` | That AirPod's own impact, tilt and continuous quiet |
+
+These historical ablations use different available features and do not establish an accuracy gain. They describe the earlier detector, not the current WILi product. Paired trials preserve the existing `Source` type for those packets instead of disguising raw board acceleration as a chest phone.
+
+Older `data/recordings/` files can contain raw `MotionSample` **or** raw WILi `accel.sample`, plus `receivedAt` and `hostMonotonicMs`. The CLI accepts each for packet validation, cadence, gaps, sessions and range/saturation metadata. They remain `unscored` with no candidate assessment because hello/clock exchanges, paired history, boundaries and assessment events are absent. Supplying separate raw files together does not manufacture a paired trial.
+
+The legacy Right AirPod file `waist-airpod-4FFAA6BD-FB0E-46FE-9395-D0E54C13F6A9.jsonl` was observed to contain 1,113 samples over 24.623 seconds, with average receive cadence 45.162 Hz and a 213.047 ms maximum receive interval. It remains sample-only transport evidence. Use newly labelled paired recordings to assess the current mounted-device sensing hypothesis; keep generated fixtures and tuning observations distinct from later evaluation observations.
