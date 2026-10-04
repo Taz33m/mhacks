@@ -23,8 +23,8 @@ test('new check-in has one wearer outbox action while native speech stays phone-
   const actions = checkins(c, i.id); assert.equal(actions.length, 2);
   assert.deepEqual(actions.map(a => [a.type, a.recipientId]), [['checkin', null], ['wearer_checkin', null]]);
   const wearer = actions[1];
-  assert.ok(wearer.text.includes('I detected a possible fall. Are you okay?'));
-  assert.ok(wearer.text.includes(i.id)); assert.match(wearer.text, /help/i); assert.match(wearer.text, /reply|tap/i);
+  assert.ok(wearer.text.includes('I noticed a possible fall. Are you okay?'));
+  assert.ok(!wearer.text.includes(i.id), 'the patient never sees incident codes'); assert.match(wearer.text, /help/i); assert.match(wearer.text, /reply|tap/i);
   advance(5000);
   const repeated = c.trigger({ kind: 'synthetic', summary: 'Repeated evidence.' });
   assert.equal(repeated.id, i.id); assert.equal(repeated.checkinId, i.checkinId);
@@ -76,7 +76,7 @@ test('expired queued and phase-ended failed wearer actions are never claimed', t
   const action = failed.c.claimAction()!; failed.c.finishAction(action.id, 'failed', 'Confirmed rejection.');
   failed.c.cancel(cancelled.id, cancelled.checkinId); failed.advance(10_000);
   const closure = failed.c.claimAction('wearer')!;
-  assert.equal(closure.type, 'wearer_status'); assert.match(closure.text, /explicitly cancelled/);
+  assert.equal(closure.type, 'wearer_status'); assert.match(closure.text, /check-in closed/);
   assert.equal(failed.c.claimAction('wearer'), null); assert.equal(failed.c.actions(cancelled.id).find(a => a.id === action.id)?.status, 'cancelled');
 });
 
@@ -87,7 +87,7 @@ test('a slow wearer send cannot block the responder lane, and lanes never claim 
   advance(policy.checkinMs); c.tick(); assert.equal(c.active()?.phase, 'HELP_REQUESTED');
   assert.equal(c.actions(i.id).find(a => a.id === wearer.id)?.status, 'attempting');
   const escalation = c.claimAction('wearer')!;
-  assert.equal(escalation.type, 'wearer_status'); assert.match(escalation.text, /No responder has accepted/);
+  assert.equal(escalation.type, 'wearer_status'); assert.match(escalation.text, /getting help for you now/);
   const alert = c.claimAction('responders')!; assert.equal(alert.type, 'alert');
   assert.equal(c.actions(i.id).find(a => a.id === wearer.id)?.status, 'attempting');
   const expired = setup(t); expired.c.trigger({ kind: 'synthetic', summary: 'Expired wearer lane fixture.' });

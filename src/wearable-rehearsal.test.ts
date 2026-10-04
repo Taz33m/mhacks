@@ -27,7 +27,8 @@ test('wearable rehearsal opens the complete spoken check-in and uses local Maya 
     assert.match(alert.text, /I fell, I can't stand up\./);
     assert.equal(alert.status, 'simulated');
     assert.equal(alert.providerMessageId, null);
-    assert.ok(c.actions(i.id).some(a => a.type === 'wearer_status' && a.text.includes('Maya: “')));
+    assert.ok(c.actions(i.id).some(a => a.type === 'wearer_status' && a.text === 'Maya has answered your alert.'));
+    assert.ok(!c.actions(i.id).some(a => a.type === 'wearer_status' && a.text.includes('Maya: “')), 'care-team chatter is not relayed');
     now += 10; simulator.tick();
     assert.equal(c.active()?.phase, 'RESPONDER_EN_ROUTE');
     assert.ok(c.conversation(i.id).some(m => m.source === 'simulated-dispatch'

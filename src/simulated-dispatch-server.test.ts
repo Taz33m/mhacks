@@ -123,7 +123,7 @@ test('isolated wearable rehearsal cancels check-ins and resolves a spoken report
       && value.actions.some(action => action.type === 'alert' && action.status === 'simulated'));
     assert.equal(resolved.incident!.ownerId, 'demo-maya');
     assert.equal(resolved.incident!.resolutionActor, 'simulated-dispatch:demo-maya');
-    assert.match(resolved.incident!.outcome!, /reached the wearer and stayed with them/);
+    assert.match(resolved.incident!.outcome!, /reached the patient and stayed with them/);
     assert.match(resolved.incident!.outcome!, /arranging further assistance\./);
     const expected: Phase[] = ['HELP_REQUESTED', 'ACKNOWLEDGED', 'RESPONDER_EN_ROUTE', 'ON_SCENE', 'RESOLVED'];
     assert.deepEqual(resolved.timeline.filter(event => expected.includes(event.type as Phase)).map(event => event.type), expected);
@@ -136,11 +136,11 @@ test('isolated wearable rehearsal cancels check-ins and resolves a spoken report
     }, []);
     assert.deepEqual(phases, ['CONFIRMING', ...expected]);
     assert.ok(incidentContexts.every(packet => !/DEMO/.test(packet.statusText ?? '')));
-    assert.equal(speech.filter(packet => packet.incidentId === incidentId).length, 3);
+    assert.equal(speech.filter(packet => packet.incidentId === incidentId).length, 1, 'only the line addressed to the patient is spoken');
     assert.ok(speech.every(packet => packet.speakerName === 'Maya'));
     const reports = resolved.conversation!.filter(message => message.speaker === 'responder');
     assert.equal(reports.length, 4); assert.ok(reports.every(message => message.source === 'simulated-dispatch'));
-    assert.equal(reports.slice(0, 3).every(message => message.delivery === 'spoken'), true);
+    assert.deepEqual(reports.map(message => message.delivery), ['recorded', 'spoken', 'recorded', 'recorded']);
     assert.equal(reports.at(-1)!.delivery, 'recorded');
     assert.ok(resolved.actions.some(action => action.recipientId === 'demo-maya' && action.status === 'simulated'));
     assert.ok(resolved.actions.every(action => action.providerMessageId === null));

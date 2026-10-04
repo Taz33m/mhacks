@@ -152,7 +152,7 @@ export class Wellbeing {
     const expired = stored.type === 'daily_checkin' && (stored.dailyDate !== local.date || (stored.scheduled && !this.inWindow(local)));
     const staleReply = stored.type === 'reply' && stored.wearerMessageId !== this.latestWearerId();
     if (expired || staleReply) {
-      stored.status = 'cancelled'; stored.providerResult = expired ? 'Daily check-in window ended; no late catch-up.' : 'A newer wearer message superseded this reply.';
+      stored.status = 'cancelled'; stored.providerResult = expired ? 'Daily check-in window ended; no late catch-up.' : 'A newer patient message superseded this reply.';
       this.saveAction(stored); this.delivery(stored.messageId, 'cancelled'); return false;
     }
     return this.options.enabled && !blocked && Boolean(this.options.phone) && stored.phone === this.options.phone;
@@ -203,7 +203,7 @@ export class Wellbeing {
     if (!inserted) return false;
     this.db.prepare("UPDATE wellbeing_messages SET reply_state='superseded' WHERE speaker='wearer' AND reply_state='pending'").run();
     for (const action of this.actions().filter(action => action.type === 'reply' && action.status === 'queued')) {
-      action.status = 'cancelled'; action.providerResult = 'A newer wearer message superseded this reply.';
+      action.status = 'cancelled'; action.providerResult = 'A newer patient message superseded this reply.';
       this.saveAction(action); this.delivery(action.messageId, 'cancelled');
     }
     const message: WellbeingMessage = { id: randomUUID(), speaker: 'wearer', text: text.trim(), source, at: this.now(), delivery: 'recorded' };

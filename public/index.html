@@ -24,6 +24,7 @@
       </nav>
       <details class="rail-tools"><summary>Workspace tools</summary><nav aria-label="Workspace tools">
         <a class="rail-link" data-workspace-link="conversation" href="#conversation"><span aria-hidden="true">◧</span> Conversation</a>
+        <a class="rail-link" data-workspace-link="teaching" href="#teaching"><span aria-hidden="true">◎</span> Teach LIFELINE</a>
         <a class="rail-link" data-workspace-link="activity" href="#activity"><span aria-hidden="true">◷</span> Audit trail</a>
         <a class="rail-link" data-workspace-link="connections" href="#connections"><span aria-hidden="true">⚙</span> Connections</a>
         <a id="developer-link" class="rail-link" data-workspace-link="developer" href="#developer" hidden><span aria-hidden="true">⌘</span> Controls</a>
@@ -123,7 +124,7 @@
               <dl class="sensor-details"><div><dt>Angular speed</dt><dd class="waist-angular">Not recorded</dd></div><div><dt>Orientation quaternion</dt><dd class="waist-quaternion">Not recorded</dd></div></dl>
               <p class="sensor-identity">Source: waist-airpod · No session</p>
             </article>
-          </section><div id="incident-evidence" class="wearer-reply" hidden><div class="card-top"><h3>Measured trigger evidence</h3><span class="badge">FROZEN AT DETECTION</span></div><dl id="incident-evidence-facts" class="clinical-fields"></dl><p id="incident-evidence-timing" class="field-note"></p><details class="clinical-source"><summary>Measurement sources and timestamps</summary><p id="incident-evidence-sources"></p></details></div><details class="motion-setup"><summary>Connection &amp; incident source details</summary><div id="overview-evidence"></div></details><details class="motion-setup"><summary>Sensor calibration</summary><div class="calibration-controls"><div><h2>Calibrate your waist AirPod</h2><p>Stand still for 3 seconds. Then walk for 3 seconds.</p></div><button id="calibrate" class="button" type="button">Open calibration ↗</button></div><p id="calibration-message" class="command-message" role="status" aria-live="polite"></p></details></section><section id="medical" class="workspace-view" data-workspace-view="medical" aria-label="Medical" hidden><section class="card patient-card" aria-labelledby="patient-title">
+          </section><div id="incident-evidence" class="wearer-reply" hidden><div class="card-top"><h3>Measured trigger evidence</h3><span class="badge">FROZEN AT DETECTION</span></div><dl id="incident-evidence-facts" class="clinical-fields"></dl><p id="incident-evidence-timing" class="field-note"></p><details class="clinical-source"><summary>Measurement sources and timestamps</summary><p id="incident-evidence-sources"></p></details></div><section class="card"><p class="eyebrow">EVENT UNDERSTANDING</p><h2>Motion and patient report</h2><p id="motion-event-window" class="field-note"></p><p id="motion-patient-report" class="field-note"></p></section><details class="motion-setup"><summary>Connection &amp; incident source details</summary><div id="overview-evidence"></div></details><details class="motion-setup"><summary>Sensor calibration</summary><div class="calibration-controls"><div><h2>Calibrate your waist AirPod</h2><p>Stand still for 3 seconds. Then walk for 3 seconds.</p></div><button id="calibrate" class="button" type="button">Open calibration ↗</button></div><p id="calibration-message" class="command-message" role="status" aria-live="polite"></p></details></section><section id="medical" class="workspace-view" data-workspace-view="medical" aria-label="Medical" hidden><section class="card patient-card" aria-labelledby="patient-title">
             <div class="card-top"><div><p class="eyebrow">HOSPITAL RECORDS VIA FINCH</p><h2 id="patient-title">Critical medical context</h2></div><span class="badge warning">READ ONLY</span></div>
             <div class="patient-heading"><div><strong id="patient-name">Protected patient context</strong><p id="patient-identity" class="field-note">FinchNode patient record</p><a href="/ehr">Open EHR workspace ↗</a></div><button id="patient-refresh" class="button button-small" type="button" disabled>Refresh current patient</button></div>
             <label for="patient-scope">Record context</label><select id="patient-scope"><option value="current">Current patient record</option><option value="incident" disabled>Saved incident snapshot</option></select>
@@ -176,7 +177,14 @@
             <p class="field-note">Start → check placement → optional waist calibration → controlled movement → stop. Starting resets the waist baseline. Scenario and marker labels are operator supplied, not validated ground truth. Stopping capture keeps monitoring active and does not clear an incident.</p>
           </section>
 
-          </details></div></details><div class="developer-footer"><span class="environment">LOCAL</span><span class="rail-prototype">LIFELINE · Operator controls</span><a href="/storyboard">Landing storyboard <span aria-hidden="true">↗</span></a><footer>MHacks 2026 <span>·</span> Actually Intelligent <span>·</span> LIFELINE</footer></div></section></main>
+          </details></div></details><div class="developer-footer"><span class="environment">LOCAL</span><span class="rail-prototype">LIFELINE · Operator controls</span><a href="/storyboard">Landing storyboard <span aria-hidden="true">↗</span></a><footer>MHacks 2026 <span>·</span> Actually Intelligent <span>·</span> LIFELINE</footer></div></section><section id="teaching" class="workspace-view" data-workspace-view="teaching" aria-label="Teach LIFELINE" hidden>
+<section class="card"><p class="eyebrow">MOVEMENT EXAMPLES</p><h2>Teach LIFELINE</h2><p>Calibrate once. Record a movement for 6 seconds, then tell us what happened.</p>
+<div class="calibration-controls"><button id="teach-calibrate" class="button" type="button">1 · Calibrate</button><button id="teach-record" class="button" type="button" disabled>2 · Record movement</button><button id="teach-resume" class="button" type="button">Resume monitoring</button></div>
+<p id="teach-status" class="command-message" role="status" aria-live="polite">Connecting to the recorder…</p>
+<p class="field-note">Automatic incident alerts pause during practice and review. Choose Resume monitoring when finished. The red help button remains available.</p>
+<div class="calibration-controls"><label for="teach-label">3 · What happened?</label><select id="teach-label" disabled><option value="">Choose a label</option><option value="controlled-descent">Controlled descent</option><option value="fall-like-movement">Fall-like movement</option><option value="shaking">Shaking</option><option value="walking">Walking</option><option value="sitting">Sitting</option><option value="bending">Bending</option><option value="device-adjustment">Adjusting the device</option><option value="standing">Standing still</option></select><button id="teach-save" class="button" type="button" disabled>Save label</button></div>
+<p class="field-note">Label the movement, not an injury. Ankle pain is a patient report; a fracture or seizure cannot be verified from a practice IMU recording.</p></section>
+<section class="card"><h2>Your examples</h2><p id="teach-count" class="field-note">No saved examples yet.</p><ul id="teach-examples" class="timeline"></ul><p class="field-note">Original chest and waist measurements are saved locally with your labels. Collecting examples does not yet train a model.</p></section></section></main>
     <dialog id="calibration-guide" class="calibration-guide" aria-labelledby="calibration-guide-title" aria-describedby="calibration-guide-description">
       <div class="guide-header"><h2 id="calibration-guide-title">Waist calibration</h2><button id="calibration-close" class="button button-small button-quiet" type="button" aria-label="Close calibration guide">Close</button></div>
       <p id="calibration-guide-description" class="field-note">FREE-WILi on your chest. AirPod at your waist.</p>
@@ -186,5 +194,60 @@
       <div class="guide-actions"><button id="guide-primary" class="button button-primary" type="button" disabled>Start</button></div>
       <details class="guide-details"><summary>Details</summary><p id="guide-wili-reading" class="field-note">Waiting for FREE-WILi telemetry.</p><p id="guide-waist-reading" class="field-note">Waiting for waist telemetry.</p><p id="guide-waist-identity" class="field-note">No reporting bud or session.</p><p class="field-note">Records an optional standing tilt baseline for the waist AirPod only. FREE-WILi has no orientation calibration; stock cadence may be about 1 Hz at rest. The iPhone is for communication.</p><div id="guide-movement-results" class="guide-movement-results" hidden><h3>Motion stream observed</h3><ol id="guide-stage-results"></ol><p id="guide-motion-count" class="field-note"></p></div><p class="field-note">Walking check: at least three new waist samples with total acceleration differing from 1 g by ≥0.15 g or angular rate ≥0.35 rad/s, plus a fresh WILi sample. Detection accuracy remains unvalidated. Closing stops this guide; monitoring continues.</p></details>
     </dialog>
-  </body>
+  <script type="module">
+const $ = id => document.getElementById(id);
+let token = '', view = null, busy = false;
+const names = { 'controlled-descent': 'Controlled descent', 'fall-like-movement': 'Fall-like movement', shaking: 'Shaking',
+  walking: 'Walking', sitting: 'Sitting', bending: 'Bending', 'device-adjustment': 'Device adjustment', standing: 'Standing' };
+function render() {
+  if (!view) return;
+  const latest = view.examples[0];
+  $('teach-record').disabled = busy || view.recording;
+  $('teach-label').disabled = busy || view.recording || !latest;
+  $('teach-save').disabled = busy || view.recording || !latest || !$('teach-label').value;
+  $('teach-resume').disabled = busy || !view.practiceMode;
+  $('teach-status').textContent = view.recording ? `Recording · ${Math.ceil(view.remainingMs / 1000)} seconds left. Perform your movement.`
+    : view.practiceMode ? 'Movement saved. Choose its label, record another, or resume monitoring.' : 'Monitoring active. Ready to record a movement.';
+  $('teach-count').textContent = `${view.examples.filter(e => e.label).length} labelled · ${view.examples.filter(e => !e.label).length} awaiting labels`;
+  $('teach-examples').replaceChildren(...view.examples.map(e => {
+    const row = document.createElement('li');
+    row.textContent = `${e.label ? names[e.label] : 'Unlabelled movement'} · ${e.bodySamples} chest / ${e.waistSamples} waist samples`
+      + (!e.quality.continuousBody ? ' · sparse chest data' : '') + (!e.quality.continuousWaist ? ' · incomplete waist data' : '');
+    return row;
+  }));
+}
+async function request(body) {
+  const response = await fetch('/api/teaching', { method: body ? 'POST' : 'GET',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(5000) });
+  if (response.status === 404) throw new Error('Recorder is installed; restart the backend after the current incident to activate it.');
+  const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Recorder unavailable.');
+  view = data; render();
+}
+async function action(body) {
+  busy = true; render();
+  try { await request(body); if (body.action === 'start') $('teach-label').value = ''; }
+  catch (error) { $('teach-status').textContent = error.message; }
+  finally { busy = false; if (view) {
+    $('teach-record').disabled = view.recording;
+    $('teach-save').disabled = view.recording || !view.examples[0] || !$('teach-label').value;
+  } }
+}
+$('teach-calibrate').addEventListener('click', () => $('calibrate').click());
+$('teach-record').addEventListener('click', () => action({ action: 'start' }));
+$('teach-resume').addEventListener('click', () => action({ action: 'cancel' }));
+$('teach-label').addEventListener('change', render);
+$('teach-save').addEventListener('click', () => action({ action: 'label', id: view.examples[0].id, label: $('teach-label').value }));
+async function refresh() {
+  if (busy || $('teaching').hidden) return;
+  try {
+    if (!token) { const setup = await (await fetch('/api/setup')).json(); token = setup.token || ''; }
+    if (!token) throw new Error('Use the local workspace to record movements.');
+    await request();
+  } catch (error) { $('teach-status').textContent = error.message; }
+}
+window.addEventListener('hashchange', refresh);
+setInterval(refresh, 1000); void refresh();
+
+</script></body>
 </html>

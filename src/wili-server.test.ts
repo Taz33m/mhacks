@@ -116,24 +116,24 @@ test('isolated stock WILi acquisition, speech and buttons preserve policy and re
     press('cancel', 'synthetic-cancel-escalated', help.id, help.checkinId);
     await pause(30); assert.equal((await state()).incident?.phase, 'HELP_REQUESTED', 'board cannot cancel after escalation');
     const unassigned = await context(help.id, 'HELP_REQUESTED');
-    assert.equal(unassigned.ownerName, null); assert.match(unassigned.statusText!, /WAITING FOR RESPONDER/);
+    assert.equal(unassigned.ownerName, null); assert.match(unassigned.statusText!, /GETTING HELP/);
     assert.equal((await command({ type: 'accept', incidentId: help.id, responderId: 'maya' })).status, 200);
     const accepted = await context(help.id, 'ACKNOWLEDGED');
     assert.equal(accepted.ownerName, 'Maya'); assert.equal(accepted.voiceAsset, 'ACCEPTED');
-    assert.match(accepted.statusText!, /Maya ACCEPTED\nDEPARTURE NOT REPORTED/);
-    assert.doesNotMatch(accepted.statusText!, /EN ROUTE/);
+    assert.match(accepted.statusText!, /MAYA ANSWERED\nI AM HERE WITH YOU/);
+    assert.doesNotMatch(accepted.statusText!, /ON THE WAY/);
     assert.equal((await command({ type: 'depart', incidentId: help.id, responderId: 'maya' })).status, 200);
     const enRoute = await context(help.id, 'RESPONDER_EN_ROUTE');
     assert.equal(enRoute.ownerName, 'Maya'); assert.equal(enRoute.voiceAsset, 'ENROUTE');
-    assert.match(enRoute.statusText!, /Maya EN ROUTE/);
+    assert.match(enRoute.statusText!, /MAYA IS ON THE WAY/);
     assert.equal((await command({ type: 'arrive', incidentId: help.id, responderId: 'maya' })).status, 200);
     const onScene = await context(help.id, 'ON_SCENE');
-    assert.equal(onScene.ownerName, 'Maya'); assert.match(onScene.statusText!, /Maya ON SCENE/);
+    assert.equal(onScene.ownerName, 'Maya'); assert.match(onScene.statusText!, /MAYA IS HERE/);
     assert.equal((await command({ type: 'resolve', incidentId: help.id, responderId: 'maya',
       outcome: 'Synthetic protocol fixture resolved by assigned test responder.' })).status, 200);
     const resolved = await context(help.id, 'RESOLVED');
     assert.equal(resolved.ownerName, 'Maya'); assert.equal(resolved.voiceAsset, 'RESOLVED');
-    assert.match(resolved.statusText!, /RESOLVED\nOUTCOME RECORDED/);
+    assert.match(resolved.statusText!, /TAKE CARE/);
     press('help', 'synthetic-stale-help', help.id, help.checkinId);
     await pause(30); assert.equal((await state()).incident?.phase, 'RESOLVED', 'stale help does not reopen a terminal incident');
     assert.equal(contexts.findLast(packet => packet.type === 'incident.context')?.type, 'incident.context');
@@ -217,7 +217,16 @@ test('isolated stock WILi acquisition, speech and buttons preserve policy and re
     assert.equal(cancelled.timeline.some(event => event.actor === 'freewili-button' && event.type === 'CANCELLED_FALSE_ALARM'), true);
     const closedCheckin = await context(confirming.id, 'CANCELLED_FALSE_ALARM');
     // A closed check-in must not replay instructions to press green again.
-    assert.equal(closedCheckin.voiceAsset, null); assert.match(closedCheckin.statusText!, /EXPLICIT CONTROL CONFIRMED/);
+    assert.equal(closedCheckin.voiceAsset, null); assert.match(closedCheckin.statusText!, /CHECK-IN CLOSED/);
+
+    contexts.length = 0;
+    assert.equal((await command({ type: 'reset', readyImmediately: true })).status, 200);
+    const idlePackets = await waitFor(async () => contexts, packets => packets.some(p => p.type === 'incident.context' && p.phase === null));
+    const idle = idlePackets.findLast((p): p is WiliIncidentContext => p.type === 'incident.context')!;
+    assert.equal(idle.incidentId, null); assert.equal(idle.voiceAsset, null);
+    assert.match(idle.statusText!, /READY/);
+    assert.equal((await state()).wili?.connected, true, 'fast reset never reconnects the board');
+    assert.equal((await command({ type: 'reset', readyImmediately: 'yes' })).status, 400);
 
     intervals.forEach(clearInterval); intervals.length = 0;
     const closed = once(ws, 'close');

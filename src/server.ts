@@ -12,6 +12,9 @@ import { parsePolicy } from './policy.ts';
 import { Motion, validSample } from './motion.ts';
 import { FreeWili } from './freewili.ts';
 import { WiliAssessment } from './wili-assessment.ts';
+import { EarlyCheckinAssessment, detectionProfile } from './early-checkin-assessment.ts';
+import { EventWindowCapture } from './event-window.ts';
+import { Teaching } from './teaching.ts';
 import { ShakingAssessment } from './shaking-assessment.ts';
 import { WiliDeviceProtocol } from '../native/freewili/protocol.ts';
 import type { WiliHello } from '../native/freewili/protocol.ts';
@@ -66,7 +69,9 @@ if (wearerPhone && !/^\+[1-9]\d{7,14}$/.test(wearerPhone)) throw new Error('LIFE
 if (wearerPhone && responders.some(r => r.phone && phoneIdentity(r.phone) === phoneIdentity(wearerPhone)))
   throw new Error('The wearer and responder phone numbers must be different.');
 const policyProfile = parsePolicy(process.env);
-const policy = { demoMode: policyProfile.demoMode, checkinMs: policyProfile.checkinMs, configuredCheckinMs: policyProfile.configuredCheckinMs };
+const selectedDetectionProfile = detectionProfile(process.env.LIFELINE_DETECTION_PROFILE);
+const policy = { demoMode: policyProfile.demoMode, checkinMs: policyProfile.checkinMs, configuredCheckinMs: policyProfile.configuredCheckinMs,
+  ...(selectedDetectionProfile === 'early-checkin' ? { detectionProfile: selectedDetectionProfile } : {}) };
 const controller = new Controller(resolve(dataDir, 'lifeline.sqlite'), responders, Date.now, policyProfile,
   { wearerName: process.env.LIFELINE_WEARER_NAME, dispatchMode });
 const simulatedStepMs = process.env.LIFELINE_SIMULATED_STEP_MS === undefined ? undefined
@@ -104,6 +109,10 @@ let wellbeingVoiceSession: string | null = null;
 const motion = new Motion();
 const wili = new FreeWili();
 const wiliAssessment = new WiliAssessment();
+const earlyCheckinAssessment = new EarlyCheckinAssessment();
+let wearableIdleIncidentId: string | null = null;
+let eventCapture: { incidentId: string; capture: EventWindowCapture } | null = null;
+const teaching = new Teaching(resolve(dataDir, 'teaching'));
 const shakingAssessment = new ShakingAssessment();
 const legacyPhone = process.env.LIFELINE_LEGACY_PHONE === '1';
 const trials = new Trials(resolve(dataDir, 'trials'));
@@ -201,7 +210,7 @@ function shareLink(key: string, role: 'wearer' | 'responder', incidentId?: strin
 }
 function locationBrief(): string {
   const view = locationView(), p = view.wearer;
-  if (!p) return 'Wearer location has not been shared. Location is unknown.';
+  if (!p) return 'Patient location has not been shared. Location is unknown.';
   const label = p.fresh ? 'Shared phone location' : 'Last shared phone location (stale; current location unknown)';
   const map = `https://maps.apple.com/?ll=${p.latitude},${p.longitude}`;
   const accuracy = p.accuracy === null ? 'Accuracy unknown' : `Accuracy ±${Math.ceil(p.accuracy)} m`;
@@ -224,9 +233,9 @@ function snapshot(): Snapshot {
   const incident = controller.latest();
   const providers = { ...providerStatus(), wiliVoice: boardVoice };
   const wearerMessaging = { configured: Boolean(wearerPhone && providers.photon?.configured),
-    detail: !wearerPhone ? 'Set LIFELINE_WEARER_PHONE to the approved wearer phone for the companion iMessage check-in.'
-      : !providers.photon?.configured ? 'Wearer phone configured; Photon credentials are required for iMessage check-in.'
-        : 'Wearer phone and Photon credentials configured.' };
+    detail: !wearerPhone ? 'Set LIFELINE_WEARER_PHONE to the approved patient phone for the iMessage check-in.'
+      : !providers.photon?.configured ? 'Patient phone configured; Photon credentials are required for iMessage check-in.'
+        : 'Patient phone and Photon credentials configured.' };
   return { serverTime: Date.now(), wearer: { name: controller.wearerName }, incident, responders: responders.map(r => ({ ...r, phone: r.phone ? 'configured' : null })),
     dispatch: { mode: dispatchMode, detail: dispatchMode === 'simulated'
       ? 'Local dispatch: Maya’s acceptance, travel, arrival and outcome run automatically.'
@@ -238,7 +247,7 @@ function snapshot(): Snapshot {
     conversation: incident ? controller.conversation(incident.id) : [],
     checkinAudio: checkinAudio && checkinAudio.incidentId === incident?.id && checkinAudio.checkinId === incident?.checkinId ? checkinAudio : null,
     sensors: motion.views().filter(s => legacyPhone || s.source !== 'chest-phone'),
-    wili: wili.view(), providers, wearerMessaging, trial: trials.view(), policy,
+    wili: wili.view(), providers, wearerMessaging, trial: trials.view(), policy, eventUnderstanding: true,
     wellbeing: { ...wellbeing.view(), voice: wellbeingVoice }, location: locationView() };
 }
 async function prepareWellbeingReply(): Promise<void> {
@@ -260,8 +269,8 @@ function wellbeingHelp(transcript: string, source: 'freewili-local-speech' | 'ph
   if (classifyCheckinReply(transcript) !== 'help_requested' || controller.active()) return false;
   const seizure = reportsCurrentSeizure(transcript);
   const i = controller.triggerReportedHelp({ kind: 'manual', ...(seizure ? { eventType: 'reported-seizure' as const } : {}),
-    summary: seizure ? 'Wearer explicitly reports a current seizure; help requested. Reported, not sensor-confirmed.'
-      : 'Wearer explicitly requested help during a wellbeing conversation.' }, transcript, source, event);
+    summary: seizure ? 'Patient reports a current seizure; help requested. Reported, not sensor-confirmed.'
+      : 'Patient requested help during a daily check-in conversation.' }, transcript, source, event);
   const pending = wellbeing.replyNeeded(); if (pending) wellbeing.markIncidentRouted(pending.id);
   prepareIncident(controller.active() ?? i); return true;
 }
@@ -284,9 +293,11 @@ function broadcast(): void {
 }
 function prepareIncident(i: Incident): void {
   const observations = controller.conversation(i.id);
-  const key = JSON.stringify([i.id, observations.filter(m => m.speaker === 'wearer').map(m => m.id)]);
+  const contextKey = (incident: Incident) => JSON.stringify([incident.id, incident.evidence.window?.completedAtMs ?? null,
+    controller.conversation(incident.id).filter(m => m.speaker === 'wearer').map(m => m.id)]);
+  const key = contextKey(i);
   const stillCurrent = () => !stopping && handoffKey === key && controller.active()?.id === i.id
-    && JSON.stringify([i.id, controller.conversation(i.id).filter(m => m.speaker === 'wearer').map(m => m.id)]) === key;
+    && contextKey(controller.active()!) === key;
   if (handoffKey !== key) {
     handoffKey = key;
     void healthForIncident(i).then(h => buildHandoffDetailed(i, h, observations)).then(handoff => {
@@ -345,7 +356,7 @@ async function providerWorker(channel: MessageLane): Promise<void> {
     const recipientId = a.recipientId;
     const phone = wearerAction ? wearerPhone : responders.find(r => r.id === recipientId)?.phone;
     if (!phone) { controller.finishAction(a.id, 'failed', wearerAction
-      ? 'No approved wearer phone configured; wearer iMessage was not sent.' : 'No approved phone configured; message not sent.'); return; }
+      ? 'No approved patient phone configured; iMessage was not sent.' : 'No approved phone configured; message not sent.'); return; }
     let prepared = a.text;
     if (locationPublicUrl && !prepared.includes('/share-location#grant=')) {
       if (a.type === 'wearer_checkin') prepared += `\n\nShare where you are (optional):\n${shareLink(`action:${a.id}`, 'wearer', a.incidentId)}`;
@@ -444,7 +455,18 @@ function execute(c: Command): { calibratedSources: Source[] } | undefined {
       if (!sources.length) throw new PolicyError('Calibration requires one second of continuous still samples; stop moving and try again.');
       trials.record('calibration', { sources }); return { calibratedSources: sources };
     }
-    case 'reset': controller.reset(); motion.reset({ preserveCalibration: true }); wiliAssessment.reset(); shakingAssessment.reset(); trials.record('motion.reset', { clocks: false, cooldown: true, preserveCalibration: true }); handoffKey = null; break;
+    case 'reset': {
+      if (c.readyImmediately !== undefined && typeof c.readyImmediately !== 'boolean') throw new PolicyError('Invalid reset readiness option.');
+      controller.reset();
+      eventCapture = null;
+      teaching.cancel();
+      const fast = c.readyImmediately === true;
+      motion.reset({ preserveCalibration: true, cooldown: !fast });
+      wili.clearObservations();
+      wiliAssessment.reset({ cooldown: !fast }); earlyCheckinAssessment.reset({ cooldown: !fast }); shakingAssessment.reset({ cooldown: !fast });
+      if (fast) { wearableIdleIncidentId = controller.latest()?.id ?? null; checkinAudio = null; }
+      trials.record('motion.reset', { clocks: false, cooldown: !fast, preserveCalibration: true }); handoffKey = null; break;
+    }
     default: throw new PolicyError('Unsupported command.');
   }
 }
@@ -490,7 +512,7 @@ const server = createServer(async (req, res) => {
       if (findMyEnabled && findMy.status().configured && wearerPhone) {
         await requestBody(req);
         const chatId = acceptedWearerChat();
-        if (!chatId) return json(res, 409, { error: 'The approved wearer must have an accepted Photon conversation first.' });
+        if (!chatId) return json(res, 409, { error: 'The approved patient must have an accepted Photon conversation first.' });
         const queued = findMyRequests.queue(wearerFindMyKey(chatId),
           { role: 'wearer', address: wearerPhone, name: controller.wearerName }, chatId);
         broadcast(); return json(res, 200, { ok: true, queued, location: locationView() });
@@ -530,6 +552,24 @@ const server = createServer(async (req, res) => {
       if (!authorized(req)) return json(res, 401, { error: 'Operator/pairing token required.' });
       const result = execute(await commandBody(req)); broadcast(); return json(res, 200, { ok: true, ...result });
     }
+    if (url.pathname === '/api/teaching') {
+      if (!authorized(req)) return json(res, 401, { error: 'Operator token required.' });
+      if (req.method === 'GET') return json(res, 200, teaching.view());
+      if (req.method === 'POST') {
+        const body = await requestBody(req) as { action?: unknown; id?: unknown; label?: unknown };
+        if (body?.action === 'start') {
+          if (controller.active()) throw new PolicyError('Reset or finish the current incident before recording practice movements.');
+          teaching.start(wili, motion);
+        } else if (body?.action === 'label') teaching.label(body.id, body.label);
+        else if (body?.action === 'cancel') {
+          teaching.cancel(); motion.reset({ preserveCalibration: true, cooldown: false }); wili.clearObservations();
+          wiliAssessment.reset({ cooldown: false }); earlyCheckinAssessment.reset({ cooldown: false }); shakingAssessment.reset({ cooldown: false });
+        }
+        else throw new PolicyError('Invalid teaching action.');
+        return json(res, 200, teaching.view());
+      }
+      return json(res, 405, { error: 'Use GET or POST.' });
+    }
     if (url.pathname === '/api/patient-record' && req.method === 'GET') {
       if (!authorized(req)) return json(res, 401, { error: 'Patient record access requires the operator token.' });
       const id = url.searchParams.get('incidentId');
@@ -546,7 +586,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === '/api/wellbeing/checkin' && req.method === 'POST') {
       if (!authorized(req)) return json(res, 401, { error: 'Operator token required.' });
       if (controller.active()) return json(res, 409, { error: 'The current incident takes priority. Try after it is resolved.' });
-      if (!wellbeing.view().enabled) return json(res, 503, { error: 'Configure the approved wearer and enable daily wellbeing.' });
+      if (!wellbeing.view().enabled) return json(res, 503, { error: 'Configure the approved patient and enable daily wellbeing.' });
       await requestBody(req);
       const queued = wellbeing.queueDailyCheckin(); broadcast();
       return json(res, 200, { ok: true, queued, wellbeing: wellbeing.view() });
@@ -637,7 +677,7 @@ const server = createServer(async (req, res) => {
       motion.reset({ clocks: true, cooldown: false, preserveCalibration: !legacyPhone }); trialPinged.clear();
       if (!legacyPhone) {
         // New paired trials use only subsequent measurements; calibration stays session-bound.
-        wili.resetForTrial(); wiliAssessment.reset({ cooldown: false });
+        wili.resetForTrial(); wiliAssessment.reset({ cooldown: false }); earlyCheckinAssessment.reset({ cooldown: false });
         if (bodyView.connected && trialWiliHello) trials.record('device.hello', trialWiliHello, 'body-wili');
       }
       broadcast(); return json(res, 200, view);
@@ -692,13 +732,14 @@ const server = createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': avatarFile.mime, 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' });
       return res.end(readFileSync(avatarFile.file));
     }
-    const allowed = new Set(['/index.html', '/landing.html', '/styles.css', '/app.js', '/dashboard-view.js', '/care-summary.js', '/landing.js', '/storyboard.html', '/storyboard.js',
+    const allowed = new Set(['/index.html', '/landing.html', '/styles.css', '/app.js', '/teach.js', '/dashboard-view.js', '/care-summary.js', '/landing.js', '/storyboard.html', '/storyboard.js',
       '/ehr.html', '/ehr.js', '/ehr.css',
       '/twin/lab.html', '/twin/lab.js', '/twin/lab.css', '/twin/kinematics.js',
       '/vendor/location-engine.js', '/media/location/apartment-111.glb', '/media/location/provenance.json',
       '/brand.html', '/brand.css', '/brand.js', '/favicon.svg', '/favicon.ico', '/favicon-16.png', '/favicon-32.png', '/apple-touch-icon.png',
       '/media/brand/lifeline-mark.svg', '/media/brand/lifeline-mark-white.svg', '/media/brand/lifeline-logo-original.png', '/media/brand/identity-board.png', '/media/brand/color-tokens.json', '/media/brand/lifeline-brand-kit.zip',
       '/media/ehr-workspace.png', '/media/lifeline-logo.png',
+      '/media/avatars/doctor-chen.jpg', '/media/avatars/care-team.jpg',
       '/share-location.html', '/share-location.js', '/share-location.css',
       '/fonts/cormorant-regular.ttf', '/fonts/cormorant-italic.ttf', '/fonts/dm-sans-regular.ttf', '/fonts/aspekta-variable.woff2']);
     const pageRoutes: Record<string, string> = { '/': '/landing.html', '/dashboard': '/index.html',
@@ -740,23 +781,22 @@ server.on('upgrade', (req, socket, head) => {
       let wellbeingSignature = '';
       const sendContext = () => {
         if (!protocol.hello || ws.readyState !== WebSocket.OPEN) return;
-        const i = controller.latest();
+        const latest = controller.latest();
+        const i = latest?.id === wearableIdleIncidentId ? null : latest;
         const signature = `${i?.id ?? ''}:${i?.version ?? ''}`;
         if (signature === contextSignature) return;
         contextSignature = signature;
         const ownerName = responders.find(r => r.id === i?.ownerId)?.name ?? null;
         const screens: Record<string, string> = {
           CONFIRMING: 'CHECKING ON YOU\nGREEN: I AM OKAY\nRED: I NEED HELP',
-          HELP_REQUESTED: 'HELP REQUESTED\nWAITING FOR RESPONDER',
-          ACKNOWLEDGED: `${ownerName ?? 'RESPONDER'} ACCEPTED\nDEPARTURE NOT REPORTED`,
-          RESPONDER_EN_ROUTE: `${ownerName ?? 'RESPONDER'} EN ROUTE`,
-          ON_SCENE: `${ownerName ?? 'RESPONDER'} ON SCENE`,
-          RESOLVED: 'RESOLVED\nOUTCOME RECORDED',
-          CANCELLED_FALSE_ALARM: i?.resolutionActor === 'development-operator'
-            ? 'CHECK-IN ENDED\nREADY'
-            : 'CHECK-IN CLOSED\nEXPLICIT CONTROL CONFIRMED',
+          HELP_REQUESTED: 'GETTING HELP\nTRY TO STAY STILL',
+          ACKNOWLEDGED: `${(ownerName ?? 'HELP').toUpperCase()} ANSWERED\nI AM HERE WITH YOU`,
+          RESPONDER_EN_ROUTE: `${(ownerName ?? 'HELP').toUpperCase()} IS ON THE WAY`,
+          ON_SCENE: `${(ownerName ?? 'HELP').toUpperCase()} IS HERE`,
+          RESOLVED: 'TAKE CARE',
+          CANCELLED_FALSE_ALARM: 'CHECK-IN CLOSED',
         };
-        const voices: Record<string, string> = { CONFIRMING: i?.evidence.eventType === 'sustained-shaking' ? 'MOVEMENT' : 'CHECKIN', HELP_REQUESTED: 'HELP', ACKNOWLEDGED: 'ACCEPTED',
+        const voices: Record<string, string> = { CONFIRMING: ['sustained-shaking', 'possible-balance-loss'].includes(i?.evidence.eventType ?? '') ? 'MOVEMENT' : 'CHECKIN', HELP_REQUESTED: 'HELP', ACKNOWLEDGED: 'ACCEPTED',
           RESPONDER_EN_ROUTE: 'ENROUTE', ON_SCENE: 'ARRIVED', RESOLVED: 'RESOLVED' };
         ws.send(JSON.stringify({ type: 'incident.context', sessionId: protocol.hello.sessionId,
           incidentId: i?.id ?? null, checkinId: i?.checkinId ?? null, phase: i?.phase ?? null,
@@ -823,6 +863,10 @@ server.on('upgrade', (req, socket, head) => {
             return;
           }
           if (packet.type === 'button.press') {
+            if (packet.action === 'reset') {
+              execute({ type: 'reset', readyImmediately: true });
+              sendContext(); sendWellbeingContext(); broadcast(); return;
+            }
             const i = controller.boardButton(packet.action, packet.incidentId, packet.checkinId, `${packet.sessionId}:${packet.eventId}`);
             if (i && controller.active()?.id === i.id) prepareIncident(i);
             sendContext(); broadcast(); return;
@@ -918,11 +962,29 @@ server.on('upgrade', (req, socket, head) => {
 });
 live.on('connection', ws => ws.on('error', () => ws.close()));
 const heartbeat = setInterval(() => {
-  controller.tick(); simulatedDispatch.tick(); const assessedAt = performance.now(), evaluated = !controller.active(); const evidence = !evaluated ? null
-    : legacyPhone ? motion.candidate() : wiliAssessment.candidate(wili, motion, assessedAt) ?? shakingAssessment.candidate(wili, motion, assessedAt);
+  controller.tick(); simulatedDispatch.tick(); const assessedAt = performance.now();
+  const collectingPractice = teaching.practiceMode;
+  teaching.tick(wili, motion, assessedAt);
+  const evaluated = !controller.active() && !collectingPractice;
+  const evidence = !evaluated ? null
+    : legacyPhone ? motion.candidate() : wiliAssessment.candidate(wili, motion, assessedAt)
+      ?? (selectedDetectionProfile === 'early-checkin' ? earlyCheckinAssessment.candidate(wili, motion, assessedAt) : null)
+      ?? shakingAssessment.candidate(wili, motion, assessedAt);
   trials.record('assessment', { candidate: evidence, evaluated,
-    detector: legacyPhone ? 'legacy-core-motion' : evidence?.shaking?.detector ?? 'wili-waist-provisional-v1' }, undefined, assessedAt);
-  if (evidence) prepareIncident(controller.trigger(evidence));
+    detector: legacyPhone ? 'legacy-core-motion' : evidence?.onset?.detector ?? evidence?.shaking?.detector
+      ?? (selectedDetectionProfile === 'early-checkin' ? 'wili-waist-early-checkin-v1' : 'wili-waist-provisional-v1') }, undefined, assessedAt);
+  if (evidence) {
+    const incident = controller.trigger(evidence);
+    eventCapture = { incidentId: incident.id, capture: new EventWindowCapture(evidence, assessedAt) };
+    prepareIncident(incident);
+  }
+  if (eventCapture) {
+    if (controller.active()?.id !== eventCapture.incidentId) eventCapture = null;
+    else {
+      const window = eventCapture.capture.collect(wili, motion, assessedAt);
+      if (window) { controller.recordEventWindow(eventCapture.incidentId, window); eventCapture = null; }
+    }
+  }
   const active = controller.active(); if (active) prepareIncident(active);
   if (Date.now() >= nextWellbeingTick) {
     nextWellbeingTick = Date.now() + 10_000;

@@ -96,9 +96,12 @@ test('assessment freshness and frozen features use the recorded time despite lat
   assert.deepEqual(result.candidates[0].evidence, recorded);
 });
 
-test('clipped board peaks and missing paired clocks remain visible without a solo fallback or invented alignment', () => {
+test('clipped board peaks replay as at-least-full-scale candidates; missing paired clocks stay visible without a solo fallback', () => {
   const saturated = report(fixture({ peak: 1.99 }));
-  assert.equal(saturated.candidates.length, 0); assert.equal(saturated.discrepancyCount, 0);
+  assert.equal(saturated.candidates.length, 1); assert.equal(saturated.discrepancyCount, 0);
+  assert.equal(saturated.candidates[0].evidence.assessment?.impact.saturated, true);
+  assert.equal(saturated.candidates[0].evidence.assessment?.impact.totalG, 1.99);
+  assert.match(saturated.candidates[0].evidence.summary, /^Possible fall: ≥2\.00 g impact \(sensor limit\) with waist movement/);
   assert.equal(saturated.sourceMetrics[0].rawSaturatedSamples, 0);
   assert.equal(saturated.sourceMetrics[0].conservativelySaturatedSamples, 1);
   const noClock = report(fixture({ bodySync: false })); assert.equal(noClock.status, 'unscored-no-paired-alignment');

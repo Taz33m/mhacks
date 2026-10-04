@@ -9,7 +9,7 @@ export interface WiliHello {
   capabilities: { accelerometer: true; speaker: boolean; microphone: boolean; buttons: boolean };
 }
 export interface WiliButton {
-  type: 'button.press'; source: 'body-wili'; sessionId: string; eventId: string; action: 'help' | 'cancel' | 'rehearse';
+  type: 'button.press'; source: 'body-wili'; sessionId: string; eventId: string; action: 'help' | 'cancel' | 'rehearse' | 'reset';
   incidentId: string | null; checkinId: string | null;
 }
 export interface WiliAudioAck {
@@ -112,7 +112,7 @@ export function validDevicePacket(p: unknown): p is WiliDevicePacket {
     && ['prompting', 'listening', 'transcribing', 'complete', 'unavailable'].includes(p.stage);
   if (p.type === 'button.press') {
     return keys(p, ['type', 'source', 'sessionId', 'eventId', 'action', 'incidentId', 'checkinId'])
-      && wiliId(p.eventId) && typeof p.action === 'string' && ['help', 'cancel', 'rehearse'].includes(p.action)
+      && wiliId(p.eventId) && typeof p.action === 'string' && ['help', 'cancel', 'rehearse', 'reset'].includes(p.action)
       && nullableId(p.incidentId) && nullableId(p.checkinId) && (p.incidentId === null) === (p.checkinId === null)
       && (p.action !== 'cancel' || (wiliId(p.incidentId) && wiliId(p.checkinId)))
       && (p.action !== 'rehearse' || (p.incidentId === null && p.checkinId === null));
@@ -141,7 +141,7 @@ export function validHostPacket(p: unknown): p is WiliHostPacket {
       && (p.ownerName === undefined || p.ownerName === null || (typeof p.ownerName === 'string' && p.ownerName.length <= 100))
       && (p.dispatchMode === undefined || p.dispatchMode === 'live' || p.dispatchMode === 'simulated')
       && (p.statusText === undefined || (typeof p.statusText === 'string' && p.statusText.length <= 300))
-      && (p.voiceAsset === undefined || p.voiceAsset === null || ['CHECKIN', 'HELP', 'ACCEPTED', 'ENROUTE', 'ARRIVED', 'RESOLVED', 'OKAY'].includes(p.voiceAsset as string));
+      && (p.voiceAsset === undefined || p.voiceAsset === null || ['CHECKIN', 'MOVEMENT', 'HELP', 'ACCEPTED', 'ENROUTE', 'ARRIVED', 'RESOLVED', 'OKAY'].includes(p.voiceAsset as string));
   }
   return p.type === 'audio.command' && keys(p, ['type', 'sessionId', 'commandId', 'incidentId', 'checkinId', 'action', 'asset'])
     && wiliId(p.commandId) && wiliId(p.incidentId) && wiliId(p.checkinId)

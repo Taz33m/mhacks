@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { Action, ActionType, CheckinDecision, CheckinReply, ConversationMessage, DispatchMode, Evidence, HealthContext, Incident, Phase, ProviderInbound, Responder, TimelineEvent } from './contracts.ts';
 import { classifyCheckinReply } from './checkin.ts';
 import { phoneIdentity } from './identity.ts';
+import type { EventWindow } from './event-window.ts';
 
 export const terminal = (phase: Phase) => phase === 'RESOLVED' || phase === 'CANCELLED_FALSE_ALARM';
 type StoredIncident = Incident & { contacted: string[]; declined: string[] };
@@ -16,6 +17,17 @@ export interface ResponderQuestionPreparation {
   attempts: number; nextAttemptAt: number; createdAt: number; updatedAt: number;
   claimId?: string; detail: string | null; answerActionId?: string;
   generation?: 'ai' | 'degraded' | 'policy_refusal';
+}
+
+/** A care-team message is spoken to the patient only when it addresses them: it opens with their name
+ * ("Morgan, …" / "Morgan Rivera: …") or is a direct contact check ("Can you hear me?"). Everything else stays in chat. */
+export function addressedToPatient(text: string, patientName: string): boolean {
+  const opening = text.trim().toLowerCase();
+  if (/^(?:(?:can|could) you (?:still )?hear me|are you (?:there|ok|okay|alright|all right)|did you hear me)\b/.test(opening)) return true;
+  const full = patientName.trim().toLowerCase().replace(/\s+/g, ' ');
+  const names = [...new Set([full, full.split(' ')[0]])].filter(Boolean)
+    .map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return names.length > 0 && new RegExp(`^(?:${names.join('|')})\\s*[,:!—–-]\\s*\\S`).test(opening);
 }
 
 export class Controller {
@@ -138,9 +150,10 @@ export class Controller {
     return inserted ? a : null;
   }
   private notify(i: StoredIncident, text: string): void {
+    // Care-team status only. The patient hears and reads short, separate lines.
     for (const id of i.contacted) this.enqueue(i, 'status', id, text);
-    this.enqueue(i, 'wearer_status', null, text.split('\n')[0]);
   }
+  private get patientFirstName(): string { return this.wearerName.trim().split(/\s+/)[0] || 'the patient'; }
   private report(i: Incident, event?: ProviderInbound): void {
     if (!event) return;
     this.rememberInbound(event.messageId);
@@ -169,7 +182,7 @@ export class Controller {
       this.queueWearerReports(i, r.id);
     }
     this.save(i);
-    this.enqueue(i, 'wearer_status', null, `${i.id}: Help requested. No responder has accepted yet. ${eligible.length ? 'Approved contacts are being notified.' : 'No additional approved contact is available.'}`,
+    this.enqueue(i, 'wearer_status', null, eligible.length ? 'I’m getting help for you now. Try to stay still.' : 'I’m still trying to reach someone for you. Try to stay still.',
       `${i.id}:${i.version}:wearer_status:help`);
     if (!eligible.length) this.event(i, 'UNASSIGNED', 'policy', 'No additional approved responder is available; incident remains unresolved.');
   }
@@ -194,9 +207,9 @@ export class Controller {
         || !transcript.trim() || transcript.length > 500 || classifyCheckinReply(transcript) !== 'help_requested'
         || !['freewili-local-speech', 'photon-imessage'].includes(source)
         || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(transcript))
-        throw new PolicyError('A current, explicit wearer help report is required.');
+        throw new PolicyError('A current, explicit patient help report is required.');
       if (source === 'photon-imessage' && (!event?.messageId || !event.chatId || !event.lineId
-        || this.seenInbound(event.messageId))) throw new PolicyError('A fresh bound wearer message is required.');
+        || this.seenInbound(event.messageId))) throw new PolicyError('A fresh bound patient message is required.');
       return this.triggerInternal(evidence, { transcript: transcript.trim(), source, event });
     });
   }
@@ -220,9 +233,10 @@ export class Controller {
         'Responder actions are handled by local dispatch.');
       this.phase(i, 'CONFIRMING', 'policy', 'Current check-in opened. Explicit cancellation is required.');
       const noticed = evidence.eventType === 'sustained-shaking' ? 'I noticed sustained unusual movement.'
-        : evidence.eventType === 'reported-seizure' ? 'You reported a seizure. I am requesting help.' : 'I detected a possible fall.';
+        : evidence.eventType === 'possible-balance-loss' ? 'I noticed a possible loss of balance.'
+        : evidence.eventType === 'reported-seizure' ? 'You reported a seizure. I am requesting help.' : 'I noticed a possible fall.';
       this.enqueue(i, 'checkin', null, `${noticed} Do you need help? You can say I need help, or press the green button on WILi if you don't need help.`);
-      this.enqueue(i, 'wearer_checkin', null, `LIFELINE ${i.id}: ${noticed} Are you okay?\nReply here with what happened, or “I need help”. If you don't need help, press the green button on WILi before the check-in ends.`);
+      this.enqueue(i, 'wearer_checkin', null, `${this.patientFirstName}, ${noticed.startsWith('I ') ? noticed : noticed.charAt(0).toLowerCase() + noticed.slice(1)} Are you okay? Reply here if you need help, or press the green button on WILi if you’re fine.`);
       if (report) {
         this.event(i, 'CHECKIN_REPLY', report.source, JSON.stringify({ transcript: report.transcript, decision: 'help_requested' }));
         this.addConversation({ id: randomUUID(), incidentId: i.id, speaker: 'wearer', speakerName: this.wearerName,
@@ -238,7 +252,7 @@ export class Controller {
       if (i.checkinId !== checkinId || i.phase !== 'CONFIRMING' || this.now() >= i.checkinDeadline)
         throw new PolicyError('Cancellation must target the current unresolved check-in. After escalation, responder outcome is required.');
       i.progressDeadline = null; this.phase(i, 'CANCELLED_FALSE_ALARM', 'subject-control', 'Subject explicitly cancelled the current check-in.'); this.stopPending(i);
-      this.enqueue(i, 'wearer_status', null, `${i.id}: You explicitly cancelled this check-in. No further check-in alerts will be sent.`);
+      this.enqueue(i, 'wearer_status', null, 'Okay, check-in closed. I’m here if you need me.');
     });
   }
   recordCheckinReply(reply: CheckinReply): CheckinDecision {
@@ -261,16 +275,22 @@ export class Controller {
       const transcript = reply.transcript.trim();
       if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(transcript)) throw new PolicyError('A check-in reply cannot contain control characters.');
       const decision = classifyCheckinReply(transcript);
+      const reportsRecovery = /\b(?:caught myself|didn['’]?t fall|did not fall)\b/i.test(transcript);
+      const reportsFall = /\bi (?:fell|have fallen|just fell)\b/i.test(transcript);
+      const interpretation = reportsRecovery && !reportsFall ? 'reported-recovery'
+        : reportsFall && !reportsRecovery ? 'reported-fall' : 'unclassified';
+      i.evidence.patientReport = { text: transcript, source, at: this.now(), interpretation };
+      this.save(i);
       this.event(i, 'CHECKIN_REPLY', source, JSON.stringify({ transcript, decision }));
       this.addConversation({ id: randomUUID(), incidentId: i.id, speaker: 'wearer', speakerName: this.wearerName,
         text: transcript, source, at: this.now(), delivery: 'recorded' });
       if (decision === 'help_requested') this.requestHelp(i, source === 'photon-imessage'
-        ? 'Wearer requested help in the current Photon iMessage check-in.' : 'Subject requested help in the current spoken check-in.');
+        ? 'Patient requested help in the current iMessage check-in.' : 'Subject requested help in the current spoken check-in.');
       if (source === 'photon-imessage' && inboundId && decision === 'confirmation_required') {
         const inserted = this.enqueue(i, 'wearer_ack', null,
           "Glad you're okay. To close this check-in, press the green 'I DON'T NEED HELP' button on WILi.",
           `${i.id}:${i.version}:wearer_ack:${JSON.stringify([i.checkinId, inboundId])}`);
-        if (!inserted) throw new Error('Wearer acknowledgement was not persisted; inbound ID remains unprocessed.');
+        if (!inserted) throw new Error('Patient acknowledgement was not persisted; inbound ID remains unprocessed.');
         if (event?.chatId && event.lineId) {
           inserted.replyToMessageId = inboundId; inserted.replyChatId = event.chatId; inserted.replyLineId = event.lineId;
           this.saveAction(inserted);
@@ -291,14 +311,15 @@ export class Controller {
     return r.id;
   }
   private simulatedReport(i: Incident, r: Responder, text: string, delivery: 'queued' | 'recorded' = 'queued'): void {
+    const relay = delivery === 'queued' && addressedToPatient(text, this.wearerName);
     const message: StoredConversation = { id: randomUUID(), incidentId: i.id, speaker: 'responder',
-      speakerName: r.name, responderId: r.id, text, source: 'simulated-dispatch', at: this.now(), delivery };
+      speakerName: r.name, responderId: r.id, text, source: 'simulated-dispatch', at: this.now(), delivery: relay ? 'queued' : 'recorded' };
     this.addConversation(message);
     this.event(i, 'RESPONDER_REPORT', 'simulated-dispatch', JSON.stringify({
       conversationId: message.id, responderId: r.id, transcript: text, phase: i.phase, source: 'simulated-dispatch',
     }));
     // Keep each phase notice and its attributed reply in one genuine wearer send.
-    const notice = delivery === 'queued' ? this.actions(i.id).findLast(a => a.type === 'wearer_status'
+    const notice = relay ? this.actions(i.id).findLast(a => a.type === 'wearer_status'
       && a.status === 'queued' && this.actionPermitted(a)) : null;
     if (notice) {
       notice.text += `\n\n${r.name}: “${text}”`; this.saveAction(notice);
@@ -313,7 +334,7 @@ export class Controller {
     }
     else if (stage === 'depart' || stage === 'arrive') this.progress(id, responderId, stage, undefined, 'simulated-dispatch');
     else if (stage === 'resolve') this.resolve(id, responderId,
-      `${this.responder(responderId).name} reached the wearer and stayed with them while arranging further assistance.`,
+      `${this.responder(responderId).name} reached the patient and stayed with them while arranging further assistance.`,
       undefined, 'simulated-dispatch');
     else throw new PolicyError('Unknown simulated responder stage.');
   }
@@ -332,9 +353,10 @@ export class Controller {
       this.phase(i, 'ACKNOWLEDGED', actor, `${r.name} accepted responsibility; departure is not yet confirmed.`);
       this.stopPending(i);
       this.notify(i, `${r.name} accepted ${i.id}. Departure has not been confirmed.\nAssigned responder ${r.name}: reply DEPART ${i.id} when leaving, ARRIVED ${i.id} when on scene, or DECLINE ${i.id} if unavailable. Other contacts: keep available for updates.`);
-      this.addNaturalGuidance(i, r.id, 'Reply directly to this message with “leaving”, “arrived”, or “I can’t help”. You can also ask about the recorded health information.');
+      this.enqueue(i, 'wearer_status', null, `${r.name} has answered your alert.`);
+      this.addNaturalGuidance(i, r.id, `Reply directly to this message with “leaving”, “arrived”, or “I can’t help”. Start a message with “${this.patientFirstName},” and WILi will say it to ${this.patientFirstName}. You can also ask about the recorded health information.`);
       this.report(i, event);
-      if (source === 'simulated-dispatch') this.simulatedReport(i, r, 'I received your alert and accepted. I’m getting ready to come to you.');
+      if (source === 'simulated-dispatch') this.simulatedReport(i, r, 'On it. Heading over now.');
     });
   }
   private addNaturalGuidance(i: Incident, ownerId: string, text: string): void {
@@ -356,12 +378,13 @@ export class Controller {
       this.notify(i, stage === 'depart'
         ? `${r.name} reported departure for ${i.id}.\nAssigned responder ${r.name}: reply ARRIVED ${i.id} when on scene, or DECLINE ${i.id} if unavailable. Other contacts: keep available for updates.`
         : `${r.name} reported arrival for ${i.id}. An outcome has not been recorded.\nAssigned responder ${r.name}: reply RESOLVED ${i.id} <concrete outcome>, replacing <concrete outcome> with what you observed and what help was provided. If unable to continue, reply DECLINE ${i.id}.`);
+      this.enqueue(i, 'wearer_status', null, stage === 'depart' ? `${r.name} is on the way.` : `${r.name} has arrived.`);
       this.addNaturalGuidance(i, r.id, stage === 'depart'
-        ? 'Reply directly with “arrived” when you are with the wearer.'
+        ? 'Reply directly with “arrived” when you are with the patient.'
         : 'Reply directly with “resolved: ” followed by what you observed and what help was provided.');
       this.report(i, event);
       if (source === 'simulated-dispatch') this.simulatedReport(i, r, stage === 'depart'
-        ? 'I’m coming downstairs now. Don’t try to stand.' : 'I’m here with you now. I’ll stay while we arrange further help.');
+        ? `${this.patientFirstName}, I’m coming downstairs now. Try not to move.` : 'I’m with them now.');
     });
   }
   decline(id: string, responderId: string, event?: ProviderInbound): void {
@@ -437,10 +460,18 @@ export class Controller {
         }
         for (const action of this.actions(i.id).filter(a => a.type === 'handoff' && a.recipientId === recipient
           && ['queued', 'failed'].includes(a.status))) {
-          action.status = 'cancelled'; action.providerResult = 'Superseded by a handoff containing newer wearer reports.'; this.saveAction(action);
+          action.status = 'cancelled'; action.providerResult = 'Superseded by a handoff containing newer patient reports.'; this.saveAction(action);
         }
         this.enqueue(i, 'handoff', recipient, text, key);
       }
+    });
+  }
+  recordEventWindow(incidentId: string, window: EventWindow): void {
+    this.transaction(() => {
+      const i = this.current(incidentId);
+      if (i.evidence.window) return;
+      i.evidence.window = structuredClone(window); i.version++; i.updatedAt = this.now(); this.save(i);
+      this.event(i, 'MOTION_WINDOW_CAPTURED', 'measured-sensors', window.summary);
     });
   }
   reset(): void {
@@ -518,7 +549,7 @@ export class Controller {
       } else if (!actions.some(a => a.type === 'alert')) return false;
       const message: StoredConversation = { id: randomUUID(), incidentId: i.id, speaker: 'responder',
         speakerName: r.name, responderId: r.id, text: event.text.trim(), source: 'photon-imessage', at: this.now(),
-        delivery: 'queued', ...(event.providerTimestamp !== undefined ? { providerTimestamp: event.providerTimestamp } : {}) };
+        delivery: addressedToPatient(event.text, this.wearerName) ? 'queued' : 'recorded', ...(event.providerTimestamp !== undefined ? { providerTimestamp: event.providerTimestamp } : {}) };
       this.addConversation(message); this.rememberInbound(event.messageId);
       this.event(i, 'CONVERSATION_MESSAGE', r.id, JSON.stringify({ conversationId: message.id,
         transcript: message.text, speaker: 'responder', source: message.source, providerTimestamp: event.providerTimestamp ?? null }));
@@ -597,9 +628,9 @@ export class Controller {
       if (!active || active.phase !== 'CONFIRMING' || this.now() >= active.checkinDeadline)
         throw new PolicyError('Board cancellation requires the current check-in before escalation.');
       active.progressDeadline = null;
-      this.phase(active, 'CANCELLED_FALSE_ALARM', 'freewili-button', 'Wearer explicitly cancelled using the board button.');
+      this.phase(active, 'CANCELLED_FALSE_ALARM', 'freewili-button', 'Patient cancelled the check-in with the green button.');
       this.stopPending(active); this.rememberInbound(inboundId);
-      this.enqueue(active, 'wearer_status', null, `${active.id}: You explicitly cancelled this check-in on FREE-WILi.`);
+      this.enqueue(active, 'wearer_status', null, 'Okay, check-in closed. I’m here if you need me.');
       return active;
     });
   }

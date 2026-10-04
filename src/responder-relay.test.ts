@@ -30,7 +30,7 @@ test('natural untargeted human reply is recorded once without accepting or advan
     const message = c.conversation(i.id)[0];
     assert.equal(message.speaker, 'responder'); assert.equal(message.speakerName, 'Maya');
     assert.equal(message.text, event.text); assert.equal(message.source, 'photon-imessage');
-    assert.equal(message.at, 1000); assert.equal(message.delivery, 'queued');
+    assert.equal(message.at, 1000); assert.equal(message.delivery, 'recorded', 'care-team text is not spoken to the patient');
     const audit = JSON.parse(c.events(i.id).findLast(e => e.type === 'CONVERSATION_MESSAGE')!.detail);
     assert.equal(audit.transcript, event.text); assert.equal(audit.providerTimestamp, 999);
     assert.deepEqual(c.active(), before, 'free text cannot change owner, phase, version, or deadline');
@@ -57,7 +57,7 @@ test('direct wearer communication questions queue attributed speech without impl
   const { c, i } = setup();
   try {
     const before = c.active();
-    for (const text of ['I’m coming downstairs now. Can you hear me?', 'Are you there?', 'Did you hear me?',
+    for (const text of ['Wearer, I’m coming downstairs now. Can you hear me?', 'Are you there?', 'Did you hear me?',
       'Could you hear me clearly?', 'Can you hear me']) {
       assert.equal(handleResponderRelay(incoming(text, { targetMessageId: 'alert-maya' }), c), true, text);
       const speech = c.claimResponderSpeech('offline-board-session');

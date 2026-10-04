@@ -329,6 +329,12 @@ class AmbientTests(unittest.TestCase):
         model.context('HELP_REQUESTED', 'Maya')
         self.assertEqual(model.view(0)[1], '')
 
+    def test_waiting_for_help_holds_one_frame_but_listening_still_uses_meter(self):
+        model = AmbientState()
+        model.context('HELP_REQUESTED', '', 0)
+        self.assertEqual({model.view(t) for t in (0, .25, .5, 1, 2, 10)}, {('reaching', '', 0)})
+        self.assertEqual(model.view(1, True)[0], 'listening')
+
     def test_meter_uses_pcm_and_decays_to_silence(self):
         model = AmbientState()
         model.pcm([12000, -12000] * 100, 1)
@@ -374,7 +380,9 @@ class AmbientTests(unittest.TestCase):
         gateway.ui.model.context('HELP_REQUESTED'); gateway.ui_tick()
         clock[0] += .1; gateway.ui_tick()
         self.assertEqual(len(serial.calls), 1)
-        clock[0] += .5; serial.fail_image = True; gateway.ui_tick()
+        # Dispatch now holds its frame; the next keep-visible refresh still
+        # detects a failed image command and falls back to text.
+        clock[0] += 2.1; serial.fail_image = True; gateway.ui_tick()
         self.assertFalse(gateway.ui.enabled)
         self.assertEqual(serial.calls[-1][0], 'display')
 

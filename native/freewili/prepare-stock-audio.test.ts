@@ -75,7 +75,7 @@ test('explicit local fallback has separate truthful provenance even with an Elev
   assert.equal(generated, 7); assert.equal(result.manifest.provider, 'local');
   assert.equal(result.manifest.source, 'macOS local speech'); assert.equal(result.manifest.voiceId, 'Samantha');
   assert.equal(result.manifest.speed, null);
-  assert.match(result.manifest.prompts.ACCEPTED, /not reported leaving/);
+  assert.match(result.manifest.prompts.ACCEPTED, /Maya has answered/);
   assert.equal((await prepareStockAudio(directory, { provider: 'local', localSpeech: async () => { throw new Error('Must use cache.'); } })).cached, true);
 });
 

@@ -9,7 +9,7 @@ import type { ProviderInbound } from './contracts.ts';
 
 const responders = [{ id: 'maya', name: 'Maya', phone: '+12025550101' }];
 const wearerText = "I fell pretty hard. My ankle hurts and I can't stand up.";
-const responderText = 'I’m coming downstairs now. Don’t try to stand.';
+const responderText = 'Tazeem, I’m coming downstairs now. Don’t try to stand.';
 function setup(path = ':memory:') {
   let now = 1000;
   const c = new Controller(path, responders, () => now, { checkinMs: 20000, acceptMs: 60000, progressMs: 120000 }, { wearerName: 'Tazeem' });

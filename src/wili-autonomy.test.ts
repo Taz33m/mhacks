@@ -106,7 +106,7 @@ test('paired stock acceleration and waist motion open check-in without an operat
     assert.equal(requested.conversation?.some(m => m.text === transcript && m.source === 'freewili-local-speech'), true);
     assert.equal(requested.timeline.some(e => e.type === 'DEVICE_BUTTON' || e.actor === 'development-operator'), false);
     await waitFor(() => contexts.some(c => c.incidentId === confirming.id && c.phase === 'HELP_REQUESTED'
-      && /WAITING FOR RESPONDER/.test(c.statusText ?? '')));
+      && /GETTING HELP/.test(c.statusText ?? '')));
   } finally {
     intervals.forEach(clearInterval); sockets.forEach(socket => socket.terminate());
     if (child.exitCode === null) child.kill('SIGTERM');

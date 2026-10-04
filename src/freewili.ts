@@ -75,6 +75,8 @@ export class FreeWili {
 
   constructor(now = () => performance.now()) { this.now = now; }
   connected(): void { this.online = true; }
+  /** Operator run boundary: clear old motion evidence without losing the live clock/session. */
+  clearObservations(): void { this.points = []; }
   /** Recording boundary: discard earlier evidence, keeping the physical boot and replay guards. */
   resetForTrial(): void {
     this.lastReceived = null; this.latest = null; this.points = []; this.clearClock();

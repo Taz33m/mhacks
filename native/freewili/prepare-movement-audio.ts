@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { elevenLabsSpeech, stockVoiceSelection, stockVoiceSpeed } from './prepare-stock-audio.ts';
 import { convertPreparedAudioToOgWav, readMonoPcm16Wav } from './audio.ts';
 
-export const MOVEMENT_PROMPT = 'I noticed unusual movement. Do you need help?';
+export const MOVEMENT_PROMPT = 'Morgan, I noticed unusual movement. Can you answer me?';
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 /** Optional eighth prompt; does not invalidate or replace the seven working fall-loop clips. */
 export async function prepareMovementAudio(directory = resolve(process.env.LIFELINE_WILI_AUDIO_DIR || 'output/freewili-audio'),

@@ -5,8 +5,8 @@ import { careHighlights } from './care-summary.js';
   'use strict';
   const $ = (selector, scope = document) => scope.querySelector(selector);
   const workspaceLinks = [...document.querySelectorAll('.rail-link')];
-  const viewNames = { motion: 'Motion', location: 'Location', status: 'Status', medical: 'Medical', conversation: 'Conversation', activity: 'Audit trail', connections: 'Connections', developer: 'Controls' };
-  const viewIntros = { status: 'Their current condition. Their own words. Who is helping.', location: 'Shared position, room context and the way to reach them.', conversation: 'Private conversations, connected by one incident.',
+  const viewNames = { motion: 'Motion', location: 'Location', status: 'Status', medical: 'Medical', conversation: 'Conversation', activity: 'Audit trail', connections: 'Connections', teaching: 'Teach LIFELINE', developer: 'Controls' };
+  const viewIntros = { teaching: 'Record a movement. Label what happened. Build a measured dataset.', status: 'Their current condition. Their own words. Who is helping.', location: 'Shared position, room context and the way to reach them.', conversation: 'Private conversations, connected by one incident.',
     motion: 'Impact, movement and the signals behind an incident.', medical: 'Medications, conditions, allergies and the context that matters.',
     activity: 'Recorded events, message attempts, and outcomes.', connections: 'Hardware and services, with diagnostics on demand.', developer: 'Start. Speak. LIFELINE takes it from there.' };
   let developerEnabled = ['#developer', '#dev'].includes(location.hash);
@@ -330,6 +330,12 @@ import { careHighlights } from './care-summary.js';
   }
 
   function renderWili() {
+    const window = snapshot?.incident?.evidence?.window;
+    text('#motion-event-window', window?.summary || (!snapshot?.eventUnderstanding ? 'Event-window analysis is prepared; activation is pending the next backend restart.' : snapshot?.incident?.evidence?.kind === 'cross-body' && !['RESOLVED', 'CANCELLED_FALSE_ALARM'].includes(snapshot.incident.phase)
+      ? 'Collecting motion around the incident. Assessment follows the four-second observation window.'
+      : 'A new incident retains 2 seconds before and 4 seconds after onset. No missing measurements are filled in.'));
+    const report = snapshot?.conversation?.findLast(message => message.speaker === 'wearer');
+    text('#motion-patient-report', report ? `Patient report (${report.source}): “${report.text}”` : 'Patient report: not yet available.');
     const wili = snapshot?.wili;
     const at = Date.now();
     const elapsed = lastStateReceived ? Math.max(0, at - lastStateReceived) : 0;
@@ -1952,12 +1958,12 @@ import { careHighlights } from './care-summary.js';
   $('#calibration-guide').addEventListener('close', () => { if (calibrationGuide) closeCalibrationGuide(); });
   $('#guide-primary').addEventListener('click', guidePrimaryAction);
   document.addEventListener('visibilitychange', () => { if (document.hidden && ['still', 'requesting', 'verifying', 'calibrated', 'movement'].includes(calibrationGuide?.stage)) failCalibrationGuide('Keep this screen visible during calibration. Retry when ready.'); });
-  $('#reset').addEventListener('click', () => command({ type: 'reset' }));
+  $('#reset').addEventListener('click', () => command({ type: 'reset', readyImmediately: true }));
   window.addEventListener('pagehide', () => { closeCalibrationGuide(); clearTimeout(reconnectTimer); socket = null; contextRequest?.controller.abort(); contextRequest = null; patientRequest?.controller.abort(); patientRequest = null; patientQuestionRequest?.controller.abort(); patientQuestionRequest = null; });
 
   $('#phase-list').innerHTML = phases.map(([, label]) => `<li>${label}</li>`).join('');
   updateControls();
-  if (location.hash === '#calibration' || location.pathname === '/calibration') openCalibrationGuide();
+  if (location.hash === '#calibration' || (location.pathname === '/calibration' && !location.hash)) openCalibrationGuide();
   fetch('/api/setup', { cache: 'no-store', signal: AbortSignal.timeout(8000) }).then(async (response) => {
     if (!response.ok) { $('#auth-details').open = true; return; }
     const setup = await response.json();

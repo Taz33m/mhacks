@@ -191,6 +191,10 @@ class AmbientState:
         if state in ('resolved','cancelled') and now-self.phase_at>=3:state='ready'
         if state=='ready' and self.wellbeing:state='ready_talk'
         count=FRAMES[state]
+        # A prolonged dispatch wait is a held screen, not a rapid four-frame
+        # loop. OG full-image redraws can look like flicker and consume serial
+        # time needed by audio and sensor events.
+        if state=='reaching':return state,'',0
         rate=1.2 if state in ('ready','ready_talk') else 4
         return state,self.owner if state in ('accepted','on_way','on_scene') else '',int(now*rate)%count
 

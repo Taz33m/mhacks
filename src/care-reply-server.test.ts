@@ -152,7 +152,7 @@ test('everyday WILi questions retain exact fictional clinical context privately 
       eventId: 'generated-care-explicit-help', conversationId, transcript: 'I need help' }));
     const help = await waitFor(state, value => value.incident?.phase === 'HELP_REQUESTED');
     assert.equal(help.incident!.evidence.kind, 'manual');
-    assert.match(help.incident!.evidence.summary, /explicitly requested help.*wellbeing/);
+    assert.match(help.incident!.evidence.summary, /requested help during a daily check-in/);
     await waitFor(async () => packets, values => values.some(packet => packet.type === 'wellbeing.context' && !packet.enabled));
     assert.equal(help.actions.every(action => action.providerMessageId === null), true);
   } finally {

@@ -198,6 +198,15 @@ class StockTests(unittest.TestCase):
         self.assertEqual(statuses, ["failed"])
         self.assertEqual(gateway.context["phase"], "HELP_REQUESTED")
 
+    def test_gray_press_resets_once_without_green_cancel_or_red_help(self):
+        gateway, serial, now, packets = self.setup_gateway()
+        gateway.sync_buttons({ButtonColor.White: False})
+        for sequence, gray in [(1, True), (2, True), (3, False)]:
+            gateway.on_event(EventType.Button, frame(sequence), types.SimpleNamespace(gray=gray, blue=False, green=False, red=False))
+        presses = [p for p in packets if p['type'] == 'button.press']
+        self.assertEqual([p['action'] for p in presses], ['reset'])
+        self.assertTrue(gateway.display_restore_pending)
+
     def wellbeing_context(self, gateway, enabled=True, conversation="wellbeing-1"):
         return {"type": "wellbeing.context", "sessionId": gateway.session, "conversationId": conversation,
                 "enabled": enabled, "statusText": "How are you feeling today?"}
@@ -1134,6 +1143,61 @@ class StockTests(unittest.TestCase):
             self.assertEqual(serial.calls.count(("list",)), 1)
             self.assertIn(("upload", "CHECKIN.WAV", "/sounds/CHECKIN.WAV"), serial.calls)
 
+
+    def led_gateway(self):
+        gateway, serial, now, packets = self.setup_gateway()
+        serial.set_board_leds = lambda io, red, green, blue: (serial.calls.append(("led", io, red, green, blue)), Result())[1]
+        return gateway, serial, now, packets
+
+    @staticmethod
+    def led_calls(serial):
+        return [call for call in serial.calls if call[0] == "led"]
+
+    def test_leds_mirror_incident_phase_once_per_change(self):
+        gateway, serial, _now, _packets = self.led_gateway()
+        gateway.command(context("HELP_REQUESTED", None))
+        calls = self.led_calls(serial)
+        self.assertEqual([call[1] for call in calls], list(range(worker.LED_COUNT)))
+        self.assertTrue(all(call[2:] == worker.LED_COLORS["HELP_REQUESTED"] for call in calls))
+        gateway.command(context("HELP_REQUESTED", None)); gateway.audio_tick()
+        self.assertEqual(len(self.led_calls(serial)), worker.LED_COUNT, "an unchanged state writes nothing")
+        gateway.command(context("ACKNOWLEDGED", None))
+        self.assertEqual(self.led_calls(serial)[-1][2:], worker.LED_COLORS["ACKNOWLEDGED"])
+        gateway.command({"type": "incident.context", "incidentId": None, "checkinId": None, "phase": None,
+                         "statusText": "", "ownerName": "", "voiceAsset": None})
+        self.assertEqual(self.led_calls(serial)[-1][2:], worker.LED_COLORS["idle"])
+
+    def test_leds_show_listening_before_the_microphone_and_never_write_during_capture(self):
+        gateway, serial, now, _packets = self.led_gateway()
+        gateway.assets["CHECKIN"] = .1
+        gateway.command(context())
+        self.assertEqual(self.led_calls(serial)[-1][2:], worker.LED_COLORS["CONFIRMING"])
+        before = len(self.led_calls(serial))
+        now[0] = .31
+        gateway.audio_tick()
+        self.assertIsNotNone(gateway.capture)
+        listening = self.led_calls(serial)[before:]
+        self.assertEqual(len(listening), worker.LED_COUNT)
+        self.assertTrue(all(call[2:] == worker.LED_COLORS["listening"] for call in listening))
+        last_led = max(index for index, call in enumerate(serial.calls) if call[0] == "led")
+        self.assertIn(("audio", True), serial.calls[last_led:], "LEDs are written before the microphone opens")
+        written = len(self.led_calls(serial))
+        now[0] = .5
+        gateway.audio_tick()
+        self.assertEqual(len(self.led_calls(serial)), written, "no LED writes while the microphone is open")
+
+    def test_led_failure_or_missing_support_never_blocks_the_check_in(self):
+        gateway, serial, _now, _packets = self.setup_gateway()
+        gateway.command(context("HELP_REQUESTED", None))
+        self.assertFalse(gateway.leds_enabled)
+        self.assertEqual(self.led_calls(serial), [])
+        gateway, serial, _now, packets = self.led_gateway()
+        serial.set_board_leds = lambda *args: Result(fail=True)
+        gateway.assets["CHECKIN"] = .1
+        gateway.command(context())
+        self.assertFalse(gateway.leds_enabled)
+        self.assertIn(("play", "CHECKIN.WAV"), serial.calls, "the spoken check-in still happens")
+        self.assertTrue(any(p.get("status") == "leds-unavailable" for p in packets))
 
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(StockTests)

@@ -19,7 +19,7 @@ import type { WiliIncidentContext, WiliCheckinAudio } from '../native/freewili/p
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const WEARER_STATEMENT = "I fell pretty hard. My ankle hurts and I can't stand up.";
-const RESPONDER_REPLY = 'Synthetic smoke-test reply: stay seated. I am coming now.';
+const RESPONDER_REPLY = 'Smoke wearer, stay seated. I am coming now.';
 const RESPONDER = { id: 'smoke-responder', name: 'Smoke responder', phone: '+12025550101' };
 const CHANNEL = { chatId: 'isolated-smoke-chat', lineId: 'isolated-smoke-line' };
 export interface VoiceSmokeOptions { port: string; python: string; audioDir: string; audioDevice: string; timeoutMs: number; checkinMs: number }

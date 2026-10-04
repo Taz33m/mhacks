@@ -61,7 +61,7 @@ test('exhausted contacts stay unresolved without repeated timeout messages and c
     assert.equal(c.active()?.phase, 'HELP_REQUESTED');
     assert.equal(c.active()?.ownerId, null);
     assert.equal(c.active()?.progressDeadline, null);
-    assert.match(c.actions(i.id).filter(a => a.type === 'wearer_status').at(-1)!.text, /No additional approved contact is available/);
+    assert.match(c.actions(i.id).filter(a => a.type === 'wearer_status').at(-1)!.text, /still trying to reach someone/);
     const count = c.actions(i.id).length, version = c.active()?.version;
     for (let n = 0; n < 10; n++) advance(60);
     assert.equal(c.actions(i.id).length, count);

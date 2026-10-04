@@ -19,6 +19,13 @@ export function matchingStockCheckin(context: WiliIncidentContext | null, packet
     && context.checkinId === packet.checkinId && context.checkinDeadline !== null && now < context.checkinDeadline;
 }
 
+export async function resetFromGreyButton(base: URL, token: string, request: typeof fetch = fetch): Promise<void> {
+  const response = await request(new URL('/api/commands', base), { method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'reset', readyImmediately: true }), signal: AbortSignal.timeout(5000) });
+  if (!response.ok) throw new Error('Wearable reset was not accepted by the backend.');
+}
+
 /** Asset setup can outlast an incident. Deliver the latest context only once
  * the worker is ready, without replaying a check-in whose deadline has passed. */
 export function stockContextToDeliver(context: WiliIncidentContext | null, ready: boolean, now = Date.now(), restoring = false): WiliIncidentContext | null {
@@ -205,6 +212,11 @@ export async function runStockBridge(options: { port: string; python: string; to
           conversation!.playback(p); continue;
         }
         const packet = protocol.accept(value);
+        if (packet.type === 'button.press' && packet.action === 'reset') {
+          void resetFromGreyButton(base, token).then(() => console.log('Grey button reset accepted; calibration retained.'))
+            .catch(() => console.error('Grey button reset unavailable; backend state was not changed.'));
+          continue;
+        }
         if (packet.type === 'device.hello') {
           if (socket || packet.transport !== 'stock-sdk') throw new Error();
           socket = new WebSocket(endpoint, { handshakeTimeout: 6000, maxPayload: 4096, followRedirects: false });

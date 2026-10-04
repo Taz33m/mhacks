@@ -15,13 +15,14 @@ const MAX_AUDIO_BYTES = 5 * 1024 * 1024;
 const LOCAL_RATE = 160;
 const defaultAudioDirectory = () => resolve(process.env.LIFELINE_WILI_AUDIO_DIR?.trim() || 'output/freewili-audio');
 export const STOCK_VOICE_PROMPTS = {
-  CHECKIN: 'I detected a possible fall. Do you need help?',
-  HELP: 'Help has been requested. I am waiting for someone to accept.',
-  ACCEPTED: 'A responder has accepted your request. They have not reported leaving yet.',
-  ENROUTE: 'Your responder reports they are on the way.',
-  ARRIVED: 'Your responder reports they have arrived.',
-  RESOLVED: 'Your responder recorded the outcome. The incident is closed.',
-  OKAY: 'Press the green button to close the check-in if you do not need help.',
+  // Spoken to the patient only: calm, short, no backend narration. Names match the demo persona.
+  CHECKIN: 'Morgan, I noticed a possible fall. Can you answer me?',
+  HELP: 'I’m getting help for you now. Try to stay still.',
+  ACCEPTED: 'Maya has answered. I’m here with you.',
+  ENROUTE: 'Maya is on the way.',
+  ARRIVED: 'Maya is here.',
+  RESOLVED: 'Take care, Morgan.',
+  OKAY: 'Okay. If you don’t need help, press the green button.',
 } as const;
 export type StockVoiceName = keyof typeof STOCK_VOICE_PROMPTS;
 export type StockVoiceProvider = 'local' | 'elevenlabs';

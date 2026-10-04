@@ -49,7 +49,7 @@ export class ShakingAssessment {
   private lastAt = -Infinity;
   private now: () => number;
   constructor(now = () => performance.now()) { this.now = now; }
-  reset(): void { this.lastAt = this.now(); }
+  reset(options: { cooldown?: boolean } = {}): void { this.lastAt = options.cooldown === false ? -Infinity : this.now(); }
   candidate(wili: Pick<FreeWili, 'view' | 'observations'>, motion: Pick<Motion, 'views' | 'observations'>,
     now = this.now()): Evidence | null {
     const g = SHAKING_GATES;

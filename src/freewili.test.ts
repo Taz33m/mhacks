@@ -38,6 +38,16 @@ function fixture(fullScale: BodyWiliSample['fullScaleG'] = 8, initialTime = 101)
     next(sequence: number, delta = 0) { return sample(sequence, (now + 100000 + delta) / 1000, fullScale); } };
 }
 
+test('fast run boundary clears old evidence while preserving live alignment and replay protection', () => {
+  const f = fixture(); f.advance(20); const last = f.next(1); f.adapter.sample(last);
+  const before = f.adapter.view(); f.adapter.clearObservations();
+  assert.deepEqual(f.adapter.observations(), []);
+  assert.equal(f.adapter.view().sessionId, before.sessionId);
+  assert.equal(f.adapter.view().alignmentUncertaintyMs, before.alignmentUncertaintyMs);
+  assert.equal(f.adapter.sample(last), false);
+  f.advance(20); assert.equal(f.adapter.sample(f.next(2)), true);
+});
+
 test('trial boundary discards old measurements/alignment while retaining boot and replay/range guards', () => {
   const f = fixture(); f.advance(20); const before = f.next(1); assert.equal(f.adapter.sample(before), true);
   const oldPing = f.adapter.ping('old-pending-ping');
@@ -136,7 +146,7 @@ test('stale receive gaps invalidate alignment instead of bridging lost motion', 
   assert.equal(f.adapter.view().quality, 'unsynchronized'); assert.equal(f.adapter.observations().length, 1);
 });
 
-test('range and saturation remain visible and never imply detector readiness', () => {
+test('range and saturation remain visible quality flags; a clipped sample keeps its timing as at-least-full-scale evidence', () => {
   const narrow = fixture(2); narrow.advance(10); narrow.adapter.sample(narrow.next(1));
   assert.equal(narrow.adapter.view().fresh, true); assert.equal(narrow.adapter.view().quality, 'insufficient-range');
   assert.equal(narrow.adapter.view().usable, false);
@@ -144,7 +154,21 @@ test('range and saturation remain visible and never imply detector readiness', (
   f.adapter.sample({ ...f.next(1), accelerationG: [7.9, 0, 0] });
   assert.equal(f.adapter.view().quality, 'saturated'); assert.equal(f.adapter.view().fresh, true);
   assert.equal(f.adapter.view().usable, false); assert.equal(f.adapter.view().saturated, true);
+  const clipped = f.adapter.observations().at(-1)!;
+  assert.equal(clipped.saturated, true); assert.equal(clipped.sample.saturated, false, 'conservative flag, not a device claim');
+  assert.equal(clipped.captureFresh, true); assert.ok(Math.abs(clipped.alignedAtMs! - f.now()) < 1e-6);
+  assert.equal(clipped.totalG, 7.9);
   f.advance(10); assert.equal(f.adapter.sample({ ...f.next(2), fullScaleG: 4 }), false, 'range changes require a new session');
+  let now = 1000;
+  const stock = new FreeWili(() => now); stock.connected();
+  const reading = (sequence: number, accelerationG: BodyWiliSample['accelerationG'], saturated = false): BodyWiliSample => ({
+    ...sample(sequence, now / 1000, 2), captureClock: 'host-receipt', frameTimestamp: String(sequence), accelerationG, saturated });
+  stock.sample(reading(0, [0, 0, 1])); const ping = stock.ping('stock-clip-clock');
+  assert.equal(stock.pong({ type: 'clock.pong', id: ping.id, sessionId: sample().sessionId, deviceReceivedMs: now, deviceSentMs: now }), true);
+  now += 30; assert.equal(stock.sample(reading(1, [0, 0, 2.044], true)), true);
+  const stockClip = stock.observations().at(-1)!;
+  assert.equal(stockClip.saturated, true); assert.equal(stockClip.captureFresh, true);
+  assert.ok(Math.abs(stockClip.alignedAtMs! - now) < 1e-6); assert.equal(stockClip.totalG, 2.044);
 });
 
 test('unknown/replayed/slow clock responses cannot establish a new estimate', () => {

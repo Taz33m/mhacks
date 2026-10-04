@@ -1,6 +1,8 @@
 import type { PatientRecordSnapshot } from './patient-record.ts';
 import type { BodyWiliView } from './freewili.ts';
 import type { WiliAssessmentFeatures } from './wili-assessment.ts';
+import type { EarlyCheckinFeatures } from './early-checkin-assessment.ts';
+import type { EventWindow } from './event-window.ts';
 import type { ShakingFeatures } from './shaking-assessment.ts';
 import type { WellbeingView } from './wellbeing.ts';
 import type { LocationView } from './location.ts';
@@ -25,7 +27,10 @@ export interface Evidence {
   kind: 'manual' | 'synthetic' | 'single-source' | 'cross-body';
   summary: string; sourceSessions?: Partial<Record<Source | 'body-wili', string>>;
   assessment?: WiliAssessmentFeatures;
-  eventType?: 'sustained-shaking' | 'reported-seizure';
+  eventType?: 'sustained-shaking' | 'reported-seizure' | 'possible-balance-loss';
+  onset?: EarlyCheckinFeatures;
+  window?: EventWindow;
+  patientReport?: { text: string; source: string; at: number; interpretation: 'reported-fall' | 'reported-recovery' | 'unclassified' };
   shaking?: ShakingFeatures;
 }
 export interface Incident {
@@ -71,9 +76,10 @@ export interface SensorView {
   trace: { at: number; totalG: number; tiltDegrees: number | null; angularSpeed: number }[];
 }
 export interface Snapshot {
+  eventUnderstanding?: boolean;
   serverTime: number; incident: Incident | null; responders: Responder[];
   wearer?: { name: string };
-  policy: { demoMode: boolean; checkinMs: number; configuredCheckinMs: number };
+  policy: { demoMode: boolean; checkinMs: number; configuredCheckinMs: number; detectionProfile?: 'fall-confirmation' | 'early-checkin' };
   dispatch?: { mode: DispatchMode; detail: string };
   timeline: TimelineEvent[]; actions: Action[]; sensors: SensorView[];
   conversation?: ConversationMessage[];
@@ -104,7 +110,7 @@ export type Command =
   | { type: 'accept' | 'depart' | 'arrive' | 'decline'; incidentId: string; responderId: string }
   | { type: 'resolve'; incidentId: string; responderId: string; outcome: string }
   | { type: 'calibrate'; expectedSessionId?: string; expectedSensorLocation?: 'Left' | 'Right' }
-  | { type: 'reset' };
+  | { type: 'reset'; readyImmediately?: boolean };
 export interface ProviderInbound {
   messageId: string; sender: string; targetMessageId?: string;
   kind: 'reaction' | 'text'; text?: string; reaction?: string; removed?: boolean;

@@ -87,7 +87,7 @@ export function workspaceView(hash) {
     'patient-title': 'medical', 'conversation-title': 'conversation', 'signals-heading': 'motion',
     'timeline-title': 'activity', 'readiness-title': 'connections', calibration: 'motion' };
   const requested = String(hash || '').replace(/^#/, '');
-  if (['motion', 'location', 'status', 'medical', 'conversation', 'activity', 'connections', 'developer'].includes(requested)) return requested;
+  if (['motion', 'location', 'status', 'medical', 'conversation', 'activity', 'connections', 'teaching', 'developer'].includes(requested)) return requested;
   return Object.hasOwn(aliases, requested) ? aliases[requested] : 'motion';
 }
 

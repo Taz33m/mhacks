@@ -126,9 +126,9 @@ function renderReports(reports: readonly IncidentReport[], speaker: 'wearer' | '
   const matching = reports.filter(report => report.speaker === speaker);
   const sources = { 'freewili-local-speech': 'FREE-WILi microphone / local Whisper', 'ios-on-device-speech': 'iPhone on-device speech', 'photon-imessage': 'Photon message', 'simulated-dispatch': 'Responder' };
   return [
-    `${speaker === 'wearer' ? 'Wearer' : 'Responder'} reports (local observations, not hospital records):`,
+    `${speaker === 'wearer' ? 'Patient' : 'Responder'} reports (local observations, not hospital records):`,
     ...matching.map(report => `${report.speakerName}: “${report.text}”; source: ${sources[report.source]}; recorded ${new Date(report.at).toISOString()} [conversation:${report.id}]`),
-    ...(!matching.length ? [`No ${speaker} report was recorded in the supplied incident context; missing reports do not establish safety.`] : []),
+    ...(!matching.length ? [`No ${speaker === 'wearer' ? 'patient' : 'responder'} report was recorded in the supplied incident context; missing reports do not establish safety.`] : []),
     speaker === 'wearer' ? 'Quoted statements are not verified diagnoses or safety determinations.' : 'Quoted intent does not establish ownership, departure, or arrival; the recorded incident state governs.',
   ].join('\n');
 }
@@ -157,6 +157,12 @@ function renderHandoffFact({ record, fields }: ContextFact): string {
   return `${record.category}: ${historical ? 'Historical/non-active record — ' : ''}${label}; ${details.join('; ')} [${record.id}]`;
 }
 function handoffObservation(incident: Incident): string {
+  const initial = initialHandoffObservation(incident);
+  const report = incident.evidence.patientReport;
+  return [initial, incident.evidence.window?.summary, report
+    ? `Patient-reported (${report.source}, ${report.interpretation}): ${JSON.stringify(report.text)}. Not a sensor finding or verified outcome.` : null].filter(Boolean).join('\n');
+}
+function initialHandoffObservation(incident: Incident): string {
   const assessment = incident.evidence.assessment;
   if (incident.evidence.kind === 'cross-body' && assessment?.detector === 'wili-waist-provisional-v1'
     && assessment.impact?.source === 'body-wili' && assessment.supportingWaist?.source === 'waist-airpod'
@@ -164,9 +170,52 @@ function handoffObservation(incident: Incident): string {
     && ['host-receipt', 'device-monotonic'].includes(assessment.impact.captureClock)
     && [assessment.impact.totalG, assessment.supportingWaist.linearG, assessment.supportingWaist.angularSpeed,
       assessment.supportingWaist.separationMs, assessment.quietWaist.durationMs].every(value => Number.isFinite(value) && value >= 0)) {
-    return `Possible fall: ${assessment.impact.totalG.toFixed(2)} g impact with waist movement ${assessment.supportingWaist.separationMs.toFixed(0)} ms apart, then ${(assessment.quietWaist.durationMs / 1000).toFixed(1)} s of stillness.`;
+    // A saturated (clipped) reading only bounds the impact from below; never present it as exact.
+    const impact: { saturated?: unknown; fullScaleG?: unknown } = assessment.impact;
+    const fullScaleG = typeof impact.fullScaleG === 'number' && Number.isFinite(impact.fullScaleG) && impact.fullScaleG > 0 ? impact.fullScaleG : 2;
+    const magnitude = impact.saturated === true ? `≥${fullScaleG.toFixed(2)} g impact (sensor limit)` : `${assessment.impact.totalG.toFixed(2)} g impact`;
+    return `Possible fall: ${magnitude} with waist movement ${assessment.supportingWaist.separationMs.toFixed(0)} ms apart, then ${(assessment.quietWaist.durationMs / 1000).toFixed(1)} s of stillness.`;
   }
   return incident.evidence.summary;
+}
+// Deterministic fall-relevance cues: a fixed keyword table over returned source rows,
+// ordered by urgency after a fall. Each cue cites its record; it is not a diagnosis or advice.
+type FallRule = { category: 'medications' | 'conditions'; pattern: RegExp; reason: string; label?: string };
+const anyWord = (...words: string[]) => new RegExp(`\\b(?:${words.join('|')})\\b`, 'i');
+const lowBloodPressure = 'can cause dizziness or low blood pressure';
+const fallRules: readonly FallRule[] = [
+  { category: 'medications', label: 'blood thinner', reason: 'bleeding risk — urgent evaluation if the head was hit',
+    pattern: anyWord('warfarin', 'apixaban', 'rivaroxaban', 'dabigatran', 'edoxaban', 'enoxaparin', 'heparin', 'clopidogrel', 'prasugrel', 'ticagrelor', 'aspirin') },
+  { category: 'medications', label: 'diabetes', reason: 'low blood sugar can cause falls', pattern: anyWord('insulin', 'glipizide', 'glyburide', 'glimepiride') },
+  { category: 'conditions', reason: 'higher fracture risk', pattern: /\bosteop(?:oro|en)/i },
+  { category: 'conditions', reason: 'affects balance or awareness', pattern: /\b(?:parkinson|epilep|seizure|dementia|alzheimer)/i },
+  { category: 'medications', label: 'sedating', reason: 'drowsiness raises fall risk',
+    pattern: anyWord('lorazepam', 'alprazolam', 'diazepam', 'clonazepam', 'zolpidem', 'oxycodone', 'hydrocodone', 'morphine', 'tramadol', 'gabapentin', 'diphenhydramine') },
+  { category: 'medications', label: 'blood pressure / heart rate', reason: lowBloodPressure, pattern: anyWord('metoprolol', 'atenolol', 'carvedilol', 'propranolol') },
+  { category: 'medications', label: 'blood pressure', reason: lowBloodPressure, pattern: anyWord('lisinopril', 'enalapril', 'ramipril', 'losartan', 'valsartan', 'amlodipine') },
+  { category: 'medications', label: 'diuretic', reason: lowBloodPressure, pattern: anyWord('hydrochlorothiazide', 'furosemide', 'chlorthalidone') },
+  { category: 'conditions', reason: 'often treated with blood thinners', pattern: /\batrial fibrillation\b|\ba-?fib\b/i },
+  { category: 'conditions', reason: 'check blood sugar', pattern: /\bdiabet(?!es insipidus)/i },
+];
+const MAX_FALL_FLAGS = 4;
+function renderFallRelevant(incident: Incident, source: readonly HealthRecord[]): string[] {
+  // Sustained-shaking and reported-seizure incidents are not labelled as falls.
+  if (incident.evidence.eventType) return [];
+  const oneLine = (value: string) => value.replace(/\s+/g, ' ').trim();
+  const flags = source.flatMap(record => {
+    const name = oneLine(text(record.raw.name) ?? ''), verification = text(record.raw.verificationStatus)?.trim().toLowerCase();
+    // Same explicit historical statuses as the handoff; refuted diagnoses are never flagged.
+    if (!name || historicalRecord(record) || verification === 'refuted' || verification === 'entered-in-error') return [];
+    const rank = fallRules.findIndex(rule => rule.category === record.category && rule.pattern.test(name));
+    return rank < 0 ? [] : [{ rank, record, name }];
+  }).sort((a, b) => a.rank - b.rank).slice(0, MAX_FALL_FLAGS);
+  if (!flags.length) return [];
+  return ['Fall-relevant:', ...flags.map(({ rank, record, name }) => {
+    const { label, reason } = fallRules[rank], status = text(record.raw.status);
+    // A missing or unfamiliar status stays visible instead of reading as active.
+    const qualifier = status?.trim().toLowerCase() === 'active' ? '' : `; status: ${status ? oneLine(status) : 'unknown'}`;
+    return `${name}${label ? ` (${label})` : ''} — ${reason}${qualifier} [${record.id}]`;
+  })];
 }
 function renderHandoffContext(plan: ContextPlan | null, source: HealthRecord[]): string[] {
   const primary = source.filter(handoffRecord);
@@ -429,6 +478,7 @@ export function createProviders(options: {
       handoffObservation(incident),
       `Detected ${new Date(incident.createdAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' })}.`,
       ...(reports.some(report => report.speaker === 'wearer') ? [renderReports(reports, 'wearer')] : []),
+      ...renderFallRelevant(incident, source),
       'Health context:',
       ...renderHandoffContext(plan, source),
       'Location and current vital signs not available. This alert is not a diagnosis.',

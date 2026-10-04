@@ -23,6 +23,9 @@ export const DEFAULT_WILI_THRESHOLDS: Readonly<WiliAssessmentThresholds> = Objec
   settlingMs: 800, quietMs: 2400, quietLinearG: .15, quietAngularSpeed: .35,
   maxSampleGapMs: 200, maxEventAgeMs: 6000, maxAlignmentUncertaintyMs: 100, cooldownMs: 20_000,
 });
+/** At assessment the board must still be streaming (latest receipt this recent). Stock WILi reports
+ * about 1 Hz at rest, so sub-second freshness is not required; each impact sample is validated itself. */
+export const WILI_ALIVE_MS = 3000;
 
 export interface WiliAssessmentFeatures {
   detector: 'wili-waist-provisional-v1';
@@ -32,8 +35,9 @@ export interface WiliAssessmentFeatures {
   impact: {
     source: 'body-wili'; sessionId: string; sequence: number; sensorTime: number;
     captureClock: 'device-monotonic' | 'host-receipt'; frameTimestamp?: string; alignedAtMs: number; hostReceivedMs: number;
-    accelerationG: [number, number, number]; totalG: number; fullScaleG: number;
-    quality: 'measured'; saturated: false;
+    accelerationG: [number, number, number]; totalG: number; fullScaleG: number; quality: 'measured';
+    /** Clipped or near full scale: the actual impact was at least full scale (totalG is a lower bound). */
+    saturated: boolean;
   };
   supportingWaist: {
     source: 'waist-airpod'; sessionId: string; sensorLocation: string; sequence: number;
@@ -57,19 +61,20 @@ type AlignedWaist = MotionObservation & { alignedAtMs: number };
 const finite = (value: number): boolean => Number.isFinite(value);
 const hostReceipt = (clock: 'device-monotonic' | 'host-receipt'): boolean => clock === 'host-receipt';
 // Stock OG range is usable only with its honestly labelled bridge receipt clock.
-function usableRange(clock: 'device-monotonic' | 'host-receipt', fullScaleG: number): boolean {
+export function usableRange(clock: 'device-monotonic' | 'host-receipt', fullScaleG: number): boolean {
   return fullScaleG > 2 || (clock === 'host-receipt' && fullScaleG === 2);
 }
 function captureFresh(received: number, captured: number): boolean {
   return finite(received) && finite(captured) && received - captured >= -100 && received - captured < 500;
 }
-function wiliPoint(point: BodyWiliObservation, session: string): point is AlignedWili {
-  return point.sample.sessionId === session && point.alignedAtMs !== null && point.captureFresh && point.usable
-    && captureFresh(point.hostReceivedMs, point.alignedAtMs) && !point.saturated && !point.sample.saturated
+// A clipped (saturated) sample stays valid impact evidence meaning "at least full scale"; it is labelled, not dropped.
+export function wiliPoint(point: BodyWiliObservation, session: string): point is AlignedWili {
+  return point.sample.sessionId === session && point.alignedAtMs !== null && point.captureFresh
+    && captureFresh(point.hostReceivedMs, point.alignedAtMs)
     && point.sample.quality === 'measured' && usableRange(point.sample.captureClock, point.sample.fullScaleG)
     && finite(point.totalG) && point.totalG >= 0;
 }
-function waistPoint(point: MotionObservation, session: string): point is AlignedWaist {
+export function waistPoint(point: MotionObservation, session: string): point is AlignedWaist {
   return point.source === 'waist-airpod' && point.sessionId === session && point.alignedAtMs !== null
     && point.captureFresh && captureFresh(point.hostReceivedMs, point.alignedAtMs)
     && finite(point.linearG) && point.linearG >= 0 && finite(point.angularSpeed) && point.angularSpeed >= 0;
@@ -115,8 +120,10 @@ export class WiliAssessment {
     const now = assessedAtMs, t = this.thresholds;
     if (!finite(now) || now < 0 || now - this.lastCandidateAt < t.cooldownMs) return null;
     const body = wili.view(now), waist = motion.views(now).find(view => view.source === 'waist-airpod');
-    if (!body.connected || !body.fresh || !body.usable || body.quality !== 'measured' || body.saturated !== false
-      || !body.sessionId || body.fullScaleG === null || !usableRange(body.captureClock, body.fullScaleG)
+    // WILi must be connected, aligned and alive (still streaming), not sub-second fresh or currently unclipped.
+    // Waist requirements are unchanged: fresh, aligned, continuous quiet. Never a one-device fallback.
+    if (!body.connected || !body.sessionId || body.receivedAgeMs === null || !(body.receivedAgeMs < WILI_ALIVE_MS)
+      || body.fullScaleG === null || !usableRange(body.captureClock, body.fullScaleG)
       || body.alignmentUncertaintyMs === null || body.alignmentUncertaintyMs > t.maxAlignmentUncertaintyMs
       || !waist?.connected || !waist.fresh || !waist.sessionId
       || !['Left', 'Right'].includes(waist.sensorLocation ?? '')
@@ -155,13 +162,14 @@ export class WiliAssessment {
       if (!support) continue;
       this.lastCandidateAt = now; this.consumed.add(identity);
       while (this.consumed.size > 64) this.consumed.delete(this.consumed.values().next().value!);
+      const saturated = impact.saturated || impact.sample.saturated;
       const assessment: WiliAssessmentFeatures = {
         detector: 'wili-waist-provisional-v1', assessedAtMs: now, thresholds: { ...t }, selectedImpactG,
         impact: { source: 'body-wili', sessionId: impact.sample.sessionId, sequence: impact.sample.sequence,
           sensorTime: impact.sample.sensorTime, captureClock: impact.sample.captureClock, alignedAtMs: impact.alignedAtMs,
           ...('frameTimestamp' in impact.sample && typeof impact.sample.frameTimestamp === 'string' ? { frameTimestamp: impact.sample.frameTimestamp } : {}),
           hostReceivedMs: impact.hostReceivedMs, accelerationG: [...impact.sample.accelerationG], totalG: impact.totalG,
-          fullScaleG: impact.sample.fullScaleG, quality: 'measured', saturated: false },
+          fullScaleG: impact.sample.fullScaleG, quality: 'measured', saturated },
         supportingWaist: { source: 'waist-airpod', sessionId: support.sessionId, sensorLocation: support.sensorLocation,
           sequence: support.sequence, sensorTime: support.sensorTime, alignedAtMs: support.alignedAtMs,
           hostReceivedMs: support.hostReceivedMs, linearG: support.linearG, angularSpeed: support.angularSpeed,
@@ -172,8 +180,12 @@ export class WiliAssessment {
           maxAngularSpeed: Math.max(...quiet.map(point => point.angularSpeed)), maxCaptureGapMs, maxReceiveGapMs },
         alignmentAtAssessment: { bodyClock: impact.sample.captureClock, bodyUncertaintyMs: body.alignmentUncertaintyMs, waistUncertaintyMs: waist.alignmentUncertaintyMs },
       };
+      // A clipped reading only bounds the impact from below (at least full scale); never present it as exact.
+      // Same wording as the responder handoff (providers handoffObservation).
+      const magnitude = saturated ? `≥${impact.sample.fullScaleG.toFixed(2)} g impact (sensor limit)`
+        : `${impact.totalG.toFixed(2)} g impact`;
       return freeze({ kind: 'cross-body',
-        summary: `Possible fall: ${impact.totalG.toFixed(2)} g impact with waist movement ${assessment.supportingWaist.separationMs.toFixed(0)} ms apart, then ${(assessment.quietWaist.durationMs / 1000).toFixed(1)} s of stillness.`,
+        summary: `Possible fall: ${magnitude} with waist movement ${assessment.supportingWaist.separationMs.toFixed(0)} ms apart, then ${(assessment.quietWaist.durationMs / 1000).toFixed(1)} s of stillness.`,
         sourceSessions: { 'body-wili': impact.sample.sessionId, 'waist-airpod': waist.sessionId }, assessment });
     }
     return null;

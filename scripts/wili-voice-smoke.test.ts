@@ -56,7 +56,7 @@ test('recording transport captures exact quote and supplies isolated authorizati
     assert.equal(quote.action.type, 'wearer_relay'); assert.match(quote.messageId, /^smoke-recorded-/);
     assert.equal(controller.actions(incident.id).find(a => a.id === quote.action.id)?.providerChatId, 'isolated-smoke-chat');
     assert.equal(handleResponderRelay({ messageId: 'synthetic-responder-fixture', sender: responder.phone,
-      kind: 'text', text: 'Synthetic smoke-test reply: stay seated. I am coming now.', targetMessageId: quote.messageId,
+      kind: 'text', text: 'Wearer, stay seated. I am coming now.', targetMessageId: quote.messageId,
       chatId: quote.chatId, lineId: quote.lineId }, controller), true);
     assert.equal(controller.active()?.ownerId, null);
     assert.equal(controller.claimResponderSpeech('offline-worker-boot')?.speakerName, 'Smoke responder');

@@ -69,7 +69,7 @@ test('handoff adds exact local wearer reports separately while retaining the imm
   const answer = await provider.buildHandoffDetailed(incident, health, [wearer, responder]);
   assert.equal(answer.generation, 'ai'); assert.equal(answer.healthRevision, health.patientRecord!.revision);
   assert.ok(answer.text.includes(`Tazeem: “${wearer.text}”`)); assert.match(answer.text, /\[conversation:wearer-quote-1\]/);
-  assert.ok(answer.text.indexOf('Wearer reports') < answer.text.indexOf('Health context:'));
+  assert.ok(answer.text.indexOf('Patient reports') < answer.text.indexOf('Health context:'));
   assert.match(answer.text, /\[allergy-1\]/); assert.match(answer.text, /\[med-1\]/); assert.match(answer.text, /\[condition-1\]/);
   assert.equal(answer.text.split(wearer.text).length - 1, 1); assert.equal(JSON.stringify(health), original);
   assert.doesNotMatch(answer.text, /Maya:|Invented diagnosis/);
@@ -284,7 +284,7 @@ test('absence of a wearer quote is explicit rather than inferred from health rec
   const { provider } = fixtureProvider({ facts: [{ recordId: 'allergy-1', fields: ['substance'] }], incidentFields: [], unavailable: [] });
   const health = await provider.loadHealth();
   const answer = await provider.answerQuestionDetailed(incident, health, 'What did the wearer say?', []);
-  assert.equal(answer.generation, 'degraded'); assert.match(answer.text, /No wearer report was recorded/);
+  assert.equal(answer.generation, 'degraded'); assert.match(answer.text, /No patient report was recorded/);
   assert.match(answer.text, /missing reports do not establish safety/);
   assert.doesNotMatch(answer.text, /Fictional substance|wearer is safe/);
 });

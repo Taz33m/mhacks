@@ -28,7 +28,7 @@ test('bound native acceptance, natural progress, outcome, and wearer updates com
   try {
     assert.equal(handleResponderProgress(incoming('', { kind: 'reaction', reaction: '👍' }), c), true);
     assert.equal(c.active()?.phase, 'ACKNOWLEDGED');
-    assert.equal(c.actions(i.id).findLast(a => a.type === 'wearer_status')!.text, `Maya accepted ${i.id}. Departure has not been confirmed.`);
+    assert.equal(c.actions(i.id).findLast(a => a.type === 'wearer_status')!.text, 'Maya has answered your alert.');
     assert.equal(handleResponderProgress(incoming('leaving'), c), true);
     assert.equal(c.active()?.phase, 'RESPONDER_EN_ROUTE');
     assert.equal(handleResponderProgress(incoming('Arrived'), c), true);
@@ -41,8 +41,7 @@ test('bound native acceptance, natural progress, outcome, and wearer updates com
     const reports = c.events(i.id).filter(e => e.type === 'RESPONDER_REPORT');
     assert.equal(reports.length, 4);
     assert.equal(JSON.parse(reports[2].detail).providerTimestamp, 999);
-    const final = c.claimAction('wearer')!;
-    assert.equal(final.type, 'wearer_status'); assert.match(final.text, /closed by the on-scene owner/);
+    assert.equal(c.claimAction('wearer'), null, 'the care-team outcome is not narrated to the patient');
   } finally { c.close(); }
 });
 test('wrong conversation, sending line, target, sender, bare text and negation cannot advance', () => {

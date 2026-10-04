@@ -17,6 +17,7 @@ PUBLIC_FILES = (
     'media/brand/identity-board.png', 'media/brand/lifeline-mark.svg', 'media/brand/lifeline-mark-white.svg',
     'media/brand/lifeline-brand-kit.zip', 'media/brand/color-tokens.json', 'media/brand/lifeline-logo-original.png',
     'media/lifeline-logo.png', 'media/ehr-workspace.png',
+    'media/avatars/doctor-chen.jpg', 'media/avatars/care-team.jpg',
     'media/story/manifest.json', 'media/story/opening.webp', 'media/story/held.webp',
 )
 GENERATED_FILES = {'index.html', '404.html', '_headers', 'motion-lab/index.html'}

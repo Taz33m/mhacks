@@ -10,8 +10,8 @@ export const SCENARIOS = Object.freeze({ fall: { title: 'Fall + stillness', dura
 const G = 9.80665;
 const clamp01 = n => Math.max(0, Math.min(1, n));
 const smooth = n => { const t = clamp01(n); return t * t * t * (10 + t * (-15 + t * 6)); };
-// Gravity-like acceleration into contact, then a short (~70 ms) crush instead of an infinite stop.
-const impact = n => { const t = clamp01(n); return t < .8 ? .8 * (t / .8) ** 2 : 1 - .2 * ((1 - t) / .2) ** 2; };
+// Gravity-like acceleration into contact, then a ~110 ms crush instead of an infinite stop.
+const impact = n => { const t = clamp01(n); return t < .7 ? .7 * (t / .7) ** 2 : 1 - .3 * ((1 - t) / .3) ** 2; };
 const mix = (a, b, k) => a + (b - a) * k;
 
 const add = (a, b) => a.map((v, i) => v + b[i]);
@@ -55,8 +55,8 @@ export const BONES = Object.freeze([
     [`${side}Shoulder`, 'chest', [s * .165, .185, -.012]], [`${side}Elbow`, `${side}Shoulder`, [0, -.28, 0]], [`${side}Hand`, `${side}Elbow`, [0, -.245, 0]],
     [`${side}Hip`, 'pelvis', [s * .088, -.045, 0]], [`${side}Knee`, `${side}Hip`, [0, -LEG.thigh, 0]], [`${side}Foot`, `${side}Knee`, [0, -LEG.shin, 0]]]),
 ].map(Object.freeze));
-const SENSORS = { chest: { bone: 'chest', offset: [0, .135, .108], rangeG: 2, placement: 'Chest / sternum · WILi' },
-  waist: { bone: 'pelvis', offset: [-.162, -.005, .03], rangeG: null, placement: 'Waist / pelvis · AirPod' } };
+const SENSORS = { chest: { bone: 'chest', offset: [0, .13, .1], rangeG: 2, placement: 'Chest / sternum · WILi' },
+  waist: { bone: 'pelvis', offset: [-.1, .035, .102], rangeG: null, placement: 'Waist / pelvis · AirPod' } };
 
 function solve(root, angles, world = {}) {
   const bones = {};
@@ -70,22 +70,25 @@ function solve(root, angles, world = {}) {
 // Body volumes used to rest the mannequin on the floor: spheres [bone, centre, radius], ellipsoids [bone, centre, semi-axes].
 const CONTACT_SPHERES = [...['left', 'right'].flatMap(side => [[`${side}Foot`, [0, -.053, -.045], .012], [`${side}Foot`, [0, -.05, .12], .015],
   [`${side}Knee`, [0, -.02, .035], .05], [`${side}Knee`, [0, -.22, 0], .045], [`${side}Hip`, [0, -.215, 0], .065],
-  [`${side}Hand`, [0, -.07, 0], .028], [`${side}Elbow`, [0, 0, 0], .04], [`${side}Shoulder`, [0, 0, 0], .05]])];
+  [`${side}Hand`, [0, -.07, 0], .022], [`${side}Elbow`, [0, 0, 0], .03], [`${side}Shoulder`, [0, -.14, 0], .03], [`${side}Shoulder`, [0, 0, 0], .025]])];
 const CONTACT_VOLUMES = [['pelvis', [0, -.01, 0], [.165, .12, .115]], ['spine', [0, .08, .005], [.15, .12, .105]],
   ['chest', [0, .11, .005], [.172, .16, .115]], ['head', [0, .11, .02], [.088, .115, .1]]];
-function lowestPoint(bones) {
-  let low = Infinity;
-  for (const [bone, centre, radius] of CONTACT_SPHERES) low = Math.min(low, add(bones[bone].position, qRotate(bones[bone].rotation, centre))[1] - radius);
+function contactHeights(bones) { // lowest surface height per bone
+  const low = {}, keep = (bone, y) => { low[bone] = Math.min(low[bone] ?? Infinity, y); };
+  for (const [bone, centre, radius] of CONTACT_SPHERES) keep(bone, add(bones[bone].position, qRotate(bones[bone].rotation, centre))[1] - radius);
   for (const [bone, centre, semi] of CONTACT_VOLUMES) {
     const { position, rotation } = bones[bone], c = add(position, qRotate(rotation, centre));
-    const extent = Math.hypot(...[X, Y, Z].map((axis, i) => qRotate(rotation, axis)[1] * semi[i]));
-    low = Math.min(low, c[1] - extent);
+    keep(bone, c[1] - Math.hypot(...[X, Y, Z].map((axis, i) => qRotate(rotation, axis)[1] * semi[i])));
   }
   return low;
 }
-const grounded = (root, angles, lift = 0) => {
+// Soft minimum: contact hand-offs (feet → knees → trunk) stay smooth instead of jolting the trace.
+const SOFT_CONTACT = .02;
+const lowestPoint = (bones, soft = 0) => { const h = Object.values(contactHeights(bones)), low = Math.min(...h);
+  return soft ? low - soft * Math.log(h.reduce((sum, v) => sum + Math.exp(-(v - low) / soft), 0)) : low; };
+const grounded = (root, angles, lift = 0, soft = 0) => {
   const probe = solve({ position: [root.position[0], 0, root.position[2]], rotation: root.rotation }, angles);
-  return solve({ position: [root.position[0], lift - lowestPoint(probe), root.position[2]], rotation: root.rotation }, angles);
+  return solve({ position: [root.position[0], lift - lowestPoint(probe, soft), root.position[2]], rotation: root.rotation }, angles);
 };
 
 const mirror = ([x, y, z]) => [x, -y, -z];
@@ -124,11 +127,22 @@ const FALL_KEYS = [
   [2.34, { xz: [-.2, .36], q: qMul(qMul(facing(Math.PI / 2), qAxis(X, .98)), qAxis(Y, -.22)), angles: pose({ spine: [.2, 0, .06], chest: [.1, 0, .05], neck: [-.45, 0, 0], head: [-.3, -.2, 0],
     leftShoulder: [-1.55, 0, .25], rightShoulder: [-1.35, 0, -.35], bothElbow: [-.2, 0, 0], bothHand: [-.5, 0, 0],
     leftHip: [-1.05, 0, .1], leftKnee: [1.5, 0, 0], leftFoot: [.6, 0, 0], rightHip: [-.55, 0, -.06], rightKnee: [1.25, 0, 0], rightFoot: [.55, 0, 0] }), ease: smooth }],
-  // Trunk drops to the floor under gravity (accelerating), ending three-quarter prone on the left side.
-  [2.66, { xz: [.12, .4], q: qMul(qMul(facing(Math.PI / 2), qAxis(X, 1.52)), qAxis(Y, -.62)), angles: pose({ spine: [.05, 0, .05], chest: [-.02, 0, .04], neck: [-.25, 0, .25], head: [-.2, -.55, .1],
-    leftShoulder: [-2.55, 0, .25], leftElbow: [-.35, 0, 0], leftHand: [.2, 0, 0], rightShoulder: [-1.1, 0, -.55], rightElbow: [-.95, 0, 0], rightHand: [.3, 0, 0],
-    leftHip: [-.12, 0, .06], leftKnee: [.35, 0, 0], leftFoot: [.75, 0, 0], rightHip: [-.85, 0, -.12], rightKnee: [1.25, 0, 0], rightFoot: [.7, 0, 0] }), ease: impact }],
+  // Trunk drops to the floor under gravity and rolls, ending on the left side with the top knee drawn forward.
+  [2.72, { xz: [.1, .42], q: qMul(qMul(facing(Math.PI / 2), qAxis(X, 1.52)), qAxis(Y, -1.05)), angles: pose({ spine: [.1, 0, .12], chest: [.08, 0, .07], neck: [-.1, .05, -.42], head: [-.02, .15, -.12],
+    leftShoulder: [-2.89, 0, -.16], leftElbow: [-.25, 0, 0], leftHand: [.2, 0, 0], rightShoulder: [-1.2, 0, -.2], rightElbow: [-1.5, 0, 0], rightHand: [.35, 0, 0],
+    leftHip: [-.3, 0, -.04], leftKnee: [.22, 0, 0], leftFoot: [.4, 0, 0], rightHip: [-1.17, 0, -.03], rightKnee: [1.2, 0, 0], rightFoot: [.4, 0, 0] }), ease: impact }],
 ];
+// Rest the floor pose on several supports at once (as a body settles) instead of balancing on one point.
+function settle(key, supports) {
+  let best = key.q, score = Infinity;
+  for (let i = -14; i <= 14; i++) for (let j = -14; j <= 14; j++) {
+    const q = qMul(qMul(key.q, qAxis(X, i * .014)), qAxis(Z, j * .014)), heights = contactHeights(grounded({ position: [0, 0, 0], rotation: q }, key.angles));
+    const total = supports.reduce((sum, bone) => sum + heights[bone], 0);
+    if (total < score) { score = total; best = q; }
+  }
+  return { ...key, q: best };
+}
+FALL_KEYS[FALL_KEYS.length - 1][1] = settle(FALL_KEYS.at(-1)[1], ['chest', 'pelvis', 'leftShoulder', 'leftHip', 'leftKnee', 'head']);
 function fallPose(t) {
   const { from, to, k } = track(FALL_KEYS.map(([time, key]) => [time, key, key.ease]), t);
   const a = from[1], b = to[1];
@@ -137,13 +151,14 @@ function fallPose(t) {
   // Idle: a slow look around before the trip. Trunk and sensors stay exactly still.
   const idle = smooth(t / .4) * (1 - smooth((t - 1.1) / .4));
   angles = { ...angles, neck: add(angles.neck, [0, .16 * Math.sin(t * 2.6) * idle, 0]), head: add(angles.head, [.04 * Math.sin(t * 3.1) * idle, .1 * Math.sin(t * 2.6) * idle, 0]) };
-  // Contact rebound: the trunk bounces once and settles; motion is exactly zero after 2.88 s.
-  const r = (t - 2.66) / .22, bounce = r > 0 && r < 1 ? .028 * Math.sin(Math.PI * r) * (1 - r * .4) : 0;
-  return grounded({ position: [xz[0], 0, xz[1]], rotation: qNormalize(qSlerp(a.q, b.q, k)) }, angles, bounce);
+  // Contact rebound: the trunk bounces once and settles; motion is exactly zero after 2.94 s.
+  const r = (t - 2.72) / .22, bounce = r > 0 && r < 1 ? .028 * Math.sin(Math.PI * r) * (1 - r * .4) : 0;
+  // Contact stays soft through the fall, then firms up so the body rests on the floor.
+  return grounded({ position: [xz[0], 0, xz[1]], rotation: qNormalize(qSlerp(a.q, b.q, k)) }, angles, bounce, SOFT_CONTACT * (1 - smooth(r)));
 }
 
 // Seated, then a tonic phase and rhythmic clonic jerks that slow before a slumped stillness.
-export const CHAIR = Object.freeze({ position: [-1.05, 0, .62], yaw: .9, seat: .47 });
+export const CHAIR = Object.freeze({ position: [-1.72, 0, .78], yaw: .95, seat: .47 });
 const SIT = pose({ spine: [.05, 0, 0], chest: [.07, 0, 0], neck: [-.04, 0, 0], head: [-.06, 0, 0],
   bothShoulder: [-.42, 0, .1], bothElbow: [-1.05, 0, 0], bothHand: [.15, 0, 0],
   bothHip: [-1.42, 0, .06], bothKnee: [1.36, 0, 0], bothFoot: [.18, 0, 0] });
@@ -156,10 +171,10 @@ function shakingPose(t) {
   const after = smooth((t - 6) / .6);
   const span = t - 1.4, f0 = 3.1, f1 = 1.9, phase = Math.max(0, f0 * span + (f1 - f0) * span * span / (2 * 4.4));
   const p = phase % 1, beat = Math.floor(phase), side = beat % 2 ? -1 : 1;
-  const jerk = (p < .22 ? smooth(p / .22) : 1 - smooth((p - .22) / .78)) * envelope; // sharp contraction, slower release
+  const jerk = (p < .26 ? smooth(p / .26) : 1 - smooth((p - .26) / .74)) * envelope; // sharp contraction, slower release
   let angles = blend(blend(SIT, TONIC, tonic), SLUMP, after);
   const j = (name, d) => { angles[name] = add(angles[name], d.map(v => v * jerk)); };
-  j('spine', [.12, 0, .05 * side]); j('chest', [.1, 0, .04 * side]); j('neck', [.22, 0, 0]); j('head', [.18, .08 * side, 0]);
+  j('spine', [.07, 0, .035 * side]); j('chest', [.06, 0, .03 * side]); j('neck', [.2, 0, 0]); j('head', [.16, .08 * side, 0]);
   for (const [s, sign] of [['left', 1], ['right', -1]]) {
     j(`${s}Shoulder`, [-.32, 0, .16 * sign]); j(`${s}Elbow`, [-.55, 0, 0]); j(`${s}Hand`, [.4, 0, 0]);
     j(`${s}Hip`, [-.1, 0, 0]); j(`${s}Knee`, [-.22, 0, 0]); j(`${s}Foot`, [-.2, 0, 0]);
@@ -190,7 +205,7 @@ function gaitPose(t, day) {
   const uL = phase(0), uR = phase(cycle / 2);
   const phi = phiAt(tau), yaw = pathYaw(phi), forward = qRotate(qAxis(Y, yaw), Z);
   const bob = .013 * Math.cos(4 * Math.PI * (uL - .3)), sway = .018 * Math.cos(2 * Math.PI * (uL - .3));
-  const centre = add(pathPoint(phi), add(scale(lateral(yaw), sway), [0, .895 + bob, 0]));
+  const centre = add(pathPoint(phi), add(scale(lateral(yaw), sway), [0, .95 + bob, 0]));
   const turn = .07 * Math.sin(2 * Math.PI * uL);
   const pelvis = qMul(qAxis(Y, yaw + turn), qEuler([.05, 0, .035 * Math.sin(2 * Math.PI * (uL - .05))]));
   const world = {};
@@ -277,7 +292,7 @@ export function gaitDays() {
   });
 }
 export function timingGate(scenario, t) {
-  if (scenario === 'fall') return t < 1.55 ? 'Baseline' : t < 2.66 ? 'Loss of balance → descent'
+  if (scenario === 'fall') return t < 1.55 ? 'Baseline' : t < 2.72 ? 'Loss of balance → descent'
     : t < 2.95 ? 'Contact / rebound assumption' : t < 5.4 ? 'Stillness window accumulating' : 'Illustrative stillness window complete';
   if (scenario === 'shaking') return t < 1 ? 'Baseline' : t < 5 ? 'Alternating movement → duration gate'
     : t < 6.5 ? 'Illustrative duration gate complete' : 'Movement settles';

@@ -1,0 +1,11 @@
+# Event understanding
+
+The early check-in remains immediate. A paired sensor trigger starts a six-second measured window: two seconds before the onset and four seconds after it. The backend stores original time-aligned acceleration, waist rotation, tilt, sequences, source quality and a provisional pattern assessment with the incident in SQLite. It does not interpolate missing samples. The Motion view and subsequent care handoff expose the assessment separately from the exact patient report.
+
+Interpretations are possible loss of balance, fall-like motion, sustained shaking, recovered movement, or insufficient evidence. These describe motion, not injury severity or a seizure diagnosis. A recovered pattern and a patient's reported recovery never cancel an incident; the existing explicit confirmation/ownership policy remains in force. Sparse chest data cannot establish a fall or shaking sequence. No algorithm can reconstruct an impact hidden between actual reports.
+
+Capture is currently for sensor-triggered incidents, not a manual red-button help request. Pending windows are discarded on reset or closure. The original recordings remain available under private data/recordings, and a completed window is retained with its original incident. A process restart during capture loses that pending window rather than fabricating its completion.
+
+To tune future changes, use the existing trial recorder with labels such as standing, walking, sitting quickly, bending, adjusting the wearable and controlled descent. Record ordinary activities before adjusting thresholds. Compare false check-ins, missed labelled movements, detection latency and data coverage; evaluate recordings from different sessions separately. Those are measured examples, not model training or validated accuracy. Public/synthetic traces remain separate from real-device evaluation.
+
+Event understanding and the teaching recorder are enabled. Use Workspace tools → Teach LIFELINE to record six-second examples and apply labels. Practice pauses automatic sensor alerts until Resume monitoring; the red help button remains available. Finish/reset an active incident before practice. Regular between-run resets preserve calibration and clear pending capture.

@@ -35,6 +35,22 @@ ID = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
 MAX_SAMPLES = 8000 * 6
 MAX_WELLBEING_SAMPLES = 8000 * 15
 TERMINAL_PHASES = {"RESOLVED", "CANCELLED_FALSE_ALARM"}
+# The 7 board LEDs mirror incident state with one calm color. They change only on a
+# state change, never during microphone capture or playback (shared USB channel),
+# and LED failure is cosmetic: control is dropped, the safety path is untouched.
+LED_COUNT = 7
+LED_COLORS = {
+    "idle": (0, 8, 0),                    # faint green: monitoring
+    "DETECTED": (70, 30, 0),              # amber: possible fall noticed
+    "CONFIRMING": (70, 30, 0),            # amber: checking on you
+    "listening": (0, 25, 80),             # blue: microphone open
+    "HELP_REQUESTED": (80, 0, 0),         # red: getting help
+    "ACKNOWLEDGED": (60, 0, 80),          # purple: someone answered
+    "RESPONDER_EN_ROUTE": (0, 60, 60),    # teal: help on the way
+    "ON_SCENE": (0, 80, 20),              # green: help is here
+    "RESOLVED": (0, 40, 10),              # soft green: closed
+    "CANCELLED_FALSE_ALARM": (0, 8, 0),   # back to monitoring
+}
 
 
 class StockTransferFailure(RuntimeError):
@@ -116,6 +132,8 @@ class StockGateway:
         self.upload_in_progress = False
         self.checkin_processing_event = None
         self.ui = None
+        self.leds_enabled = True
+        self.led_applied = None
         if ui_dir is not None:
             from ambient_ui import AmbientDisplay
             self.ui = AmbientDisplay(serial, ui_dir, self.require, self.status, now)
@@ -353,7 +371,15 @@ class StockGateway:
                 # Both press and release may redraw the stock screen. Repeated
                 # held levels are not new navigation and must not reset frames.
                 self.display_restore_pending = True
-            self.buttons['gray'] = bool(getattr(data, 'gray', False))
+            gray = bool(getattr(data, 'gray', False))
+            previous_gray = self.buttons['gray']
+            self.buttons['gray'] = gray
+            if gray and not previous_gray:
+                self.emit({'type': 'button.press', 'source': 'body-wili', 'sessionId': self.session,
+                           'eventId': str(uuid.uuid4()), 'incidentId': self.context['incidentId'],
+                           'checkinId': self.context['checkinId'], 'action': 'reset'})
+                self.cancel_wellbeing(restore_display=False)
+                self.stop_capture(restore_display=False)
             for name in ("green", "red"):
                 pressed = bool(getattr(data, name))
                 previous = self.buttons[name]
@@ -517,6 +543,33 @@ class StockGateway:
                                     "incidentId": self.context["incidentId"], "checkinId": self.context["checkinId"]}
             self.checkin_audio("prompting")
 
+    def led_key(self):
+        if self.context["incidentId"] is not None and self.context["phase"] in LED_COLORS:
+            return self.context["phase"]
+        return "idle"
+
+    def update_leds(self, key=None):
+        """Mirror state on the board LEDs; deferred while audio is busy, never raises."""
+        wanted = key or self.led_key()
+        if not self.leds_enabled or wanted == self.led_applied:
+            return
+        busy = (self.capture is not None or self.upload_in_progress
+                or self.voice_until is not None and self.now() < self.voice_until)
+        if busy or not self.serial.is_open():
+            return
+        setter = getattr(self.serial, "set_board_leds", None)
+        if setter is None:
+            self.leds_enabled = False
+            return
+        try:
+            for index in range(LED_COUNT):
+                self.require(setter(index, *LED_COLORS[wanted]))
+        except Exception:
+            self.leds_enabled = False
+            self.status("leds-unavailable", "Board LED control failed; lights are left to the firmware.")
+            return
+        self.led_applied = wanted
+
     def context_update(self, packet):
         incident, checkin, phase = packet.get("incidentId"), packet.get("checkinId"), packet.get("phase")
         dispatch_mode = packet.get('dispatchMode', 'live')
@@ -551,6 +604,7 @@ class StockGateway:
         if self.capture is None and not (self.conversation is not None and not self.conversation["stale"]
                                         or self.conversation_hold_until is not None and self.now() < self.conversation_hold_until):
             self.show_status(self.idle_display())
+        self.update_leds()
         if asset is not None and incident is not None:
             self.play(asset, phase == "CONFIRMING" and asset in {"CHECKIN", "MOVEMENT"})
 
@@ -756,6 +810,7 @@ class StockGateway:
             self.show_status(self.idle_display())
 
     def audio_tick(self):
+        self.update_leds()
         self.conversation_tick()
         self.wellbeing_tick()
         if self.conversation is None and self.accel_paused and self.playback_until is not None and self.now() >= self.playback_until:
@@ -763,6 +818,7 @@ class StockGateway:
         if self.pending_capture is not None and self.now() >= self.pending_capture["after"]:
             pending, self.pending_capture = self.pending_capture, None
             if self.context["phase"] == "CONFIRMING" and all(pending[k] == self.context[k] for k in ("incidentId", "checkinId")):
+                self.update_leds("listening")
                 self.require(self.serial.enable_audio_events(True))
                 self.audio_enabled = True
                 self.capture = {"incidentId": pending["incidentId"], "checkinId": pending["checkinId"],

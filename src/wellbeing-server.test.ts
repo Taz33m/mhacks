@@ -74,7 +74,7 @@ test('daily conversation records attributed voice without an incident, dedupes p
     const help = await waitFor(s => s.incident?.phase === 'HELP_REQUESTED');
     assert.equal(help.incident!.evidence.kind, 'manual');
     assert.equal(help.incident!.evidence.eventType, 'reported-seizure');
-    assert.match(help.incident!.evidence.summary, /explicitly reports a current seizure/);
+    assert.match(help.incident!.evidence.summary, /reports a current seizure/);
     assert.ok(help.conversation?.some(m => m.text === "I'm having a seizure" && m.source === 'freewili-local-speech'));
     await waitFor(() => packets.some(p => p.type === 'wellbeing.context' && p.enabled === false));
     assert.equal((await post()).status, 409);

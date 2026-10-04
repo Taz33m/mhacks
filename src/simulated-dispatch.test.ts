@@ -50,7 +50,7 @@ test('fake clock drives the whole incident loop autonomously, with simulated act
     f.advance(11_999); f.s.tick(); assert.equal(f.c.active()!.phase, 'ON_SCENE');
     f.advance(1); f.s.tick(); assert.equal(f.c.active(), null); assert.equal(f.c.latest()!.phase, 'RESOLVED');
     assert.equal(f.c.latest()!.resolutionActor, `simulated-dispatch:${maya.id}`);
-    assert.match(f.c.latest()!.outcome!, /reached the wearer/);
+    assert.match(f.c.latest()!.outcome!, /reached the patient/);
     assert.match(f.c.latest()!.outcome!, /arranging further assistance\./);
     f.s.tick();
     const responderActions = f.c.actions(i.id).filter(a => a.recipientId);
@@ -114,8 +114,8 @@ test('resolution waits for queued and playing speech, then proceeds when complet
   const f = fixture({ acceptMs: 0, departMs: 0, arriveMs: 0, resolveMs: 1000 });
   try {
     const i = f.c.trigger({ kind: 'manual', summary: 'Offline speech completion fixture.' });
-    f.s.tick(); speechCompleted(f.c, i.id); f.s.tick(); speechCompleted(f.c, i.id); f.s.tick();
-    f.advance(1000); f.s.tick(); assert.equal(f.c.active()!.phase, 'ON_SCENE', 'queued arrival speech holds resolution');
+    f.s.tick(); f.s.tick(); f.s.tick();
+    f.advance(1000); f.s.tick(); assert.equal(f.c.active()!.phase, 'ON_SCENE', 'queued patient-addressed speech holds resolution');
     const arrival = f.c.claimResponderSpeech('offline-arrival-playback')!;
     assert.equal(f.c.recordResponderPlayback(arrival.id, i.id, 'offline-arrival-playback', 'playing'), true);
     f.s.tick(); assert.equal(f.c.active()!.phase, 'ON_SCENE', 'playing speech also holds resolution');
@@ -133,7 +133,7 @@ test('missing wearable playback cannot stall the simulated outcome forever or fa
     f.advance(30_999); f.s.tick(); assert.equal(f.c.active()!.phase, 'ON_SCENE');
     f.advance(1); f.s.tick(); assert.equal(f.c.latest()!.phase, 'RESOLVED');
     const reports = f.c.conversation(i.id).filter(m => m.delivery !== 'recorded');
-    assert.equal(reports.length, 3); assert.ok(reports.every(m => m.delivery === 'failed'));
+    assert.equal(reports.length, 1); assert.ok(reports.every(m => m.delivery === 'failed'));
     assert.ok(reports.every(m => m.detail?.includes('playback completion')));
     assert.ok(!f.c.conversation(i.id).some(m => m.delivery === 'spoken'));
   } finally { f.close(); }
@@ -148,7 +148,7 @@ test('phase delays and delivered alerts survive restart without duplicate owners
     f.advance(7999); f.restart(); f.s.tick(); assert.equal(f.c.active()!.phase, 'ACKNOWLEDGED');
     f.advance(1); f.s.tick(); assert.equal(f.c.active()!.phase, 'RESPONDER_EN_ROUTE');
     assert.equal(f.c.events(i.id).filter(e => e.type === 'ACKNOWLEDGED').length, 1);
-    assert.equal(f.c.conversation(i.id).filter(m => m.text.includes('accepted')).length, 1);
+    assert.equal(f.c.conversation(i.id).filter(m => m.text.includes('On it')).length, 1);
     assert.equal(f.c.actions(i.id).find(a => a.type === 'alert')!.attempts, 1);
   } finally { f.close(); rmSync(dir, { recursive: true, force: true }); }
 });
@@ -239,28 +239,31 @@ test('generated wearer voice stays literal while simulated Maya replies enter at
     assert.ok(alert.text.includes(quote), 'The exact quote reaches the local responder before an AI handoff is prepared');
     f.s.tick(); assert.equal(f.c.active()!.ownerId, maya.id);
     const acceptance = f.c.conversation(i.id).find(message => message.speaker === 'responder')!;
-    assert.equal(acceptance.source, 'simulated-dispatch'); assert.equal(acceptance.delivery, 'queued');
+    assert.equal(acceptance.source, 'simulated-dispatch');
+    assert.equal(acceptance.delivery, 'recorded', 'care-team chatter is not spoken to the patient');
     const acceptedNotice = f.c.actions(i.id).findLast(action => action.type === 'wearer_status')!;
-    assert.ok(!acceptedNotice.text.includes('DEMO'));
-    assert.ok(acceptedNotice.text.includes(`Maya: “${acceptance.text}”`));
-    const spoken = f.c.claimResponderSpeech('offline-attributed-voice-test')!;
-    assert.equal(spoken.id, acceptance.id); assert.equal(spoken.source, 'simulated-dispatch');
-    assert.equal(spoken.speakerName, 'Maya'); assert.equal(spoken.text, acceptance.text);
-    assert.equal(f.c.recordResponderPlayback(spoken.id, i.id, 'offline-attributed-voice-test', 'playing'), true);
-    assert.equal(f.c.recordResponderPlayback(spoken.id, i.id, 'offline-attributed-voice-test', 'spoken'), true);
+    assert.equal(acceptedNotice.text, 'Maya has answered your alert.');
+    assert.equal(f.c.claimResponderSpeech('offline-attributed-voice-test'), null);
     f.advance(8000); f.s.tick();
     const departing = f.c.conversation(i.id).findLast(message => message.speaker === 'responder')!;
-    assert.equal(departing.text, 'I’m coming downstairs now. Don’t try to stand.');
-    assert.equal(departing.source, 'simulated-dispatch');
-    assert.ok(f.c.actions(i.id).findLast(action => action.type === 'wearer_status')!.text
-      .includes(`Maya: “${departing.text}”`));
-    speechCompleted(f.c, i.id); f.advance(16_000); f.s.tick(); speechCompleted(f.c, i.id);
+    assert.match(departing.text, /^[^,]+, I’m coming downstairs now\. Try not to move\.$/);
+    assert.equal(departing.source, 'simulated-dispatch'); assert.equal(departing.delivery, 'queued');
+    const departNotice = f.c.actions(i.id).findLast(action => action.type === 'wearer_status')!;
+    assert.ok(departNotice.text.startsWith('Maya is on the way.'));
+    assert.ok(departNotice.text.includes(`Maya: “${departing.text}”`));
+    const spoken = f.c.claimResponderSpeech('offline-attributed-voice-test')!;
+    assert.equal(spoken.id, departing.id); assert.equal(spoken.source, 'simulated-dispatch');
+    assert.equal(spoken.speakerName, 'Maya'); assert.equal(spoken.text, departing.text);
+    assert.equal(f.c.recordResponderPlayback(spoken.id, i.id, 'offline-attributed-voice-test', 'playing'), true);
+    assert.equal(f.c.recordResponderPlayback(spoken.id, i.id, 'offline-attributed-voice-test', 'spoken'), true);
+    f.advance(16_000); f.s.tick();
     const arrival = f.c.conversation(i.id).findLast(message => message.speaker === 'responder')!;
-    assert.ok(f.c.actions(i.id).findLast(action => action.type === 'wearer_status')!.text
-      .includes(`Maya: “${arrival.text}”`));
+    assert.equal(arrival.delivery, 'recorded');
+    assert.equal(f.c.actions(i.id).findLast(action => action.type === 'wearer_status')!.text, 'Maya has arrived.');
     f.advance(12_000); f.s.tick();
     assert.equal(f.c.latest()!.phase, 'RESOLVED');
-    assert.ok(f.c.actions(i.id).findLast(action => action.type === 'wearer_status')!.text.includes('arranging further assistance'));
+    assert.ok(!f.c.actions(i.id).some(action => action.type === 'wearer_status' && action.text.includes('arranging further assistance')),
+      'the outcome record is for the care team, not narrated to the patient');
     assert.deepEqual(f.c.conversation(i.id).find(message => message.id === wearer.id), wearer);
     assert.ok(f.c.actions(i.id).filter(action => action.recipientId).every(action => action.recipientId === maya.id));
     assert.equal(f.c.responders[0].phone, null);
@@ -279,9 +282,8 @@ test('accelerated phases do not pretend stale wearer notices were sent through a
     }
     assert.equal(f.c.latest()!.phase, 'RESOLVED');
     f.advance(1000); // A wearer lane next available five seconds after the initial phase.
-    const current = f.c.claimAction('wearer', true, i.id)!;
-    assert.ok(current.text.includes('reached the wearer'));
-    const oldNotices = f.c.actions(i.id).filter(action => action.type === 'wearer_status' && action.id !== current.id);
+    assert.equal(f.c.claimAction('wearer', true, i.id), null, 'resolution is not narrated to the patient');
+    const oldNotices = f.c.actions(i.id).filter(action => action.type === 'wearer_status');
     assert.ok(oldNotices.length >= 3); assert.ok(oldNotices.every(action => action.status === 'cancelled'));
     assert.ok(f.c.actions(i.id).every(action => action.status !== 'provider_accepted'));
   } finally { f.close(); }

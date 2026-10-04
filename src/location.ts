@@ -223,8 +223,8 @@ export class Location {
       eta = { seconds: Math.ceil(distanceMeters / 1.2), distanceMeters, method: 'straight-line-walking-estimate',
         updatedAt: Math.max(a.receivedAt, b.receivedAt) };
     }
-    const detail = !wearer ? 'Wearer location is not shared.' : !wearer.point.fresh ? 'Wearer location is stale; no approach estimate.'
-      : !responder ? 'Wearer location shared; no accepted owner location is available.'
+    const detail = !wearer ? 'Patient location is not shared.' : !wearer.point.fresh ? 'Patient location is stale; no approach estimate.'
+      : !responder ? 'Patient location shared; no accepted owner location is available.'
         : !eta ? 'Location accuracy, freshness or travel mode prevents a walking estimate.'
           : 'Straight-line walking estimate at 1.2 m/s; not a road route or confirmed arrival.';
     return { configured: true, wearer: wearer?.point ?? null, responder: responder?.point ?? null, eta, detail, invite: this.inviteStatus() };

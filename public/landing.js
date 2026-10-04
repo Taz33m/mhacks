@@ -32,6 +32,8 @@
   const interval = (n, a, b) => clamp((n - a) / (b - a));
   const ease = n => n * n * (3 - 2 * n);
   const sceneAt = p => manifest.scenes.findIndex(scene => p < scene.end);
+  const deviceSound = document.getElementById('device-sound');
+  deviceSound.setAttribute('viewBox', mobile ? '0 0 648 1152' : '0 0 1280 720');
   const wave = document.querySelector('.voice-wave');
   for (let i = 0; i < 24; i++) wave.appendChild(document.createElement('i'));
   function coordination(t, visible) {
@@ -155,6 +157,9 @@
     // HELP REQUESTED appears. Pausing or reversing still owns the exact frame.
     if (!holding && scene.id === 'words') requested = scene.first
       + Math.min(scene.count - 1, Math.floor(interval(sceneProgress, 0, .62) * scene.count));
+    // Settle the return shot promptly, then hold the calm closed-mouth pose.
+    if (!holding && scene.id === 'waiting') requested = scene.first
+      + Math.min(scene.count - 1, Math.floor(interval(sceneProgress, 0, .40) * scene.count));
     // Give the live DOM conversation a stable human pose; keys follow departure.
     if (!holding && scene.id === 'responder') requested = sceneProgress < .17
       ? 160 + Math.floor(interval(sceneProgress, 0, .17) * 15)
@@ -176,6 +181,18 @@
       imbalance ? visionPulse(imbalance.start, .012, .018) * .4 : 0,
       impact ? visionPulse(impact.start, .016, .025) : 0,
       visionPulse(checkin.start, .012, .022) * .8);
+    // The check-in voice radiates from WILi. Scroll owns each ripple's phase.
+    const speaking = !holding && scene.id === 'checkin';
+    const voiceEnvelope = speaking ? ease(interval(sceneProgress, .08, .22))
+      * (1 - ease(interval(sceneProgress, .83, 1))) : 0;
+    deviceSound.style.opacity = String(voiceEnvelope);
+    deviceSound.querySelectorAll('circle').forEach((ring, i) => {
+      const phase = (sceneProgress * 3 + i / 3) % 1;
+      ring.setAttribute('cx', mobile ? '456' : '1037');
+      ring.setAttribute('cy', mobile ? '638' : '399');
+      ring.setAttribute('r', String((mobile ? 24 : 16) + phase * (mobile ? 85 : 55)));
+      ring.style.opacity = String((1 - phase) * .45);
+    });
     stage.style.setProperty('--incident-vision', vision);
     stage.style.setProperty('--incident-blur', `${vision * (mobile ? 7 : 9)}px`);
     // Acceptance is the first meaningful color change; reassurance carries it back.
@@ -240,6 +257,7 @@
     enabled = false;
     body.classList.remove('sequence-ready');
     stage.removeAttribute('style');
+    deviceSound.style.opacity = '0';
     canvas.classList.remove('has-frame');
     poster.src = mobile ? '/media/story/mobile/frame_0259.webp' : '/media/story/held.webp';
     captions.forEach(el => { el.classList.remove('is-visible'); el.style.opacity = '0'; });
@@ -378,6 +396,53 @@
     reduce.addEventListener('change', chartSchedule); document.fonts?.ready.then(chartSchedule);
     renderSignals();
   }
+  function initCareConversation() {
+    const section = document.getElementById('care-conversation');
+    if (!section) return;
+    const phones = [...section.querySelectorAll('.care-phone')];
+    const lanes = phones.map((phone, index) => ({ phone, viewport: phone.querySelector('.care-message-viewport'),
+      thread: phone.querySelector('.care-phone-messages, .care-team-thread'), typing: phone.querySelector('.care-typing'),
+      starts: index === 0 ? [1.0, 3.0, 11.7] : [4.4, 5.4, 7.0, 8.3, 10.1],
+      windows: index === 0 ? [[.2, 1], [10.9, 11.7]] : [[3.7, 4.4], [6.3, 7], [7.7, 8.3], [9.3, 10.1]] }));
+    let visible = false, animation = 0, previous = null, elapsed = 0;
+    function paint(seconds, staticView = false) {
+      const reset = staticView ? 1 : 1 - ease(interval(seconds, 14.4, 15.1));
+      lanes.forEach(lane => {
+        let shift = 0;
+        [...lane.thread.children].forEach((message, index) => {
+          const start = lane.starts[index], reveal = staticView ? 1 : ease(interval(seconds, start, start + .42));
+          const spring = staticView ? 0 : Math.sin(interval(seconds, start, start + .62) * Math.PI) * .035;
+          const outgoing = message.classList.contains('care-patient-text') || message.classList.contains('care-team-agent');
+          message.style.opacity = String(reveal * reset);
+          message.style.transform = `translate(${(1 - reveal) * (outgoing ? 18 : -16)}px, ${(1 - reveal) * 16}px) scale(${.82 + reveal * .18 + spring})`;
+          message.style.filter = `blur(${(1 - reveal) * 4 + (1 - reset) * 3}px)`;
+          if (reveal > 0) shift = Math.max(shift, (message.offsetTop + message.offsetHeight - lane.viewport.clientHeight + 10) * reveal);
+        });
+        lane.viewport.style.overflowY = staticView ? 'auto' : 'hidden';
+        lane.thread.style.transform = staticView ? 'none' : `translateY(${-Math.max(0, shift)}px)`;
+        const typing = !staticView && lane.windows.some(([start, end]) => seconds >= start && seconds < end);
+        lane.typing.style.opacity = typing ? '1' : '0';
+        [...lane.typing.children].forEach((dot, index) => dot.style.transform = typing ? `translateY(${Math.sin(seconds * 9 - index * 1.2) * 2}px)` : '');
+      });
+      section.dataset.conversationTime = seconds.toFixed(2);
+    }
+    function frame(now) {
+      animation = 0;
+      if (reduce.matches) { previous = null; paint(0, true); return; }
+      if (!visible || document.hidden) { previous = null; return; }
+      if (previous !== null) elapsed += Math.min(.08, (now - previous) / 1000);
+      previous = now; paint(elapsed % 16); animation = requestAnimationFrame(frame);
+    }
+    function resume() {
+      if (reduce.matches) { if (animation) cancelAnimationFrame(animation); animation = 0; previous = null; paint(0, true); }
+      else if (visible && !document.hidden && !animation) { previous = null; animation = requestAnimationFrame(frame); }
+    }
+    new IntersectionObserver(entries => { visible = entries[0].isIntersecting; resume(); }, { threshold: 0 }).observe(section);
+    document.addEventListener('visibilitychange', resume);
+    reduce.addEventListener('change', resume);
+    paint(0, true); resume();
+  }
+  initCareConversation();
   initSignals();
   start();
 })();
