@@ -11,3 +11,6 @@ tmp/
 __pycache__/
 *.pyc
 *.swp
+
+# Posture model dataset (downloaded on demand)
+tools/posture-model/MHEALTHDATASET/
