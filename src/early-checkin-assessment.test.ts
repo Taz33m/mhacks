@@ -71,10 +71,14 @@ test('paired motion opens an early check-in without floor impact or stillness', 
   assert.equal(f.early.candidate(f.wili, f.motion), null);
   f.early.reset({ cooldown: false }); assert.equal(f.early.candidate(f.wili, f.motion), null, 'reset cannot replay consumed readings');
 });
-test('neither sensor alone nor uncalibrated or disconnected waist starts a check-in', () => {
-  for (const mode of ['body-only', 'waist-only', 'uncalibrated', 'disconnected'] as const) {
+test('an uncalibrated waist still starts a check-in (calibration is optional)', () => {
+  const f = ready(); f.motion.reset();
+  f.frame({ bodyG: [0, 0, 1.8], angular: 1.5 });
+  assert.equal(f.early.candidate(f.wili, f.motion)?.eventType, 'possible-balance-loss');
+});
+test('neither sensor alone nor a disconnected waist starts a check-in', () => {
+  for (const mode of ['body-only', 'waist-only', 'disconnected'] as const) {
     const f = ready();
-    if (mode === 'uncalibrated') f.motion.reset();
     f.frame({ bodyG: mode === 'waist-only' ? [0, 0, 1] : [0, 0, 1.8], angular: mode === 'body-only' ? 0 : 1.5 });
     if (mode === 'disconnected') f.motion.disconnected('waist-airpod');
     assert.equal(f.early.candidate(f.wili, f.motion), null, mode);

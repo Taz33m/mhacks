@@ -39,7 +39,7 @@ export class EarlyCheckinAssessment {
     if (!body.connected || !body.sessionId || body.receivedAgeMs === null || body.receivedAgeMs < 0 || body.receivedAgeMs >= WILI_ALIVE_MS
       || body.fullScaleG === null || !usableRange(body.captureClock, body.fullScaleG)
       || body.alignmentUncertaintyMs === null || body.alignmentUncertaintyMs > t.maxAlignmentUncertaintyMs
-      || !waist?.connected || !waist.fresh || !waist.calibrated || !waist.sessionId
+      || !waist?.connected || !waist.fresh || !waist.sessionId
       || !['Left', 'Right'].includes(waist.sensorLocation ?? '')
       || waist.alignmentUncertaintyMs === null || waist.alignmentUncertaintyMs > t.maxAlignmentUncertaintyMs) return null;
     const threshold = body.captureClock === 'host-receipt' ? t.stockImpactG : t.impactG;
