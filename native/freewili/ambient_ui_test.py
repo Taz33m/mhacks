@@ -114,7 +114,7 @@ class AmbientTests(unittest.TestCase):
         gateway, serial, clock, _ = self.gateway()
         gateway.ui.model.context('ACKNOWLEDGED', 'Uncached Person'); gateway.ui_tick()
         expected = self.manifest['assets']['accepted::2']['file']
-        self.assertEqual(serial.calls[-1], ('image', '/images/' + expected))
+        self.assertEqual(serial.calls[-1], ('image', '\\images\\' + expected))
 
     def test_sdk_callback_only_updates_model(self):
         gateway, serial, clock, _ = self.gateway()

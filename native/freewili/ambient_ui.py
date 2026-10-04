@@ -231,7 +231,9 @@ class AmbientDisplay:
         if entry['file']==self.last_file:return
         started=time.monotonic()
         try:
-            result=self.serial.show_gui_image('/images/'+entry['file'])
+            # OG v54's GUI loader accepts Windows-style paths. Its filesystem
+            # upload API accepts forward slashes, but the image loader rejects them.
+            result=self.serial.show_gui_image('\\images\\'+entry['file'])
         except (OSError, RuntimeError):
             result=None
         elapsed=time.monotonic()-started

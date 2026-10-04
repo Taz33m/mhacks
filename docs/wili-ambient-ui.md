@@ -25,4 +25,6 @@ Recognition acknowledges a transcript; it does **not** prove that Photon deliver
 
 All display commands execute on the existing serial-owning worker. PCM callbacks update only the presentation model. The image client suppresses commands during file transfer and near a recording deadline, limits updates to five per second, and reduces animation to one update per second when a command takes over 150 ms. Failed image commands restore the existing text presentation. Sensor gaps during existing audio playback remain real gaps.
 
+On the connected OG v54, the GUI loader rejects forward-slash image paths even though the filesystem upload API accepts them. The display client uses `\\images\\NAME.FWI`, verified with a full-screen native asset. The builder prefers the installed board Python runtime so preview and private contact assets use the same font rasterizer.
+
 Offline validation: `python3 native/freewili/ambient_ui_test.py`, `node --test src/stock-worker.test.ts native/freewili/stock-recovery.test.ts native/freewili/wellbeing-audio.test.ts native/freewili/conversation-audio.test.ts`, and `npm run typecheck`. The native `.FWI` format is also compared against the installed official SDK converter. Physical interaction and speaker audibility still require observation on the device.

@@ -2,8 +2,15 @@
 import importlib.util
 import pathlib
 import shutil
-from PIL import Image,ImageDraw
+import os
+import sys
 ROOT=pathlib.Path(__file__).resolve().parents[1]
+# Use the board runtime's Pillow for identical contact/preview pixels. Different
+# Pillow versions can rasterize the same font differently and change asset hashes.
+runtime=ROOT/'output/freewili-runtime/bin/python'
+if runtime.is_file() and pathlib.Path(sys.executable).resolve()!=runtime.resolve():
+ os.execv(str(runtime),[str(runtime),str(pathlib.Path(__file__).resolve()),*sys.argv[1:]])
+from PIL import Image,ImageDraw
 spec=importlib.util.spec_from_file_location('ambient_ui',ROOT/'native/freewili/ambient_ui.py')
 ui=importlib.util.module_from_spec(spec);spec.loader.exec_module(ui)
 dest=ROOT/'output/wili-ui';manifest=ui.build_assets(dest)
