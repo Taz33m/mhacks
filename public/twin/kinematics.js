@@ -10,7 +10,8 @@ export const SCENARIOS = Object.freeze({ fall: { title: 'Fall + stillness', dura
 const G = 9.80665;
 const clamp01 = n => Math.max(0, Math.min(1, n));
 const smooth = n => { const t = clamp01(n); return t * t * t * (10 + t * (-15 + t * 6)); };
-const easeIn = n => { const t = clamp01(n); return t * t * t; };
+// Gravity-like acceleration into contact, then a short (~70 ms) crush instead of an infinite stop.
+const impact = n => { const t = clamp01(n); return t < .8 ? .8 * (t / .8) ** 2 : 1 - .2 * ((1 - t) / .2) ** 2; };
 const mix = (a, b, k) => a + (b - a) * k;
 
 const add = (a, b) => a.map((v, i) => v + b[i]);
@@ -124,9 +125,9 @@ const FALL_KEYS = [
     leftShoulder: [-1.55, 0, .25], rightShoulder: [-1.35, 0, -.35], bothElbow: [-.2, 0, 0], bothHand: [-.5, 0, 0],
     leftHip: [-1.05, 0, .1], leftKnee: [1.5, 0, 0], leftFoot: [.6, 0, 0], rightHip: [-.55, 0, -.06], rightKnee: [1.25, 0, 0], rightFoot: [.55, 0, 0] }), ease: smooth }],
   // Trunk drops to the floor under gravity (accelerating), ending three-quarter prone on the left side.
-  [2.62, { xz: [.12, .4], q: qMul(qMul(facing(Math.PI / 2), qAxis(X, 1.52)), qAxis(Y, -.62)), angles: pose({ spine: [.05, 0, .05], chest: [-.02, 0, .04], neck: [-.25, 0, .25], head: [-.2, -.55, .1],
+  [2.66, { xz: [.12, .4], q: qMul(qMul(facing(Math.PI / 2), qAxis(X, 1.52)), qAxis(Y, -.62)), angles: pose({ spine: [.05, 0, .05], chest: [-.02, 0, .04], neck: [-.25, 0, .25], head: [-.2, -.55, .1],
     leftShoulder: [-2.55, 0, .25], leftElbow: [-.35, 0, 0], leftHand: [.2, 0, 0], rightShoulder: [-1.1, 0, -.55], rightElbow: [-.95, 0, 0], rightHand: [.3, 0, 0],
-    leftHip: [-.12, 0, .06], leftKnee: [.35, 0, 0], leftFoot: [.75, 0, 0], rightHip: [-.85, 0, -.12], rightKnee: [1.25, 0, 0], rightFoot: [.7, 0, 0] }), ease: easeIn }],
+    leftHip: [-.12, 0, .06], leftKnee: [.35, 0, 0], leftFoot: [.75, 0, 0], rightHip: [-.85, 0, -.12], rightKnee: [1.25, 0, 0], rightFoot: [.7, 0, 0] }), ease: impact }],
 ];
 function fallPose(t) {
   const { from, to, k } = track(FALL_KEYS.map(([time, key]) => [time, key, key.ease]), t);
@@ -136,13 +137,13 @@ function fallPose(t) {
   // Idle: a slow look around before the trip. Trunk and sensors stay exactly still.
   const idle = smooth(t / .4) * (1 - smooth((t - 1.1) / .4));
   angles = { ...angles, neck: add(angles.neck, [0, .16 * Math.sin(t * 2.6) * idle, 0]), head: add(angles.head, [.04 * Math.sin(t * 3.1) * idle, .1 * Math.sin(t * 2.6) * idle, 0]) };
-  // Contact rebound: the trunk bounces once and settles; motion is exactly zero after 2.84 s.
-  const r = (t - 2.62) / .22, bounce = r > 0 && r < 1 ? .028 * Math.sin(Math.PI * r) * (1 - r * .4) : 0;
+  // Contact rebound: the trunk bounces once and settles; motion is exactly zero after 2.88 s.
+  const r = (t - 2.66) / .22, bounce = r > 0 && r < 1 ? .028 * Math.sin(Math.PI * r) * (1 - r * .4) : 0;
   return grounded({ position: [xz[0], 0, xz[1]], rotation: qNormalize(qSlerp(a.q, b.q, k)) }, angles, bounce);
 }
 
 // Seated, then a tonic phase and rhythmic clonic jerks that slow before a slumped stillness.
-const CHAIR = Object.freeze({ position: [-1.05, 0, .62], yaw: .9, seat: .46 });
+export const CHAIR = Object.freeze({ position: [-1.05, 0, .62], yaw: .9, seat: .47 });
 const SIT = pose({ spine: [.05, 0, 0], chest: [.07, 0, 0], neck: [-.04, 0, 0], head: [-.06, 0, 0],
   bothShoulder: [-.42, 0, .1], bothElbow: [-1.05, 0, 0], bothHand: [.15, 0, 0],
   bothHip: [-1.42, 0, .06], bothKnee: [1.36, 0, 0], bothFoot: [.18, 0, 0] });
@@ -169,7 +170,7 @@ function shakingPose(t) {
 }
 
 // Gait: a slow, slightly stooped walk around the carpet with planted feet and two-bone leg IK.
-const PATH = Object.freeze({ centre: [.05, 0, .28], radius: .74, loop: 8, steps: 14, stance: .6 });
+export const PATH = Object.freeze({ centre: [.05, 0, .28], radius: .74, loop: 8, steps: 14, stance: .6 });
 const pathPoint = phi => [PATH.centre[0] + PATH.radius * Math.sin(phi), 0, PATH.centre[2] + PATH.radius * Math.cos(phi)];
 const pathYaw = phi => phi + Math.PI / 2; // counter-clockwise tangent seen from above
 const lateral = yaw => [Math.cos(yaw), 0, -Math.sin(yaw)]; // the mannequin's left
@@ -212,10 +213,11 @@ function gaitPose(t, day) {
       else if (u > .42) ({ ankle, q: foot } = pivot(plant, .5 * smooth((u - .42) / (PATH.stance - .42)), true));
       else { ankle = plant.at; foot = qAxis(Y, plant.yaw); }
     } else {
-      const k = (u - PATH.stance) / (1 - PATH.stance), from = footAt(strike, s), to = footAt(strike + cycle, s);
-      const travel = .5 - .5 * Math.cos(Math.PI * k), yawNow = mix(from.yaw, to.yaw, travel);
-      ankle = add(add(scale(from.at, 1 - travel), scale(to.at, travel)), [0, .125 * Math.sin(Math.PI * Math.min(1, k * 1.15)) + .03 * (1 - k), 0]);
-      foot = qMul(qAxis(Y, yawNow), qAxis(X, mix(.5, -.22, smooth(k * 1.1))));
+      // Swing starts from the toe-off pose and lands in the heel-strike pose of the next footprint.
+      const k = (u - PATH.stance) / (1 - PATH.stance), from = pivot(footAt(strike, s), .5, true), to = pivot(footAt(strike + cycle, s), -.22, false);
+      const plantFrom = footAt(strike, s), plantTo = footAt(strike + cycle, s), travel = .5 - .5 * Math.cos(Math.PI * k);
+      ankle = add(add(scale(from.ankle, 1 - travel), scale(to.ankle, travel)), [0, .12 * Math.sin(Math.PI * k), 0]);
+      foot = qMul(qAxis(Y, mix(plantFrom.yaw, plantTo.yaw, travel)), qAxis(X, mix(.5, -.22, smooth(k))));
     }
     const hip = hipOf(`${side}Hip`), pole = add(forward, scale(lateral(yaw), s * .12));
     const leg = legIK(hip, ankle, pole);
@@ -275,8 +277,8 @@ export function gaitDays() {
   });
 }
 export function timingGate(scenario, t) {
-  if (scenario === 'fall') return t < 1.55 ? 'Baseline' : t < 2.34 ? 'Loss of balance → descent'
-    : t < 2.9 ? 'Contact / rebound assumption' : t < 5.4 ? 'Stillness window accumulating' : 'Illustrative stillness window complete';
+  if (scenario === 'fall') return t < 1.55 ? 'Baseline' : t < 2.66 ? 'Loss of balance → descent'
+    : t < 2.95 ? 'Contact / rebound assumption' : t < 5.4 ? 'Stillness window accumulating' : 'Illustrative stillness window complete';
   if (scenario === 'shaking') return t < 1 ? 'Baseline' : t < 5 ? 'Alternating movement → duration gate'
     : t < 6.5 ? 'Illustrative duration gate complete' : 'Movement settles';
   return 'Step timing → daily interval variability';
