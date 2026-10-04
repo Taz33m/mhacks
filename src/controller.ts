@@ -244,7 +244,7 @@ export class Controller {
         : evidence.eventType === 'possible-balance-loss' ? 'I noticed a possible loss of balance.'
         : evidence.eventType === 'reported-seizure' ? 'You reported a seizure. I am requesting help.' : 'I noticed a possible fall.';
       this.enqueue(i, 'checkin', null, `${noticed} Do you need help? You can say I need help, or press the green button on WILi if you don't need help.`);
-      this.enqueue(i, 'wearer_checkin', null, `${this.patientFirstName}, ${noticed.startsWith('I ') ? noticed : noticed.charAt(0).toLowerCase() + noticed.slice(1)} Are you okay? Reply here if you need help, or press the green button on WILi if you’re fine.`);
+      this.enqueue(i, 'wearer_checkin', null, `${this.patientFirstName}, ${noticed.startsWith('I ') ? noticed : noticed.charAt(0).toLowerCase() + noticed.slice(1)} Do you need help? Reply here, or press the green button on WILi if you’re fine.`);
       if (report) {
         this.event(i, 'CHECKIN_REPLY', report.source, JSON.stringify({ transcript: report.transcript, decision: 'help_requested' }));
         this.addConversation({ id: randomUUID(), incidentId: i.id, speaker: 'wearer', speakerName: this.wearerName,
@@ -354,10 +354,12 @@ export class Controller {
       if (source === 'simulated-dispatch' && (inboundId || event)) throw new PolicyError('Simulation cannot attach native provider evidence.');
       if (inboundId && this.db.prepare('SELECT id FROM inbound WHERE id=?').get(inboundId)) return;
       if (i.ownerId === responderId) return;
-      if (i.phase !== 'HELP_REQUESTED' || i.ownerId || i.declined.includes(responderId))
+      // A contacted responder can still take responsibility after a missed deadline or an earlier decline.
+      if (i.phase !== 'HELP_REQUESTED' || i.ownerId)
         throw new PolicyError('Incident has an owner or is not accepting responders.');
       if (!i.contacted.includes(responderId)) throw new PolicyError('Responder has not been contacted for this incident.');
       if (inboundId) this.db.prepare('INSERT INTO inbound VALUES(?)').run(inboundId);
+      if (i.declined.includes(responderId)) i.declined.splice(i.declined.indexOf(responderId), 1);
       i.ownerId = responderId; i.progressDeadline = this.now() + this.policy.progressMs;
       this.phase(i, 'ACKNOWLEDGED', actor, `${r.name} accepted responsibility; departure is not yet confirmed.`);
       this.stopPending(i);

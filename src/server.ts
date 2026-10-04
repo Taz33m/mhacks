@@ -1,4 +1,5 @@
 import { clinicalMessage } from './clinical-message.ts';
+import { caregiverText } from './caregiver-text.ts';
 import { RehearsalRole } from './rehearsal-role.ts';
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -373,7 +374,9 @@ async function providerWorker(channel: MessageLane): Promise<void> {
       prepared = prepared.replace('Location not provided.', 'Current location appears in the separate shared-location section.') + `\n\nShared location:\n${locationBrief()}`;
     if (prepared.length <= 6000 && prepared !== a.text) a = controller.decorateAction(a.id, prepared);
     lane.nextAt = Date.now() + messageGapMs;
-    const result = await sendMessage(phone, a.type === 'answer' ? clinicalMessage(a.text, controller.wearerName) : a.text, () => !stopping && controller.actionPermitted(a)
+    const outgoing = a.type === 'answer' ? clinicalMessage(a.text, controller.wearerName) : a.text;
+    const result = await sendMessage(phone, !wearerAction && !roleRoute
+      ? caregiverText(a.type, outgoing, controller.wearerName, responders.find(r => r.id === recipientId)?.name) : outgoing, () => !stopping && controller.actionPermitted(a)
       && Boolean(rehearsalRole.view(controller.active()?.id)?.responderId === recipientId) === Boolean(roleRoute)
       && (a.type !== 'wearer_location' || Boolean(locationView().eta)), a.replyToMessageId
       ? { replyToMessageId: a.replyToMessageId, chatId: a.replyChatId, lineId: a.replyLineId } : undefined);

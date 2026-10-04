@@ -6,10 +6,13 @@ const help = new Set([
   'help', 'help me', 'please help', 'please help me', 'i need help',
   'yes i need help', 'i need help please', 'im not safe', 'i am not safe',
   'im hurt', 'i am hurt', 'i cant get up', 'i cannot get up',
+  // WILi asks "Morgan, do you need help?", so a plain yes is a request for help.
+  'yes', 'yeah', 'yep', 'yes please', 'yes help', 'yes help me', 'yeah i need help',
 ]);
 const confirmation = new Set([
   'im okay', 'i am okay', 'im ok', 'i am ok', 'im safe', 'i am safe',
   'i dont need help', 'i do not need help', 'false alarm', 'cancel this check in',
+  'no', 'nope', 'no thanks', 'no im okay', 'no im ok', 'no im fine', 'im fine', 'i am fine',
 ]);
 
 /** A current first-person report requests help; it does not establish a diagnosis. */
@@ -21,6 +24,8 @@ export function reportsCurrentSeizure(transcript: string): boolean {
 }
 
 export function classifyCheckinReply(transcript: string): CheckinDecision {
+  // 'I said, "please help"' is the patient repeating themselves, not reported speech.
+  transcript = transcript.replace(/^\s*i\s+(?:said|say|am saying|['’]m saying)\s*[,:]?\s*["“]?\s*(.*?)\s*["”]?\s*$/is, '$1');
   const command = transcript.toLowerCase().replace(/['’]/g, '')
     .replace(/[.,!?;:\-]/g, ' ').replace(/\s+/g, ' ').trim();
   // A direct polite request is still a request even when STT adds a question mark.

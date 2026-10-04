@@ -166,8 +166,8 @@ import { careHighlights } from './care-summary.js';
     text('#policy-mode', policy.demoMode ? 'ACCELERATED TIMING' : 'CONFIGURED POLICY');
     $('#policy-mode').className = `badge ${policy.demoMode ? 'warning' : ''}`;
     text('#policy-detail', policy.demoMode
-      ? `Check-in timeout accelerated from configurable policy value: ${seconds(policy.checkinMs)} for new check-ins vs ${seconds(policy.configuredCheckinMs)} configured. Existing incident deadlines are preserved.`
-      : `New check-ins use the configured ${seconds(policy.checkinMs)} timeout.`);
+      ? `Check-in timeout ${seconds(policy.checkinMs)} · configured ${seconds(policy.configuredCheckinMs)}`
+      : `Check-in timeout ${seconds(policy.checkinMs)}`);
   }
 
   function renderDispatch() {
@@ -309,19 +309,19 @@ import { careHighlights } from './care-summary.js';
   function renderSensor(sensor) {
     const card = document.getElementById(sensor.source);
     if (!card) return;
-    const state = !sensor.connected ? 'Disconnected' : !online ? 'Last received' : !sensor.fresh ? 'Stale signal' : 'Fresh signal';
+    const state = !sensor.connected || !online ? 'Offline' : !sensor.fresh ? 'Stale' : 'Live';
     const badge = $('.sensor-status', card);
     badge.textContent = state;
     badge.className = `badge sensor-status ${online && sensor.connected && sensor.fresh ? 'good' : sensor.connected ? 'warning' : ''}`;
     text('.sensor-g', number(sensor.totalG, 2), card);
-    text('.sensor-tilt', `Tilt ${number(sensor.tiltDegrees)}${finite(sensor.tiltDegrees) ? '°' : ''}`, card);
+    text('.sensor-tilt', `${number(sensor.tiltDegrees)}${finite(sensor.tiltDegrees) ? '°' : ''}`, card);
     text('.sensor-age', finite(sensor.ageMs) ? sensor.ageMs < 1000 ? `${Math.round(sensor.ageMs)} ms` : `${(sensor.ageMs / 1000).toFixed(1)} s` : 'No sample', card);
     text('.sensor-calibration', sensor.calibrated ? 'Calibrated' : 'Optional; tilt unknown', card);
     text('.sensor-alignment', finite(sensor.alignmentUncertaintyMs) ? `${Math.round(sensor.alignmentUncertaintyMs)} ms` : 'Unknown', card);
     text('.sensor-hz', finite(sensor.sampleHz) && sensor.sampleHz > 0 ? `${sensor.sampleHz.toFixed(1)} Hz` : '—', card);
     if (sensor.source === 'waist-airpod') {
       const angular = sensor.trace?.at(-1)?.angularSpeed;
-      text('.waist-angular', online && sensor.fresh && finite(angular) ? `${angular.toFixed(2)} rad/s` : 'Not recorded', card);
+      text('.waist-angular', online && sensor.fresh && finite(angular) ? `${angular.toFixed(2)} rad/s` : '—', card);
       text('.waist-quaternion', online && sensor.fresh && Array.isArray(sensor.quaternion) && sensor.quaternion.length === 4 && sensor.quaternion.every(finite)
         ? sensor.quaternion.map(value => value.toFixed(3)).join(' / ') : 'Not recorded', card);
     }
@@ -345,10 +345,9 @@ import { careHighlights } from './care-summary.js';
     if (wili?.sessionId && wiliTrace.sessionId !== wili.sessionId) wiliTrace = { sessionId: wili.sessionId, points: [] };
     wiliTrace = appendWiliTrace(wiliTrace, wiliDisplaySample, at);
     drawChart($('#body-wili'), wiliTrace.points);
-    const quiet = wiliDisplaySample && Math.abs(wiliDisplaySample.totalG - 1) < .15;
     const displayAge = wiliDisplaySample ? Math.max(0, at - wiliDisplaySample.receivedAt) : null;
-    const status = !wiliDisplaySample || quiet || !online || !wili?.connected ? 'Idle' : 'Motion';
-    text('#wili-status', status); $('#wili-status').className = 'badge';
+    const wiliLive = online && wili?.connected === true;
+    text('#wili-status', wiliLive ? 'Live' : 'Offline'); $('#wili-status').className = `badge ${wiliLive ? 'good' : ''}`;
     text('#wili-g', number(wiliDisplaySample?.totalG ?? 0, 2));
     ['x', 'y', 'z'].forEach((axis, index) => text(`#wili-${axis}`, `${number(wiliDisplaySample?.accelerationG?.[index] ?? 0, 3)} g`));
     text('#wili-sample-detail', displayAge !== null ? `Last measured reading · ${displayAge < 1000 ? `${Math.round(displayAge)} ms` : `${Math.floor(displayAge / 1000)} s`} ago`
@@ -429,7 +428,7 @@ import { careHighlights } from './care-summary.js';
     clearTimeout(guide?.requestTimeout);
     guide?.request?.abort();
     if ($('#calibration-guide').open) $('#calibration-guide').close();
-    if (['requesting', 'verifying'].includes(guide?.stage)) text('#calibration-message', 'Guide closed during the baseline request. Check the waist sensor’s calibration status before retrying.');
+    if (['requesting', 'verifying'].includes(guide?.stage)) text('#calibration-message', 'Interrupted');
     updateControls();
   }
 
@@ -541,7 +540,7 @@ import { careHighlights } from './care-summary.js';
         guide.stage = 'calibrated';
         guide.deadline = performance.now() + 800;
         guide.baselineVerified = true;
-        text('#calibration-message', `New standing tilt baseline verified for the same ${guide.identity.sensorLocation} waist AirPod session. FREE-WILi orientation was not calibrated.`);
+        text('#calibration-message', 'Calibrated');
         $('#calibration-message').classList.remove('error');
       }
       if (guide.stage === 'calibrated' && performance.now() >= guide.deadline) beginGuideMovement();
@@ -634,7 +633,7 @@ import { careHighlights } from './care-summary.js';
       ? 'WILi is connected; waiting for its next acceleration report. Stock reporting is sparse at rest'
       : 'restore usable FREE-WILi measurements');
     panel.hidden = !next.length;
-    text('#demo-next-step', next.length ? `Next for ${simulated ? 'local dispatch' : 'live dispatch'}: ${next.join('; ')}. Local record questions and console controls remain available.` : '');
+    text('#demo-next-step', next.length ? `Next: ${next.join('; ')}` : '');
   }
 
   function drawChart(card, rawTrace) {
@@ -650,7 +649,7 @@ import { careHighlights } from './care-summary.js';
       $('.chart-accel', card).setAttribute('d', '');
       $('.chart-tilt', card).setAttribute('d', '');
       $('.chart-points', card)?.replaceChildren();
-      text('.chart-range', 'No history', card);
+      text('.chart-range', '—', card);
       return;
     }
     const lastAt = trace.at(-1).at;
@@ -669,7 +668,7 @@ import { careHighlights } from './care-summary.js';
     };
     $('.chart-accel', card).setAttribute('d', path('totalG', maxG));
     $('.chart-tilt', card).setAttribute('d', path('tiltDegrees', 180));
-    text('.chart-range', `${(windowMs / 1000).toFixed(0)} s${card.id === 'body-wili' ? ' · received measurements' : ' · tilt 0–180°'}`, card);
+    text('.chart-range', `${(windowMs / 1000).toFixed(0)} s`, card);
     const points = $('.chart-points', card);
     if (points) points.innerHTML = trace.map(point => `<circle cx="${(left + (point.at - startAt) / windowMs * (right - left)).toFixed(1)}" cy="${(bottom - Math.max(0, Math.min(maxG, point.totalG)) / maxG * (bottom - top)).toFixed(1)}" r="1.8"/>`).join('');
   }
@@ -724,12 +723,11 @@ import { careHighlights } from './care-summary.js';
     text('#owner', view.ownerName || (incident ? 'Awaiting acceptance' : 'No response needed'));
     text('#owner-detail', view.ownerDetail);
     text('#incident-next-step', view.nextStep);
-    text('#overview-report', view.latestReport ? `“${view.latestReport.text}”` : 'No patient report recorded.');
+    text('#overview-report', view.latestReport ? `“${view.latestReport.text}”` : 'No report yet');
     text('#overview-report-source', view.latestReport ? `${reportSource(view.latestReport.source, view.latestReport.service)} · ${time(view.latestReport.at)}` : '');
-    text('#overview-response-name', view.ownerName || (incident ? 'Awaiting acceptance' : 'No active response'));
-    text('#overview-response-state', view.ownerState);
-    text('#overview-response-meta', [view.simulated ? 'Local dispatch' : '', view.acceptedAt ? `Accepted ${time(view.acceptedAt)}` : '',
-      incident?.ownerId ? view.ownerDetail.replace('Local responder. ', '') : ''].filter(Boolean).join(' · '));
+    text('#overview-response-name', view.ownerName || (incident ? 'Unassigned' : 'None'));
+    text('#overview-response-state', incident ? view.ownerState : '');
+    text('#overview-response-meta', [view.simulated ? 'Local dispatch' : '', view.acceptedAt ? `Accepted ${time(view.acceptedAt)}` : ''].filter(Boolean).join(' · '));
     const facts = document.createDocumentFragment();
     const bodyConnected = snapshot.wili?.connected === true;
     const waistConnected = snapshot.sensors.some(source => source.source === 'waist-airpod' && source.connected);
@@ -742,19 +740,19 @@ import { careHighlights } from './care-summary.js';
     $('#overview-evidence').replaceChildren(facts);
     const recent = incidentMessages(incident).filter(message => !message.agent).slice(-3);
     const list = document.createDocumentFragment();
-    if (!recent.length) appendText(list, 'li', 'empty-list', incident ? 'No replies recorded yet.' : 'No active incident conversation.');
+    if (!recent.length) appendText(list, 'li', 'empty-list', incident ? 'No replies yet' : 'No incident');
     for (const message of recent) {
       const row = appendText(list, 'li', '', '');
       appendText(row, 'strong', '', `${message.speakerName || 'Speaker'}${message.agent ? ` → ${message.recipient}` : ''}`);
       appendText(row, 'p', '', message.text);
-      appendText(row, 'small', '', `${time(message.at)} · ${reportSource(message.source, message.service)}${message.agent ? ` · ${actionLabels[message.delivery]?.[0] || 'Status unavailable'}` : ''}`);
+      appendText(row, 'small', '', time(message.at));
     }
     $('#overview-conversation').replaceChildren(list);
     renderHandoff();
     $('#outcome-panel').hidden = !saved?.outcome;
-    text('#outcome-label', 'RECORDED OUTCOME');
-    text('#outcome', saved?.outcome || '');
-    text('#outcome-source', saved?.outcome ? `${simulatedIncident(saved) ? 'Local responder · ' : ''}Recorded by ${nameFor(saved.resolutionActor)} · ${time(saved.updatedAt)}` : '');
+    text('#outcome-label', 'OUTCOME');
+    text('#outcome', String(saved?.outcome || '').replace(/;\s*not a safety determination\.?/i, '.'));
+    text('#outcome-source', saved?.outcome ? `${nameFor(saved.resolutionActor)} · ${time(saved.updatedAt)}` : '');
   }
 
   function appendText(parent, tag, className, value) {
@@ -767,13 +765,14 @@ import { careHighlights } from './care-summary.js';
 
   function renderClinicalViews() {
     const motion = motionPresentation(snapshot, online, wiliTrace.points), condition = conditionPresentation(snapshot, online);
-    for (const key of ['event', 'impact', 'rotation', 'quiet', 'severity']) text(`#motion-${key}`, motion[key]);
-    text('#motion-position', motion.tilt);
+    const brief = value => ['Not recorded', 'Orientation unavailable', 'No active incident'].includes(value) ? '—' : String(value).replace(/ · live$/, '');
+    for (const key of ['event', 'impact', 'rotation', 'quiet', 'severity']) text(`#motion-${key}`, brief(motion[key]));
+    text('#motion-position', brief(motion.tilt).replace(' from baseline', ''));
     text('#motion-severity-detail', motion.severityDetail);
-    text('#motion-injury', motion.report);
+    text('#motion-injury', motion.report === 'No suspected injury reported.' ? '—' : `“${motion.report}”`);
     text('#motion-evidence-source', motion.source);
     text('#condition-response', condition.response);
-    text('#condition-responsive', condition.response);
+    text('#condition-responsive', condition.response === 'No active check-in' ? '—' : condition.response);
     text('#condition-speaking', condition.speaking);
     text('#condition-source', condition.at !== null ? `${reportSource(condition.source)} · ${time(condition.at)} · A reply does not establish breathing or absence of bleeding.`
       : 'No current patient observation recorded. Physiological observations are shown separately below.');
@@ -782,11 +781,10 @@ import { careHighlights } from './care-summary.js';
       const item = appendText(observations, 'div', 'condition-item', '');
       appendText(item, 'span', 'eyebrow', observation.label);
       appendText(item, 'strong', '', observation.value);
-      appendText(item, 'small', '', observation.detail);
     }
     $('#watch-condition-grid').replaceChildren(observations);
     const history = new Set((snapshot?.timeline || []).filter(event => ['RESOLVED', 'CANCELLED_FALSE_ALARM'].includes(event.type)).map(event => event.incidentId));
-    text('#medical-history-count', `${history.size} recorded ${history.size === 1 ? 'incident' : 'incidents'}`);
+    text('#medical-history-count', String(history.size));
     text('#medical-history-detail', history.size ? 'Resolved or cancelled incidents in the available LIFELINE history. Hospital history is separate.'
       : 'No closed incidents in the available LIFELINE history. Hospital history is separate.');
   }
@@ -797,15 +795,15 @@ import { careHighlights } from './care-summary.js';
     $('#incident-evidence').hidden = !present;
     if (!present) { $('#incident-evidence-facts').replaceChildren(); text('#incident-evidence-timing', ''); text('#incident-evidence-sources', ''); return; }
     const impact = assessment.impact, waist = assessment.supportingWaist, quiet = assessment.quietWaist;
-    text('#incident-evidence h3', activeIncident(snapshot) ? 'Measured trigger evidence' : 'Last incident measurements');
-    text('#incident-evidence .badge', activeIncident(snapshot) ? 'FROZEN AT DETECTION' : 'SAVED INCIDENT');
-    const metric = (value, unit, digits = 2) => finite(value) ? `${number(value, digits)} ${unit}` : 'Not recorded';
+    text('#incident-evidence h3', activeIncident(snapshot) ? 'Trigger evidence' : 'Last incident evidence');
+    text('#incident-evidence .badge', activeIncident(snapshot) ? 'AT DETECTION' : 'SAVED');
+    const metric = (value, unit, digits = 2) => finite(value) ? `${number(value, digits)} ${unit}` : '—';
     const source = value => typeof value === 'string' && value ? value : 'Not recorded';
     const fields = document.createDocumentFragment();
     const rows = [
-      ['Primary impact', `${metric(impact.totalG, 'g')} · selected threshold ${metric(assessment.selectedImpactG, 'g')} · range ${finite(impact.fullScaleG) ? `±${impact.fullScaleG} g` : 'not recorded'}`],
-      ['Waist support', `${metric(waist.linearG, 'g')} linear · ${metric(waist.angularSpeed, 'rad/s')} rotation · timing separation ${metric(waist.separationMs, 'ms', 0)}`],
-      ['Waist quiet', `${metric(quiet.durationMs, 'ms', 0)} across ${finite(quiet.sampleCount) ? quiet.sampleCount : 'unknown'} samples · maximum ${metric(quiet.maxLinearG, 'g')} linear, ${metric(quiet.maxAngularSpeed, 'rad/s')} rotation`],
+      ['Impact', `${metric(impact.totalG, 'g')} · threshold ${metric(assessment.selectedImpactG, 'g')}`],
+      ['Waist motion', `${metric(waist.linearG, 'g')} · ${metric(waist.angularSpeed, 'rad/s')}`],
+      ['Stillness', metric(finite(quiet.durationMs) ? quiet.durationMs / 1000 : null, 's', 1)],
     ];
     for (const [label, value] of rows) { const row = appendText(fields, 'div', '', ''); appendText(row, 'dt', '', label); appendText(row, 'dd', '', value); }
     $('#incident-evidence-facts').replaceChildren(fields);
@@ -848,8 +846,8 @@ import { careHighlights } from './care-summary.js';
   }
   function renderPatientRecord() {
     const record = patientRecord, demographic = record?.records.find(row => row.section === 'demographics');
-    text('#patient-name', demographic?.label || 'Protected patient context');
-    text('#patient-identity', record?.subject ? `FinchNode patient record · ${record.subject}` : 'FinchNode patient record');
+    text('#patient-name', demographic?.label || '—');
+    text('#patient-identity', record?.subject || '');
     text('#patient-snapshot', record ? `${patientContext().incidentId ? `Incident ${patientContext().incidentId} · immutable context` : 'Current patient context'}\nRevision ${record.revision}\nRetrieved ${new Date(record.fetchedAt).toISOString()} · data as of ${record.dataAsOf || 'unknown'}\nRecord access ${record.status} · source consent ${record.consent?.status || 'unknown'} · sync ${record.sync?.status || 'unknown'}` : token ? 'Protected patient context has not been retrieved.' : 'Pairing token required to read patient records.');
     const container = document.createDocumentFragment();
     const titles = { demographics: 'Demographics', medications: 'Medications and history', conditions: 'Conditions', allergies: 'Allergies', vitals: 'Historical vitals' };
@@ -891,7 +889,7 @@ import { careHighlights } from './care-summary.js';
     const brief = document.createDocumentFragment(), full = document.createDocumentFragment();
     if (!patientRecord) {
       appendText(brief, 'p', 'empty-list', token ? 'Care context has not been retrieved.' : 'Connect to read care context.');
-      appendText(full, 'p', 'empty-list', 'Care context has not been retrieved.');
+      appendText(full, 'p', 'empty-list', 'No record loaded');
     } else {
       const care = careHighlights(patientRecord);
       const label = row => row.fields?.name || row.fields?.substance || row.label;
@@ -912,23 +910,22 @@ import { careHighlights } from './care-summary.js';
         const section = appendText(full, 'section', 'medical-fact-group', '');
         appendText(section, 'h3', '', heading);
         medicalGroups.set(kind, appendText(section, 'ul', '', ''));
-        if (!entries.some(entry => entry.kind === kind)) appendText(section, 'p', 'field-note', 'No records returned in this category.');
+        if (!entries.some(entry => entry.kind === kind)) appendText(section, 'p', 'field-note', 'None returned');
       }
       for (const entry of entries) {
         const item = appendText(medicalGroups.get(entry.kind), 'li', '', '');
         appendText(item, 'strong', '', entry.label);
-        appendText(item, 'p', 'field-note', `${entry.kind}${entry.detail ? ` · ${entry.detail}` : ''}`);
+        if (entry.detail) appendText(item, 'p', 'field-note', entry.detail);
         const source = appendText(item, 'details', 'clinical-source', '');
         appendText(source, 'summary', '', 'View source');
         for (const row of entry.rows) appendText(source, 'p', '', `${row.section} · ${row.sourceName || row.source || 'Source unavailable'} · [${row.id}]${row.fields?.status ? ` · ${row.fields.status}` : ''}`);
       }
       if (care.vitals.length) {
-        appendText(full, 'h3', '', 'Latest historical measurements');
-        const vitals = appendText(full, 'ul', '', '');
+        appendText(full, 'h3', '', 'Recorded vitals');
+        const vitals = appendText(full, 'ul', 'medical-vitals', '');
         for (const row of care.vitals) appendText(vitals, 'li', '', `${label(row)} · ${row.fields.value}${row.fields.unit ? ` ${row.fields.unit}` : ''} · ${new Date(row.fields.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}`);
       }
-      if (care.missingCategories.length) appendText(full, 'p', 'field-note', `Not available: ${care.missingCategories.join(', ')}.`);
-      appendText(full, 'p', 'field-note', 'Hospital context is read only. Patient reports remain separately attributed.');
+      if (care.missingCategories.length) appendText(full, 'p', 'field-note', `Unavailable: ${care.missingCategories.join(', ')}`);
     }
     $('#overview-care-context').replaceChildren(brief);
     $('#care-context-summary').replaceChildren(full);
@@ -938,7 +935,7 @@ import { careHighlights } from './care-summary.js';
     const scope = patientContext(); patientRequest?.controller.abort();
     const request = { ...scope, token, controller: new AbortController() }; patientRequest = request; patientContextKey = scope.key;
     patientRecord = null; clearPatientAnswer(); renderPatientRecord();
-    $('#patient-load-message').classList.remove('error'); text('#patient-load-message', refresh ? 'Refreshing the current patient read…' : 'Reading protected hospital context…');
+    $('#patient-load-message').classList.remove('error'); text('#patient-load-message', refresh ? 'Refreshing…' : 'Loading record…');
     const current = () => patientRequest === request && token === request.token && patientContext().key === request.key;
     try {
       const read = async (url, method = 'GET') => {
@@ -954,7 +951,7 @@ import { careHighlights } from './care-summary.js';
       if (!current()) return;
       if (scope.incidentId && result.revision !== snapshot?.incident?.healthRevision) throw new Error('Returned records do not match this incident’s clinical revision. Refresh the incident context and try again.');
       patientRecord = result; renderPatientRecord();
-      text('#patient-load-message', refresh && scope.incidentId ? `Current patient refreshed to ${refreshedRevision}. This incident retains ${result.revision}.` : 'Hospital records retrieved from FinchNode. No hospital record was changed.');
+      text('#patient-load-message', '');
     } catch (error) { if (current()) { $('#patient-load-message').classList.add('error'); text('#patient-load-message', error.name === 'TimeoutError' ? 'Patient record read timed out. Check the server, then refresh.' : error.message || 'Patient records unavailable. Refresh to try again.'); } }
     finally { if (patientRequest === request) { patientRequest = null; updatePatientControls(); } }
   }
@@ -962,7 +959,7 @@ import { careHighlights } from './care-summary.js';
     const question = $('#patient-question').value.trim();
     if (!token || !patientRecord || patientQuestionRequest || !question || question.length > 2000) return;
     const request = { revision: patientRecord.revision, key: patientContext().key, controller: new AbortController() }; patientQuestionRequest = request; updatePatientControls();
-    $('#patient-question-message').classList.remove('error'); text('#patient-question-message', 'Preparing a local record answer…');
+    $('#patient-question-message').classList.remove('error'); text('#patient-question-message', 'Asking…');
     const current = () => patientQuestionRequest === request && patientRecord?.revision === request.revision && patientContext().key === request.key;
     try {
       const response = await fetch('/api/patient-record/question', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ question, revision: request.revision, ...(patientContext().incidentId ? { incidentId: patientContext().incidentId } : {}) }), signal: AbortSignal.any([request.controller.signal, AbortSignal.timeout(30000)]) });
@@ -971,13 +968,13 @@ import { careHighlights } from './care-summary.js';
       if (result.revision !== request.revision || typeof result.answer !== 'string' || typeof result.generation !== 'string' || !Object.hasOwn(generationLabels, result.generation)) throw new Error('Record answer context could not be verified. Refresh the patient context and ask again.');
       const generation = generationFor(result.generation); text('#patient-answer-generation', generation[0]); $('#patient-answer-generation').className = `badge ${generation[1]}`;
       text('#patient-answer-revision', `Source revision ${request.revision}`); text('#patient-answer', result.answer); $('#patient-answer-panel').hidden = false;
-      text('#patient-question-message', 'Local answer prepared. No responder message was sent.');
+      text('#patient-question-message', '');
     } catch (error) { if (current()) { $('#patient-question-message').classList.add('error'); text('#patient-question-message', error.message || 'Record answer unavailable. Try again.'); } }
     finally { if (patientQuestionRequest === request) { patientQuestionRequest = null; updatePatientControls(); } }
   }
   async function downloadCareBrief() {
     const incident = snapshot?.incident; if (!token || !incident || briefBusy) return;
-    briefBusy = true; updatePatientControls(); text('#care-brief-message', 'Preparing the source-separated care brief…');
+    briefBusy = true; updatePatientControls(); text('#care-brief-message', 'Preparing…');
     try {
       const response = await fetch(`/api/incidents/${encodeURIComponent(incident.id)}/brief`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store', signal: AbortSignal.timeout(20000) });
       if (!response.ok) { const result = await response.json(); throw new Error(result.error || `Care brief unavailable (${response.status})`); }
@@ -985,7 +982,7 @@ import { careHighlights } from './care-summary.js';
       if (snapshot?.incident?.id !== incident.id || snapshot?.incident?.version !== incident.version) throw new Error('Incident context changed. Download the current care brief again.');
       const url = URL.createObjectURL(blob), link = document.createElement('a'); link.href = url;
       link.download = `lifeline-care-brief-${String(incident.id).replace(/[^a-zA-Z0-9_-]/g, '_')}.json`; document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-      text('#care-brief-message', 'Care brief download requested. Hospital facts and local incident reports remain separate.');
+      text('#care-brief-message', 'Download started');
     } catch (error) { text('#care-brief-message', error.message || 'Care brief unavailable. Try again.'); }
     finally { briefBusy = false; updatePatientControls(); }
   }
@@ -993,11 +990,11 @@ import { careHighlights } from './care-summary.js';
   function renderHandoff() {
     text('#handoff-title', activeIncident(snapshot) ? 'Current incident handoff' : 'Saved incident handoff');
     const [generation, color] = generationFor(snapshot.incident?.handoffGeneration);
-    text('#handoff-generation', generation); $('#handoff-generation').className = `badge ${color}`;
+    text('#handoff-generation', generation); $('#handoff-generation').className = `badge ${color || 'is-unknown'}`;
     text('#handoff-source-context', snapshot.incident?.healthRevision
       ? `Clinical source: saved FinchNode snapshot ${snapshot.incident.healthRevision}. LIFELINE supplies incident observations; historical vitals are not current measurements.`
       : 'Clinical source revision has not been bound. LIFELINE observations and unavailable health information remain separate.');
-    const content = snapshot.incident?.handoff || 'A record-grounded handoff will appear here when it is available.';
+    const content = snapshot.incident?.handoff || 'No handoff yet';
     const signature = JSON.stringify([snapshot.incident?.id, content, observationKey()]);
     if (signature === handoffSignature) return;
     handoffSignature = signature;
@@ -1005,7 +1002,8 @@ import { careHighlights } from './care-summary.js';
     const headings = new Set(['Known source facts:', 'Unavailable information:', 'Health context:', 'AI-composed synthetic health handoff:', 'AI unavailable — source template fallback:',
       'Patient reports (local observations, not hospital records):', 'Responder reports (local observations, not hospital records):']);
     // Saved handoffs keep their original text; an older heading is shown with its current label.
-    const headingLabels = new Map([['AI-composed synthetic health handoff:', 'Health context:']]);
+    const headingLabels = new Map([['AI-composed synthetic health handoff:', 'Health context'], ['Health context:', 'Health context'], ['Known source facts:', 'Known facts'], ['Unavailable information:', 'Unavailable'],
+      ['AI unavailable — source template fallback:', 'Template fallback'], ['Patient reports (local observations, not hospital records):', 'Patient reports'], ['Responder reports (local observations, not hospital records):', 'Responder reports']]);
     const appendLines = (value) => {
       for (const line of value.split('\n')) {
         if (headings.has(line)) { appendText(fragment, 'h3', 'handoff-heading', headingLabels.get(line) ?? line); continue; }
@@ -1104,7 +1102,7 @@ import { careHighlights } from './care-summary.js';
     ].sort((a, b) => b.at - a.at);
     text('#question-count', entries.length);
     const fragment = document.createDocumentFragment();
-    if (!entries.length) appendText(fragment, 'li', 'empty-list', 'No responder questions for this incident.');
+    if (!entries.length) appendText(fragment, 'li', 'empty-list', 'No questions');
     for (const entry of entries) {
       if (!entry.action) {
         const { event, detail } = entry;
@@ -1118,7 +1116,7 @@ import { careHighlights } from './care-summary.js';
         appendText(row, 'p', 'question-text', detail.question);
         appendText(row, 'p', 'question-result', changed ? 'Incident context or responder eligibility changed. No answer is recorded as queued.'
           : 'Received for answer preparation. No answer has been queued yet.');
-        appendText(row, 'p', 'question-meta', `${time(event.at)} · Photon message · Inbound ${detail.inboundId}`);
+        appendText(row, 'p', 'question-meta', time(event.at));
         continue;
       }
       const { action } = entry;
@@ -1129,15 +1127,14 @@ import { careHighlights } from './care-summary.js';
       const [label, color] = actionLabels[action.status] || [action.status, ''];
       appendText(head, 'span', `badge ${color}`, label);
       appendText(row, 'p', 'question-label', 'Question');
-      appendText(row, 'p', 'question-text', detail ? detail.question : 'Question unavailable in the recorded audit entry.');
+      appendText(row, 'p', 'question-text', detail ? detail.question : 'Question unavailable');
       const answerHead = appendText(row, 'div', 'question-answer-head', '');
-      appendText(answerHead, 'p', 'question-label', 'Answer message');
+      appendText(answerHead, 'p', 'question-label', 'Answer');
       const [generation, generationColor] = generationFor(detail?.generation);
-      appendText(answerHead, 'span', `badge ${generationColor}`, generation);
+      appendText(answerHead, 'span', `badge ${generationColor || 'is-unknown'}`, generation);
       appendText(row, 'p', 'question-answer', action.text || 'No answer text recorded.');
       appendText(row, 'p', 'question-result', action.status === 'simulated' ? `Local delivery; no provider send or recipient receipt.${action.providerResult ? ` ${action.providerResult}` : ''}` : action.providerResult || 'No provider result yet.');
-      const source = detail ? `Photon message${typeof detail.inboundId === 'string' ? ` · Inbound ${detail.inboundId}` : ''}` : 'Original question source unavailable';
-      appendText(row, 'p', 'question-meta', `${time(action.createdAt)} · ${source} · Action ${action.id}`);
+      appendText(row, 'p', 'question-meta', time(action.createdAt));
     }
     $('#responder-questions').replaceChildren(fragment);
   }
@@ -1147,11 +1144,11 @@ import { careHighlights } from './care-summary.js';
     const question = $('#rehearsal-question').value.trim();
     $('#rehearsal-submit').disabled = !token || !online || !incident || !!contextRequest || !question || question.length > 2000;
     $('#rehearsal-question').disabled = !!contextRequest;
-    text('#rehearsal-availability', !incident ? 'Start a check-in to provide incident context.'
-      : !token ? 'Enter a pairing token in Connections to enable this preview.'
-      : !online ? 'Reconnect to the server before generating a preview.'
-      : contextRequest ? 'Generating against the displayed incident context…'
-      : 'Uses this incident, including a recorded terminal phase. Nothing is sent to a responder.');
+    text('#rehearsal-availability', !incident ? 'No active incident'
+      : !token ? 'Pairing token required'
+      : !online ? 'Offline'
+      : contextRequest ? 'Generating…'
+      : 'Ready');
   }
 
   async function rehearseQuestion() {
@@ -1195,8 +1192,8 @@ import { careHighlights } from './care-summary.js';
     const reply = snapshot.timeline.findLast((event) => event.incidentId === snapshot.incident?.id && event.type === 'CHECKIN_REPLY');
     if (!reply) {
       text('#reply-decision', 'NO REPLY');
-      text('#reply-transcript', 'No patient check-in reply received for this incident.');
-      text('#reply-meta', 'Patient speech and iMessage replies can request help or preserve the check-in. Cancellation requires the explicit current check-in control.');
+      text('#reply-transcript', '');
+      text('#reply-meta', '');
       $('#reply-transcript').classList.remove('has-reply');
       return;
     }
@@ -1204,12 +1201,12 @@ import { careHighlights } from './care-summary.js';
     try {
       const detail = JSON.parse(reply.detail);
       if (typeof detail.transcript === 'string') transcript = detail.transcript;
-      if (typeof detail.decision === 'string') decision = `Decision: ${detail.decision.replaceAll('_', ' ').replaceAll('-', ' ')}`;
+      if (typeof detail.decision === 'string') decision = detail.decision.replaceAll('_', ' ').replaceAll('-', ' ');
     } catch { /* Preserve the recorded detail if it is not structured. */ }
     text('#reply-decision', decision);
     text('#reply-transcript', transcript);
     const source = reply.actor === 'freewili-local-speech' ? 'FREE-WILi microphone · local Whisper' : reply.actor === 'ios-on-device-speech' ? 'Legacy iPhone on-device speech' : reply.actor === 'photon-imessage' ? 'Patient Photon message' : reply.actor;
-    text('#reply-meta', `${time(reply.at)} · ${source} · Cancellation requires the explicit check-in control.`);
+    text('#reply-meta', `${time(reply.at)} · ${source}`);
     $('#reply-transcript').classList.add('has-reply');
   }
 
@@ -1288,15 +1285,14 @@ import { careHighlights } from './care-summary.js';
     if (signature === conversationSignature) return;
     conversationSignature = signature;
     text('#conversation-count', incident && !available ? '—' : messages.length);
-    text('#conversation-context', incident ? `${terminal(incident) ? 'Saved' : 'Current'} incident · ${incident.id}${simulatedIncident(incident) ? ' · local dispatch' : ''}` : 'No incident conversation yet.');
+    text('#conversation-context', incident ? `${incident.id}${terminal(incident) ? ' · closed' : ''}` : '');
     const list = $('#conversation'), fragment = document.createDocumentFragment();
     const follow = list.scrollHeight - list.clientHeight - list.scrollTop < 24, priorScroll = list.scrollTop;
-    const deliveries = { recorded: ['Recorded', ''], queued: ['Queued', ''], playing: ['Playing on wearable', ''],
-      spoken: ['Playback completed', ''], failed: ['Delivery failed', 'bad'], attempting: ['Sending', ''],
-      provider_accepted: ['Submitted · receipt unconfirmed', ''], unknown: ['Delivery unknown', ''],
-      cancelled: ['Cancelled', ''], simulated: ['Local delivery', ''] };
-    if (!messages.length) appendText(fragment, 'li', 'empty-list', !incident ? 'Conversation appears when an incident starts.'
-      : !available ? 'Conversation history is unavailable.' : 'No messages recorded for this incident.');
+    const deliveries = { recorded: ['Recorded', ''], queued: ['Queued', ''], playing: ['Playing', ''],
+      spoken: ['Played', ''], failed: ['Failed', 'bad'], attempting: ['Sending', ''],
+      provider_accepted: ['Sent', ''], unknown: ['Unknown', ''],
+      cancelled: ['Cancelled', ''], simulated: ['Local', ''] };
+    if (!messages.length) appendText(fragment, 'li', 'empty-list', incident && !available ? 'Unavailable' : 'No messages yet');
     for (const message of messages) {
       const wearer = message.speaker === 'wearer', responder = message.speaker === 'responder';
       const row = appendText(fragment, 'li', `conversation-message${wearer ? ' conversation-wearer' : responder ? ' conversation-responder' : ' conversation-agent'}`, '');
@@ -1305,10 +1301,10 @@ import { careHighlights } from './care-summary.js';
       appendText(speaker, 'strong', '', message.speakerName || (wearer ? 'Patient' : responder ? 'Responder' : 'Speaker unavailable'));
       appendText(speaker, 'span', 'conversation-role', message.agent ? `To ${message.recipient}`
         : message.source === 'simulated-dispatch' ? 'Local responder' : wearer ? 'Patient' : responder ? 'Responder' : '');
-      const [label, color] = deliveries[message.delivery] || ['Status unavailable', ''];
+      const [label, color] = deliveries[message.delivery] || ['Unknown', ''];
       appendText(head, 'span', `badge ${color}`, label);
       appendText(row, 'p', 'conversation-quote', message.text || 'Message text unavailable.');
-      appendText(row, 'p', 'conversation-meta', `${time(message.at)} · ${reportSource(message.source, message.service)}`);
+      appendText(row, 'p', 'conversation-meta', time(message.at));
       if (typeof message.detail === 'string' && message.detail) {
         const detail = appendText(row, 'details', 'conversation-detail', '');
         appendText(detail, 'summary', '', 'Delivery details');
@@ -1423,8 +1419,8 @@ import { careHighlights } from './care-summary.js';
     renderAccessNotes(notes);
     try {
       sessionStorage.setItem('lifeline-access-notes', JSON.stringify(notes));
-      text('#access-save-state', 'Saved in this browser tab. These notes are not sent to responders.');
-    } catch { text('#access-save-state', 'Shown for this session; browser storage is unavailable. These notes are not sent to responders.'); }
+      text('#access-save-state', 'Saved');
+    } catch { text('#access-save-state', 'Saved for this session'); }
   });
 
   function wellbeingToday(wellbeing = snapshot?.wellbeing) {
@@ -1448,15 +1444,15 @@ import { careHighlights } from './care-summary.js';
     text('#wellbeing-brief', wellbeingBriefBusy ? 'Preparing journal…' : 'Download care journal');
     $('#wellbeing-checkin').disabled = !token || !online || wellbeing?.enabled !== true || !today || wellbeingBusy || alreadyStarted || !!active;
     text('#wellbeing-checkin', wellbeingBusy ? 'Requesting…' : alreadyStarted ? 'Today’s check-in started' : 'Send today’s check-in');
-    text('#wellbeing-checkin-state', !wellbeing ? 'Daily check-ins are unavailable in this server state.'
-      : !online ? 'Last received state. Reconnect before sending.'
-      : !wellbeing.enabled ? 'Daily check-ins are not enabled.'
-      : active ? 'Daily check-ins pause during an active incident.'
-      : alreadyStarted ? `Today’s prompt already exists.${pending ? ` ${wellbeing.pendingCount} message${wellbeing.pendingCount === 1 ? '' : 's'} pending.` : ''}`
-      : pending ? `${wellbeing.pendingCount} message${wellbeing.pendingCount === 1 ? '' : 's'} pending.`
-      : !token ? 'Pairing token required for this control.'
-      : !today ? 'The schedule time zone is unavailable.'
-      : 'The scheduler runs autonomously. Use this button to check in now.');
+    text('#wellbeing-checkin-state', !wellbeing ? 'Unavailable'
+      : !online ? 'Offline'
+      : !wellbeing.enabled ? 'Not enabled'
+      : active ? 'Paused during incident'
+      : alreadyStarted ? `Sent today${pending ? ` · ${wellbeing.pendingCount} pending` : ''}`
+      : pending ? `${wellbeing.pendingCount} pending`
+      : !token ? 'Pairing token required'
+      : !today ? 'Time zone unavailable'
+      : 'Scheduled');
   }
 
   function renderWellbeing() {
@@ -1465,7 +1461,7 @@ import { careHighlights } from './care-summary.js';
     if (signature === wellbeingSignature) return;
     wellbeingSignature = signature;
     const schedule = wellbeing?.schedule;
-    let scheduleLabel = 'Default schedule · 2:00 PM America/New_York';
+    let scheduleLabel = 'Daily · 2:00 PM America/New_York';
     if (typeof schedule?.label === 'string' && schedule.label.trim()) scheduleLabel = schedule.label;
     else if (Number.isInteger(schedule?.hour) && schedule.hour >= 0 && schedule.hour <= 23 && typeof schedule.timeZone === 'string')
       scheduleLabel = `Daily · ${schedule.hour % 12 || 12}:00 ${schedule.hour >= 12 ? 'PM' : 'AM'} ${schedule.timeZone}`;
@@ -1478,8 +1474,8 @@ import { careHighlights } from './care-summary.js';
         && finite(message.at) && new Date(message.at).toDateString() === today)
       .slice().sort((a, b) => (finite(a.at) ? a.at : 0) - (finite(b.at) ? b.at : 0)).slice(-40) : [];
     const messages = allMessages.slice(-4), earlier = allMessages.slice(0, -4);
-    const deliveries = { pending: ['Queued', ''], queued: ['Queued', ''], attempting: ['Submitting', 'warning'], provider_accepted: ['Provider accepted', ''],
-      recorded: ['Recorded', ''], failed: ['Failed', 'bad'], unknown: ['Outcome unknown', 'warning'], cancelled: ['Cancelled', ''] };
+    const deliveries = { pending: ['Queued', ''], queued: ['Queued', ''], attempting: ['Sending', 'warning'], provider_accepted: ['Sent', ''],
+      recorded: ['Recorded', ''], failed: ['Failed', 'bad'], unknown: ['Unknown', 'warning'], cancelled: ['Cancelled', ''] };
     const sources = { 'photon-imessage': 'Text · Photon message', 'freewili-local-speech': 'Voice · WILi microphone',
       agent: 'Text · LIFELINE', 'daily-checkin': 'Text · Daily check-in' };
     const renderMessage = (parent, message) => {
@@ -1488,13 +1484,13 @@ import { careHighlights } from './care-summary.js';
       const head = appendText(row, 'div', 'wellbeing-message-head', '');
       appendText(head, 'strong', '', wearer ? 'Patient' : message.speaker === 'lifeline' ? 'LIFELINE' : 'Speaker unavailable');
       const [label, color] = typeof message.delivery === 'string' && Object.hasOwn(deliveries, message.delivery)
-        ? deliveries[message.delivery] : ['Status unavailable', ''];
-      appendText(head, 'span', `badge ${color}`, wearer && message.delivery === 'recorded' ? 'Reply recorded' : label);
+        ? deliveries[message.delivery] : ['Unknown', ''];
+      appendText(head, 'span', `badge ${color}`, wearer && message.delivery === 'recorded' ? 'Received' : label);
       appendText(row, 'p', 'wellbeing-message-text', typeof message.text === 'string' ? message.text : 'Message text unavailable.');
       const source = typeof message.source === 'string' && Object.hasOwn(sources, message.source) ? sources[message.source] : 'Source unavailable';
       const date = finite(message.at) ? new Date(message.at) : null;
-      const recordedAt = date && finite(date.getTime()) ? date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Time unavailable';
-      appendText(row, 'p', 'wellbeing-message-meta', `${source} · ${recordedAt}`);
+      const recordedAt = date && finite(date.getTime()) ? date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '—';
+      appendText(row, 'p', 'wellbeing-message-meta', recordedAt);
       const record = message.recordContext;
       if (message.speaker === 'lifeline' && record?.source === 'finchnode-synthetic' && record.synthetic === true) {
         const provenance = appendText(row, 'div', 'wellbeing-record-source', '');
@@ -1514,17 +1510,17 @@ import { careHighlights } from './care-summary.js';
       }
     };
     const fragment = document.createDocumentFragment(), olderFragment = document.createDocumentFragment();
-    if (!messages.length) appendText(fragment, 'li', 'empty-list', !wellbeing ? 'Daily conversation state is unavailable.' : 'No daily check-in yet today.');
+    if (!messages.length) appendText(fragment, 'li', 'empty-list', !wellbeing ? 'Unavailable' : 'No check-in today');
     messages.forEach(message => renderMessage(fragment, message));
     earlier.forEach(message => renderMessage(olderFragment, message));
     $('#wellbeing-messages').replaceChildren(fragment);
     $('#wellbeing-earlier-messages').replaceChildren(olderFragment);
     $('#wellbeing-earlier').hidden = !earlier.length;
-    text('#wellbeing-earlier-summary', `Earlier conversation · ${earlier.length} message${earlier.length === 1 ? '' : 's'}`);
+    text('#wellbeing-earlier-summary', `Earlier · ${earlier.length}`);
     const voice = wellbeing?.voice;
     const voiceStages = { listening: 'Listening', recording: 'Recording', transcribing: 'Transcribing', complete: 'Transcript recorded', unavailable: 'Voice unavailable' };
     $('#wellbeing-voice').hidden = !voice;
-    if (voice) text('#wellbeing-voice', `${online ? 'Voice' : 'Last voice report'} · ${typeof voice.stage === 'string' && Object.hasOwn(voiceStages, voice.stage) ? voiceStages[voice.stage] : 'Status unavailable'} · ${time(voice.at)}`);
+    if (voice) text('#wellbeing-voice', `Voice · ${typeof voice.stage === 'string' && Object.hasOwn(voiceStages, voice.stage) ? voiceStages[voice.stage] : 'Unknown'}`);
     updateWellbeingControls();
   }
 
@@ -1534,7 +1530,7 @@ import { careHighlights } from './care-summary.js';
     const requestToken = token, conversationId = snapshot?.wellbeing?.conversationId;
     const current = () => token === requestToken && snapshot?.wellbeing?.conversationId === conversationId;
     wellbeingBriefBusy = true; updateWellbeingControls();
-    $('#wellbeing-brief-message').classList.remove('error'); text('#wellbeing-brief-message', 'Preparing the care journal…');
+    $('#wellbeing-brief-message').classList.remove('error'); text('#wellbeing-brief-message', 'Preparing…');
     try {
       const response = await fetch('/api/wellbeing/brief', { headers: { Authorization: `Bearer ${requestToken}` }, cache: 'no-store', signal: AbortSignal.timeout(20000) });
       if (!current()) return;
@@ -1544,7 +1540,7 @@ import { careHighlights } from './care-summary.js';
       const url = URL.createObjectURL(blob), link = document.createElement('a'); link.href = url;
       link.download = `lifeline-care-journal-${String(conversationId || 'daily').replace(/[^a-zA-Z0-9_-]/g, '_')}.json`;
       document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-      text('#wellbeing-brief-message', 'Care journal download requested. Daily reports and FinchNode hospital snapshots remain separate.');
+      text('#wellbeing-brief-message', 'Download started');
     } catch (error) {
       if (!current()) return;
       $('#wellbeing-brief-message').classList.add('error');
@@ -1586,8 +1582,8 @@ import { careHighlights } from './care-summary.js';
       const sensor = snapshot.sensors.find((item) => item.source === source);
       const receiving = online && sensor?.connected && sensor?.fresh;
       const status = !sensor?.connected ? 'Disconnected' : !online ? 'Last received' : !sensor.fresh ? 'Stale' : 'Receiving';
-      const detail = sensor?.connected ? `${sensor.calibrated ? 'Standing tilt calibration recorded' : 'Tilt baseline not calibrated; optional for this detector'}${source === 'waist-airpod' && sensor.sensorLocation ? ` · reporting ${sensor.sensorLocation} bud` : ''}` : 'No connected source reported';
-      return `<li><div class="readiness-head"><strong>${label}</strong><span class="badge ${receiving ? 'good' : ''}">${status}</span></div><p>${escaped(detail)}</p></li>`;
+      const detail = sensor?.connected ? `${sensor.calibrated ? 'Calibrated' : 'Not calibrated'}${source === 'waist-airpod' && sensor.sensorLocation ? ` · ${sensor.sensorLocation} bud` : ''}` : '';
+      return `<li><div class="readiness-head"><strong>${label}</strong><span class="badge ${receiving ? 'good' : ''}">${status}</span></div>${detail ? `<p>${escaped(detail)}</p>` : ''}</li>`;
     });
     const alignments = [['waist-airpod', 'Waist']].map(([source, label]) => {
       const uncertainty = snapshot.sensors.find((sensor) => sensor.source === source)?.alignmentUncertaintyMs;
@@ -1600,26 +1596,26 @@ import { careHighlights } from './care-summary.js';
     const readiness = detectorReadiness();
     const dispatch = snapshot.dispatch;
     const dispatchRow = ['live', 'simulated'].includes(dispatch?.mode)
-      ? `<li><div class="readiness-head"><strong>Responder dispatch</strong><span class="badge ${dispatch.mode === 'simulated' ? 'warning' : ''}">${!online ? 'Last state' : dispatch.mode === 'simulated' ? snapshot.responders.some(person => person.simulated === true) ? 'Ready' : 'Waiting for local responder' : 'Live profile'}</span></div><p>${escaped(dispatch.detail)}${dispatch.mode === 'simulated' ? ' No live responder send or recipient receipt is asserted.' : ''}</p></li>` : '';
-    $('#native-readiness').innerHTML = `<li><div class="readiness-head"><strong>FREE-WILi accelerometer</strong><span class="badge">${online && wili?.usable ? 'Acquisition ready' : !online ? 'Last received' : escaped(wili?.quality || 'Unavailable')}</span></div><p>${escaped(`Source body-wili · range ${finite(wili?.fullScaleG) ? `±${wili.fullScaleG} g` : 'unknown'} · ${wili?.captureClock === 'host-receipt' ? 'gateway receipt clock' : 'device capture clock'} mapping ${finite(wili?.alignmentUncertaintyMs) ? `±${Math.round(wili.alignmentUncertaintyMs)} ms` : 'unknown'}. ${wili?.captureClock === 'host-receipt' ? 'Stock timing does not measure sensor capture latency.' : 'No primary orientation is inferred.'}`)}</p></li>` + sourceRows.join('')
-      + `<li><div class="readiness-head"><strong>Provisional cross-body detector</strong><span class="badge ${readiness.ready ? 'good' : ''}">${readiness.ready ? 'Signals ready' : 'Waiting'}</span></div><p>${escaped(readiness.detail)} Telemetry readiness does not establish detection accuracy.</p></li>`
+      ? `<li><div class="readiness-head"><strong>Responder dispatch</strong><span class="badge ${dispatch.mode === 'simulated' ? 'warning' : ''}">${!online ? 'Last state' : dispatch.mode === 'simulated' ? snapshot.responders.some(person => person.simulated === true) ? 'Local' : 'Waiting' : 'Live'}</span></div></li>` : '';
+    $('#native-readiness').innerHTML = `<li><div class="readiness-head"><strong>FREE-WILi accelerometer</strong><span class="badge">${online && wili?.usable ? 'Acquisition ready' : !online ? 'Last received' : escaped(wili?.quality || 'Unavailable')}</span></div><p>${escaped(`Range ${finite(wili?.fullScaleG) ? `±${wili.fullScaleG} g` : '—'} · clock ${finite(wili?.alignmentUncertaintyMs) ? `±${Math.round(wili.alignmentUncertaintyMs)} ms` : '—'}`)}</p></li>` + sourceRows.join('')
+      + `<li><div class="readiness-head"><strong>Provisional cross-body detector</strong><span class="badge ${readiness.ready ? 'good' : ''}">${readiness.ready ? 'Signals ready' : 'Waiting'}</span></div></li>`
       + `<li><div class="readiness-head"><strong>Clock alignment</strong></div><p>${escaped(alignments)}</p></li>`
-      + `<li><div class="readiness-head"><strong>WILi voice cache</strong><span class="badge ${wiliVoice?.configured ? 'good' : ''}">${wiliVoice?.configured ? 'Prepared' : 'Unavailable'}</span></div><p>${escaped(wiliVoice?.detail || 'No prepared board voice cache reported.')} Check playback on the wearable.</p></li>`
-      + `<li><div class="readiness-head"><strong>ElevenLabs API</strong><span class="badge">${audio?.configured ? 'Configured' : 'Unavailable'}</span></div><p>${escaped(audio?.detail || 'No ElevenLabs API status reported')}</p></li>`
-      + `<li><div class="readiness-head"><strong>Patient iMessage</strong><span class="badge">${wearerMessaging?.configured ? 'Configured' : 'Unavailable'}</span></div><p>${escaped(wearerMessaging?.detail || 'No patient messaging configuration reported')}</p></li>` + dispatchRow;
+      + `<li><div class="readiness-head"><strong>WILi voice cache</strong><span class="badge ${wiliVoice?.configured ? 'good' : ''}">${wiliVoice?.configured ? 'Prepared' : 'Unavailable'}</span></div></li>`
+      + `<li><div class="readiness-head"><strong>ElevenLabs API</strong><span class="badge">${audio?.configured ? 'Configured' : 'Unavailable'}</span></div></li>`
+      + `<li><div class="readiness-head"><strong>Patient iMessage</strong><span class="badge">${wearerMessaging?.configured ? 'Configured' : 'Unavailable'}</span></div></li>` + dispatchRow;
     if (nativeSetup) {
-      const addresses = nativeSetup.addresses.length ? nativeSetup.addresses.map((address) => `${address}:${nativeSetup.port}`).join('\n') : 'No external IPv4 address reported';
-      const binding = nativeSetup.lanEnabled === true ? 'LAN binding enabled' : nativeSetup.lanEnabled === false ? 'Local-only binding' : 'Listener binding not reported';
-      text('#setup-addresses', `${binding}\nMac bridge: 127.0.0.1:${nativeSetup.port}\nPhone host candidates:\n${addresses}`);
+      const addresses = nativeSetup.addresses.length ? nativeSetup.addresses.map((address) => `${address}:${nativeSetup.port}`).join(', ') : '—';
+      const binding = nativeSetup.lanEnabled === true ? 'LAN' : nativeSetup.lanEnabled === false ? 'Local only' : '—';
+      text('#setup-addresses', `Mac 127.0.0.1:${nativeSetup.port} · ${binding}\nPhone ${addresses}`);
     } else {
-      text('#setup-addresses', 'Open this console on the Mac to obtain local pairing and address metadata.');
+      text('#setup-addresses', '—');
     }
   }
 
   function renderResponders() {
     const responders = snapshot.responders;
     const ownerId = snapshot.incident?.ownerId;
-    $('#responders').innerHTML = responders.length ? responders.map((person) => `<li class="responder-item"><span class="avatar">${escaped(initials(person.name))}</span><div><strong>${escaped(person.name)}</strong><p>${escaped(person.simulated === true ? 'Local responder · automatic local progression; no live phone alert' : person.phone ? 'Approved phone configured; send result in Delivery activity' : 'Approved phone needed for live alerts')}</p></div>${person.id === ownerId ? `<span class="badge ${simulatedIncident() ? 'warning' : 'good'}">OWNER</span>` : person.simulated === true ? '<span class="badge warning">LOCAL</span>' : ''}</li>`).join('') : `<li class="empty-list">${snapshot.dispatch?.mode === 'simulated' ? 'No local responder reported.' : 'Add an approved responder with a phone for live alerts.'}</li>`;
+    $('#responders').innerHTML = responders.length ? responders.map((person) => `<li class="responder-item"><span class="avatar">${escaped(initials(person.name))}</span><div><strong>${escaped(person.name)}</strong><p>${escaped(person.simulated === true ? 'Local' : person.phone ? 'Phone configured' : 'No phone')}</p></div>${person.id === ownerId ? `<span class="badge ${simulatedIncident() ? 'warning' : 'good'}">OWNER</span>` : person.simulated === true ? '<span class="badge warning">LOCAL</span>' : ''}</li>`).join('') : '<li class="empty-list">No responders</li>';
     const signature = JSON.stringify(responders.map((person) => [person.id, person.name, person.simulated]));
     if (signature !== responderSignature) {
       const selected = $('#responder').value;
@@ -1632,7 +1628,7 @@ import { careHighlights } from './care-summary.js';
   function renderProviders() {
     const providers = Object.entries(snapshot.providers || {});
     const names = { photon: 'Photon messaging', finchnode: 'FinchNode records', elevenlabs: 'ElevenLabs API', llm: 'Grounded AI', wiliVoice: 'WILi voice cache' };
-    $('#providers').innerHTML = providers.length ? providers.map(([name, status]) => `<li class="provider-item"><div class="provider-head"><strong>${escaped(Object.hasOwn(names, name) ? names[name] : name)}</strong><span class="badge ${status.configured ? 'good' : ''}">${status.configured ? name === 'wiliVoice' ? 'Prepared' : 'Configured' : 'Unavailable'}</span></div><p>${escaped(status.detail)}</p></li>`).join('') : '<li class="empty-list">No provider status available.</li>';
+    $('#providers').innerHTML = providers.length ? providers.map(([name, status]) => `<li class="provider-item" title="${escaped(status.detail)}"><div class="provider-head"><strong>${escaped(Object.hasOwn(names, name) ? names[name] : name)}</strong><span class="badge ${status.configured ? 'good' : ''}">${status.configured ? name === 'wiliVoice' ? 'Prepared' : 'Configured' : 'Unavailable'}</span></div></li>`).join('') : '<li class="empty-list">—</li>';
   }
 
   function renderTimeline() {
@@ -1643,8 +1639,10 @@ import { careHighlights } from './care-summary.js';
       const simulated = simulatedActor(event.actor) || simulatedIncident() && (snapshot.responders.some(person => person.id === event.actor && person.simulated === true)
         || ['ACKNOWLEDGED', 'RESPONDER_EN_ROUTE', 'ON_SCENE', 'RESOLVED'].includes(event.type));
       const actor = `${nameFor(event.actor)}${simulated && !simulatedActor(event.actor) ? ' · local' : ''}`;
-      return `<li class="event-item"><div class="event-head"><strong>${escaped(event.type.replaceAll('_', ' ').replace('WEARER', 'PATIENT'))}${simulated ? ' · local' : ''}</strong><time>${escaped(time(event.at))}</time></div><p>${escaped(timelineDetail(event))}</p><span class="event-actor">${escaped(actor)}</span></li>`;
-    }).join('') : '<li class="empty-list">Events will appear as the incident progresses.</li>';
+      const lines = String(timelineDetail(event) ?? '').split('\n'), summary = (event.type === 'CHECKIN_REPLY' ? lines.join(' · ') : lines[0])
+        .replace(/;\s*not a safety determination\.?/i, '.').replace(/\.?\s*(?:Clinical revision|Revision) finch-[0-9a-f]+[.;]?/g, '.');
+      return `<li class="event-item"><div class="event-head"><strong>${escaped(event.type.replaceAll('_', ' ').replace('WEARER', 'PATIENT'))}${simulated ? ' · local' : ''}</strong><time>${escaped(time(event.at))}</time></div><p title="${escaped(lines.join(' '))}">${escaped(summary)}</p><span class="event-actor">${escaped(actor)}</span></li>`;
+    }).join('') : '<li class="empty-list">No events</li>';
   }
 
   function timelineDetail(event) {
@@ -1689,10 +1687,10 @@ import { careHighlights } from './care-summary.js';
       const [label, color] = actionLabels[action.status] || [action.status, ''];
       const actionTitles = { wearer_checkin: 'Patient iMessage', wearer_ack: 'Patient iMessage acknowledgement', wearer_status: 'Patient progress update', wearer_location: 'Patient approach update', wearer_relay: 'Patient quote to responder', checkin: 'Device check-in request', answer: 'Responder answer' };
       const actionTitle = Object.hasOwn(actionTitles, action.type) ? actionTitles[action.type] : action.type[0].toUpperCase() + action.type.slice(1);
-      const message = action.text ? `<details class="action-message" data-action-id="${escaped(action.id)}"${expanded.has(action.id) ? ' open' : ''}><summary>View message</summary><p>${escaped(action.text)}</p></details>` : '';
-      const result = action.status === 'simulated' ? `Local delivery; no provider send or recipient receipt.${action.providerResult ? ` ${action.providerResult}` : ''}` : action.providerResult || 'No provider result yet.';
-      return `<li class="action-item"><div class="action-head"><strong>${escaped(actionTitle)}${action.recipientId ? ` · ${escaped(nameFor(action.recipientId))}` : ''}</strong><span class="badge ${color}">${escaped(label)}</span></div><p>${escaped(result)}</p>${message}<span class="action-meta">${escaped(time(action.createdAt))} · ${action.attempts} attempt${action.attempts === 1 ? '' : 's'}${action.providerMessageId ? ` · Message ${escaped(action.providerMessageId.slice(0, 18))}` : ''}</span></li>`;
-    }).join('') : '<li class="empty-list">No external actions queued.</li>';
+      const message = action.text ? `<details class="action-message" data-action-id="${escaped(action.id)}"${expanded.has(action.id) ? ' open' : ''}><summary>Message</summary><p>${escaped(action.text)}</p></details>` : '';
+      const result = ['failed', 'unknown'].includes(action.status) && action.providerResult ? `<p>${escaped(action.providerResult)}</p>` : '';
+      return `<li class="action-item"><div class="action-head"><strong>${escaped(actionTitle)}${action.recipientId ? ` · ${escaped(nameFor(action.recipientId))}` : ''}</strong><span class="badge ${color}">${escaped(label)}</span></div>${result}${message}<span class="action-meta">${escaped(time(action.createdAt))}${action.attempts > 1 ? ` · ${action.attempts} attempts` : ''}</span></li>`;
+    }).join('') : '<li class="empty-list">No deliveries</li>';
   }
 
   function updateTime() {
@@ -1819,7 +1817,7 @@ import { careHighlights } from './care-summary.js';
       : countAvailable(trial?.markerCount) ? `${trial.markerCount.toLocaleString()} operator marker${trial.markerCount === 1 ? '' : 's'} recorded.` : 'Operator marker count unavailable.');
     const scenario = trial && Object.hasOwn(scenarios, trial.scenario) ? scenarios[trial.scenario] : trial?.scenario;
     const mode = trial?.captureMode === 'wili-waist' ? ' · WILi + waist capture' : trial?.captureMode === 'legacy-core-motion' ? ' · Legacy CoreMotion capture' : '';
-    text('#trial-summary', trial ? `${trial.label} · ${scenario}${mode} · ID ${trial.id}${trial.reason ? ` · ${trial.reason}` : ''}` : 'No trial has been recorded.');
+    text('#trial-summary', trial ? `${trial.label} · ${scenario}${mode} · ID ${trial.id}${trial.reason ? ` · ${trial.reason}` : ''}` : 'No trial');
     updateTrialTime();
   }
 
@@ -1981,6 +1979,30 @@ import { careHighlights } from './care-summary.js';
     }
   }).catch(() => { $('#auth-details').open = true; });
   loadState().catch(() => setConnection(false, 'Waiting for the LIFELINE server. No sensor data has been received.'));
+  function renderOverviewLive() {
+    if (!$('#overview-patient')) return;
+    try {
+      const incident = activeIncident(snapshot), view = dashboardPresentation(snapshot, online);
+      text('#overview-patient', snapshot ? view.wearerName : '—');
+      text('#overview-phase-label', snapshot ? view.statusLabel : 'Connecting');
+      $('.overview-strip').dataset.phase = !online ? 'OFFLINE' : incident?.phase || 'IDLE';
+      const steps = $('#overview-phases');
+      if (steps.children.length !== phases.length) steps.innerHTML = phases.map(([, label]) => `<li>${escaped(label)}</li>`).join('');
+      const current = phases.findIndex(([phase]) => phase === incident?.phase);
+      [...steps.children].forEach((step, index) => {
+        step.className = current > index ? 'complete' : current === index ? 'current' : '';
+        if (current === index) step.setAttribute('aria-current', 'step'); else step.removeAttribute('aria-current');
+      });
+      const body = snapshot?.wili, waist = snapshot?.sensors?.find(sensor => sensor.source === 'waist-airpod');
+      text('#overview-body-g', online && body?.connected && finite(wiliDisplaySample?.totalG) ? number(wiliDisplaySample.totalG, 2) : '—');
+      text('#overview-waist-g', online && waist?.connected && finite(waist.totalG) ? number(waist.totalG, 2) : '—');
+      const now = Date.now(), span = 20000;
+      const points = (wiliTrace?.points || []).filter(point => finite(point?.at) && finite(point?.totalG) && now - point.at <= span);
+      $('#overview-body-trace')?.setAttribute('d', points.map((point, index) =>
+        `${index ? 'L' : 'M'}${(120 - (now - point.at) / span * 120).toFixed(1)} ${(26 - Math.min(1, Math.max(0, point.totalG / 3)) * 24).toFixed(1)}`).join(''));
+    } catch { /* The overview summary is presentation only. */ }
+  }
+  setInterval(renderOverviewLive, 500);
   connect();
   setInterval(updateTime, 500);
 })();

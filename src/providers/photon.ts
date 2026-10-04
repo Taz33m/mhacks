@@ -155,7 +155,8 @@ export function normalizePhoton(message: PhotonMessage): ProviderInbound | null 
       return { ...base, kind: 'text', text: inner.text, targetMessageId };
     }
   }
-  if (content.type === 'reaction' && content.emoji === '👍') {
+  // Any skin tone of thumbs-up counts as the same 👍 reaction.
+  if (content.type === 'reaction' && typeof content.emoji === 'string' && content.emoji.startsWith('👍')) {
     const targetMessageId = targetId(content);
     if (targetMessageId) return {
       ...base, kind: 'reaction', reaction: '👍', targetMessageId,
@@ -166,7 +167,7 @@ export function normalizePhoton(message: PhotonMessage): ProviderInbound | null 
   // does not reliably emit them; never infer removal from silence or a new like.
   if (content.type === 'unsend') {
     const reaction = object(object(content.target)?.content);
-    if (reaction?.type === 'reaction' && reaction.emoji === '👍') {
+    if (reaction?.type === 'reaction' && typeof reaction.emoji === 'string' && reaction.emoji.startsWith('👍')) {
       const targetMessageId = targetId(reaction);
       if (targetMessageId) return {
         ...base, kind: 'reaction', reaction: '👍', targetMessageId, removed: true,

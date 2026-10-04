@@ -675,3 +675,350 @@ body.sequence-page{overscroll-behavior-y:none}
 .sequence-page .care-scroll .care-lane-caption{font-size:8px}.sequence-page .care-scroll .care-phone-composer{font-size:8px;margin:0 6px 8px}.sequence-page .care-scroll .care-conversation-bridge{font-size:9px}
 }
 @media(prefers-reduced-motion:reduce){.sequence-page .care-scroll{height:auto;padding-top:40px;padding-bottom:40px}.sequence-page .care-conversation-pin{position:relative;height:auto}.sequence-page .care-scroll .care-phone{height:650px}.sequence-page .care-scroll .care-message-viewport{mask-image:none}}
+
+/* simplify: global */
+.dashboard-page .workspace-page-heading{display:none!important}
+.dashboard-page .section-note{display:none!important}
+.dashboard-page *{scroll-margin-top:64px}
+.dashboard-page .workspace-breadcrumb{gap:10px}
+.dashboard-page .workspace-breadcrumb strong{font-size:14px;font-weight:600;letter-spacing:-.2px;color:#151a22}
+@media(min-width:801px){
+.dashboard-page .workspace-rail{width:192px;padding:18px 12px 14px;overflow-y:auto;scrollbar-width:none}
+.dashboard-page .topbar,.dashboard-page .shell{margin-left:192px}
+.dashboard-page .topbar{height:52px;min-height:52px;padding:0 24px}
+.dashboard-page .shell{padding:16px 24px 18px}
+.dashboard-page .workspace-brand{margin-bottom:22px;font-size:19px;padding:0 8px}
+.dashboard-page .workspace-rail nav{gap:2px}
+.dashboard-page .rail-link{padding:9px 10px;font-size:12.5px;gap:10px}
+.dashboard-page .rail-tools{margin-top:12px;padding-top:10px}
+.dashboard-page .rail-tools>summary{font-size:11px;padding:4px 10px}
+.dashboard-page .rail-tools nav{margin-top:6px}
+.dashboard-page .rail-tools .rail-link{padding:7px 10px;font-size:11.5px}
+.dashboard-page .rail-bottom{padding:14px 10px 0}
+.dashboard-page .messaging-credit{margin-top:0;padding-top:12px}
+.dashboard-page .messaging-credit a,.dashboard-page .photon-wordmark{width:96px}
+.dashboard-page .developer-toggle{margin-top:4px}
+.dashboard-page .workspace-view,.dashboard-page .workspace-view-column,.dashboard-page .workspace-grid{gap:14px}
+.dashboard-page .card{padding:16px 18px;border-radius:12px}
+.dashboard-page .card-top{margin-bottom:10px}
+.dashboard-page .card-top h2{font-size:15px;letter-spacing:-.25px}
+.dashboard-page .notice{margin-bottom:12px;padding:9px 12px}
+}
+/* end simplify: global */
+
+/* simplify: location-activity-admin */
+/* Explanatory/provenance lines that JS still writes to: hidden, never removed. */
+.dashboard-page #timeline-dispatch-note,.dashboard-page #simulated-responder-note,.dashboard-page #dispatch-scope,.dashboard-page #native-connection,.dashboard-page #rehearsal-context,.dashboard-page #trial-measurements,.dashboard-page #calibration-guide .guide-details{display:none !important}
+.dashboard-page #access-save-state:empty,.dashboard-page #outcome-source:empty{display:none}
+.dashboard-page #location .card h2,.dashboard-page #activity .card h2,.dashboard-page #connections .card h2,.dashboard-page #teaching .card h2{font-size:16px;letter-spacing:-.3px}
+.dashboard-page #location .card-top,.dashboard-page #activity .card-top,.dashboard-page #connections .card-top{margin-bottom:12px}
+/* Location: 3D apartment beside the room facts, sized to the viewport. */
+.dashboard-page #location.workspace-view:not([hidden]){display:grid;grid-template-columns:minmax(0,1fr) minmax(240px,300px);gap:16px;align-items:stretch}
+.dashboard-page #location .apartment-card{grid-column:1;grid-row:1;padding:16px 18px 18px;display:flex;flex-direction:column}
+.dashboard-page #location .access-card{grid-column:2;grid-row:1;padding:16px 18px 18px;display:flex;flex-direction:column}
+.dashboard-page #location .apartment-stage{height:clamp(300px,calc(100vh - 280px),640px);margin-top:0}
+.dashboard-page #location .access-facts{grid-template-columns:1fr;gap:0;margin-top:0}
+.dashboard-page #location .access-facts>div{padding:11px 0;border-top:1px solid #eef0f4}
+.dashboard-page #location .access-facts>div:first-child{border-top:0;padding-top:2px}
+.dashboard-page #location .access-facts span{margin-bottom:3px;font-size:10px;text-transform:uppercase;letter-spacing:.06em}
+.dashboard-page #location .access-facts strong{font-size:14px;line-height:1.45}
+.dashboard-page #location .access-editor{margin-top:auto;padding-top:12px}
+.dashboard-page #location #access-form{grid-template-columns:1fr;gap:9px;margin-top:10px}
+.dashboard-page #location #access-form input{padding:8px 10px}
+.dashboard-page #location #access-save-state{margin:8px 0 0}
+@media (max-width:900px){.dashboard-page #location.workspace-view:not([hidden]){grid-template-columns:minmax(0,1fr)}.dashboard-page #location .access-card{grid-column:1;grid-row:2}.dashboard-page #location .apartment-stage{height:380px}}
+/* Activity: two lists that scroll internally instead of the page. */
+.dashboard-page #activity.workspace-view{gap:14px}
+.dashboard-page #activity .outcome-panel{margin-top:0;padding:11px 14px}
+.dashboard-page #activity .outcome-panel p{margin:4px 0}
+.dashboard-page #activity .activity-grid{gap:16px}
+.dashboard-page #activity .activity-grid>.card{padding:16px 18px}
+.dashboard-page #activity .event-list,.dashboard-page #activity .action-list{max-height:clamp(220px,calc(100vh - 330px),640px);overflow:auto;padding-right:4px}
+.dashboard-page #activity .event-item{padding-bottom:11px}
+.dashboard-page #activity .event-item p{margin:2px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dashboard-page #activity .action-item{padding:9px 0}
+.dashboard-page #activity .action-item:first-child{padding-top:0}
+.dashboard-page #activity .action-message{margin:4px 0}
+.dashboard-page #activity .action-message summary{font-size:10px;color:#667286;cursor:pointer}
+/* Connections: three columns, label + status per row. */
+.dashboard-page #connections .workspace-connections-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.dashboard-page #connections .workspace-connections-grid>.card{padding:16px 18px}
+.dashboard-page #connections .workspace-connections-grid>.card:first-child{grid-row:span 2}
+.dashboard-page #connections .readiness-list>li,.dashboard-page #connections .provider-item,.dashboard-page #connections .responder-item{padding:8px 0}
+.dashboard-page #connections .readiness-list>li:first-child,.dashboard-page #connections .provider-item:first-child,.dashboard-page #connections .responder-item:first-child{padding-top:0}
+.dashboard-page #connections .readiness-list p{margin-top:2px}
+.dashboard-page #connections .native-addresses{margin-top:8px;padding-top:10px}
+.dashboard-page #connections .native-addresses #setup-addresses{margin:4px 0 0}
+.dashboard-page #connections .connection-auth-card .auth-details{margin-bottom:10px}
+@media (max-width:1100px){.dashboard-page #connections .workspace-connections-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:700px){.dashboard-page #connections .workspace-connections-grid{grid-template-columns:1fr}.dashboard-page #connections .workspace-connections-grid>.card:first-child{grid-row:auto}}
+/* Developer: tighter spacing; controls unchanged. */
+.dashboard-page #developer.workspace-view{gap:14px}
+.dashboard-page #developer .demo-simple-card{padding:22px 28px 20px}
+.dashboard-page #developer .demo-simple-buttons{margin-top:20px}
+.dashboard-page #developer .demo-simple-links{margin-top:18px}
+.dashboard-page #developer .demo-advanced{margin-top:12px}
+.dashboard-page #developer .demo-advanced>summary{padding:13px 18px}
+.dashboard-page #developer .demo-advanced-content{gap:12px}
+.dashboard-page #developer .demo-advanced-content>.card{padding:16px 18px}
+.dashboard-page #developer .control-section{margin-top:12px;padding-top:12px}
+.dashboard-page #response-controls>.card-top{display:none}
+.dashboard-page #response-controls>summary{font-size:13px;font-weight:550;cursor:pointer;margin-bottom:4px}
+.dashboard-page #developer .rehearsal-form{margin-top:0;padding-top:0;border-top:0}
+.dashboard-page #developer .wellbeing-controls{margin:0;padding-top:0;border-top:0}
+.dashboard-page #developer>.developer-footer{margin-top:10px;padding-top:12px}
+/* Teach: controls beside the saved examples. */
+.dashboard-page #teaching.workspace-view:not([hidden]){display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:16px;align-items:start}
+.dashboard-page #teaching>.card{padding:16px 18px}
+.dashboard-page #teaching .teach-card>h2{margin-bottom:12px}
+.dashboard-page #teaching .calibration-controls{flex-wrap:wrap;justify-content:flex-start;gap:10px;margin:0 0 10px;padding:12px 14px}
+.dashboard-page #teaching .calibration-controls .control-section{flex-basis:100%;margin-top:2px;padding-top:10px}
+.dashboard-page #teaching .calibration-controls .button-grid{margin:6px 0}
+.dashboard-page #teaching .calibration-controls label{font-size:11px;color:#5c6776}
+.dashboard-page #teaching #teach-status{margin:6px 0 10px}
+.dashboard-page #teaching .teach-examples-card>h2{margin-bottom:6px}
+.dashboard-page #teaching #teach-count{margin:0 0 6px}
+.dashboard-page #teach-examples{list-style:none;margin:0;padding:0;max-height:clamp(200px,calc(100vh - 330px),600px);overflow:auto}
+.dashboard-page #teach-examples>li{padding:7px 0;border-top:1px solid #eef0f4;font-size:11px;color:#3d4654}
+.dashboard-page #teach-examples>li:first-child{border-top:0}
+@media (max-width:900px){.dashboard-page #teaching.workspace-view:not([hidden]){grid-template-columns:minmax(0,1fr)}}
+/* end simplify: location-activity-admin */
+
+/* simplify: overview */
+.dashboard-page #status #condition-response,.dashboard-page #status #condition-source,.dashboard-page #status #overview-report-source{display:none!important}
+.dashboard-page .overview-strip{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr) minmax(0,1.1fr) minmax(0,.9fr);align-items:start}
+.dashboard-page .overview-strip-item{min-width:0;padding:0 18px;border-left:1px solid #edf0f3}
+.dashboard-page .overview-strip-item:first-child{padding-left:0;border-left:0}
+.dashboard-page .overview-strip .eyebrow{display:block;margin:0 0 5px}
+.dashboard-page .overview-strip strong{display:flex;align-items:center;gap:7px;min-width:0;font-size:22px;font-weight:550;letter-spacing:-.5px;line-height:1.25;color:#151a22;white-space:nowrap;font-variant-numeric:tabular-nums}
+.dashboard-page .overview-strip #overview-patient{display:block;overflow:hidden;text-overflow:ellipsis}
+.dashboard-page .overview-strip strong>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.dashboard-page .overview-strip strong small{font-size:12px;font-weight:450;letter-spacing:0;color:#7b8797;align-self:flex-end;margin:0 0 3px -3px}
+.dashboard-page .overview-phase-dot{flex:none;width:9px;height:9px;border-radius:50%;background:#b8bec8}
+.dashboard-page .overview-strip[data-phase="IDLE"] .overview-phase-dot{background:#2a9d63;box-shadow:0 0 0 4px #2a9d631f}
+.dashboard-page .overview-strip[data-phase="DETECTED"] .overview-phase-dot,.dashboard-page .overview-strip[data-phase="CONFIRMING"] .overview-phase-dot{background:#d48a1a;box-shadow:0 0 0 4px #d48a1a24}
+.dashboard-page .overview-strip[data-phase="HELP_REQUESTED"] .overview-phase-dot{background:#d23f3f;box-shadow:0 0 0 4px #d23f3f24}
+.dashboard-page .overview-strip[data-phase="ACKNOWLEDGED"] .overview-phase-dot,.dashboard-page .overview-strip[data-phase="RESPONDER_EN_ROUTE"] .overview-phase-dot,.dashboard-page .overview-strip[data-phase="ON_SCENE"] .overview-phase-dot{background:#1878e9;box-shadow:0 0 0 4px #1878e924}
+.dashboard-page .overview-spark{flex:none;width:84px;height:26px;margin-left:8px;overflow:visible}
+.dashboard-page .overview-spark path{fill:none;stroke:#1878e9;stroke-width:1.6;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}
+.dashboard-page .overview-phases{grid-column:1/-1;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;list-style:none;margin:14px 0 0;padding:0}
+.dashboard-page .overview-phases li{min-width:0;padding-top:7px;border-top:3px solid #e8ebef;font-size:10px;line-height:1.3;color:#8a929d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dashboard-page .overview-phases li.complete{border-color:#9cc9b0;color:#2f6f4c}
+.dashboard-page .overview-phases li.current{border-color:#1878e9;color:#1564c1;font-weight:600}
+.dashboard-page #status .card-top{margin-bottom:10px}
+.dashboard-page #status .watch-vitals{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;border-top:0;padding-top:0}
+.dashboard-page #status .watch-vitals>div{min-width:0}
+.dashboard-page #status .watch-vitals>div:first-child{grid-column:1/-1;display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-areas:"label label" "value trace";column-gap:18px;align-items:center}
+.dashboard-page #status .watch-vitals>div:first-child>span{grid-area:label}
+.dashboard-page #status .watch-vitals>div:first-child>strong{grid-area:value}
+.dashboard-page #status .watch-vitals>div:first-child>svg{grid-area:trace;max-width:none;width:100%;height:40px}
+.dashboard-page #status .watch-vitals>div>span{display:block;font-size:11px;color:#6b7686}
+.dashboard-page #status .watch-vitals strong{font-size:30px;line-height:1.15;margin:2px 0 0;color:#1d2b3d;font-variant-numeric:tabular-nums}
+.dashboard-page #status .watch-vitals strong small{font-size:12px}
+.dashboard-page #status .watch-vitals svg path{stroke:#1878e9;stroke-width:1.6}
+.dashboard-page #status .condition-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:14px 0 0}
+.dashboard-page #status .condition-item{padding:10px 12px;border-radius:9px}
+.dashboard-page #status .condition-item>.eyebrow{margin-bottom:3px}
+.dashboard-page #status .condition-item strong{font-size:15px;font-weight:550;letter-spacing:-.2px}
+.dashboard-page #status .condition-item small{display:none}
+.dashboard-page #status .condition-observed{grid-template-columns:1fr 1fr;gap:14px;padding:0}
+.dashboard-page #status .condition-observed .eyebrow{display:block;margin-bottom:4px}
+.dashboard-page #status .condition-observed strong{display:block;font-size:16px;font-weight:550;letter-spacing:-.2px}
+.dashboard-page #status .overview-report-card,.dashboard-page #status .overview-response-card,.dashboard-page #status .overview-conversation-card{display:flex;flex-direction:column;min-width:0;min-height:0}
+.dashboard-page #status .overview-report{font-size:15px;line-height:1.5;margin:0;color:#1f2733;max-height:6em;overflow:auto}
+.dashboard-page #status .overview-response-name{display:block;font-size:20px;line-height:1.25}
+.dashboard-page #status #overview-response-state{font-size:12px;color:#4f5968;margin:4px 0 0}
+.dashboard-page #status .overview-card-meta{font-size:11px;color:#7a8492;margin:3px 0 0}
+.dashboard-page #status #overview-response-state:empty,.dashboard-page #status .overview-card-meta:empty{display:none}
+.dashboard-page #status .overview-conversation{flex:1 1 auto;min-height:0;max-height:340px;overflow:auto}
+.dashboard-page #status .overview-conversation>li{padding:9px 0;font-size:12.5px;line-height:1.5}
+.dashboard-page #status .overview-conversation>li:first-child{padding-top:0}
+.dashboard-page #status .overview-conversation p{margin:2px 0}
+.dashboard-page #status .overview-conversation .empty-list{padding:4px 0}
+@media(min-width:801px){
+.dashboard-page #status:not([hidden]){display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) minmax(0,1.1fr);grid-template-areas:"strip strip strip" "vitals check convo" "vitals report convo" "vitals resp convo";grid-template-rows:auto auto 1fr auto;gap:14px;align-items:stretch}
+.dashboard-page #status .overview-strip{grid-area:strip}
+.dashboard-page #status .watch-preview-card{grid-area:vitals}
+.dashboard-page #status .condition-live-card{grid-area:check}
+.dashboard-page #status .overview-report-card{grid-area:report}
+.dashboard-page #status .overview-response-card{grid-area:resp}
+.dashboard-page #status .overview-conversation-card{grid-area:convo}
+}
+@media(min-width:801px) and (max-width:1099px){
+.dashboard-page #status:not([hidden]){grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-areas:"strip strip" "vitals check" "vitals report" "vitals resp" "convo convo"}
+}
+@media(max-width:1099px){
+.dashboard-page .overview-strip{grid-template-columns:repeat(2,minmax(0,1fr));row-gap:12px}
+.dashboard-page .overview-strip-item:nth-child(3){padding-left:0;border-left:0}
+.dashboard-page .overview-phases li{font-size:9px}
+}
+/* end simplify: overview */
+
+/* simplify: motion */
+/* One viewport: incident strip on top, two live sensor cards below. Diagnostics stay in the DOM for app.js. */
+.dashboard-page #motion{gap:14px}
+.dashboard-page[data-phase="IDLE"] #motion>.incident-card,.dashboard-page[data-phase="IDLE"] #motion>.sensor-grid,.dashboard-page[data-phase="IDLE"] #motion>#incident-evidence{order:0}
+.dashboard-page #motion>.signals-heading,.dashboard-page #motion>.motion-report-card,.dashboard-page #motion>.motion-setup,.dashboard-page #motion #incident-summary,.dashboard-page #motion #motion-severity-detail,.dashboard-page #motion #motion-evidence-source,.dashboard-page #motion #owner-detail,.dashboard-page #motion .overview-next,.dashboard-page #motion #wili-sample-detail,.dashboard-page #motion #wili-report-note,.dashboard-page #motion .sensor-diagnostics,.dashboard-page #motion .sensor-diagnostics-hidden,.dashboard-page #motion #incident-evidence-timing,.dashboard-page #motion #incident-evidence .clinical-source,#calibration-guide-description,.calibration-guide .guide-details{display:none!important}
+.dashboard-page #motion .incident-card{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));grid-template-areas:"head phases phases" "assess assess assess" "injury injury facts";gap:14px 24px;align-items:center;padding:18px 22px}
+.dashboard-page #motion .overview-incident-header{grid-area:head;min-width:0}
+.dashboard-page #motion .overview-wearer{margin:0 0 4px;font-size:10px}
+.dashboard-page #motion .overview-state h2{font-size:22px;line-height:1.2;letter-spacing:-.6px;margin:0}
+.dashboard-page #motion #phase-list{grid-area:phases;margin:0}
+.dashboard-page #motion .motion-assessment{grid-area:assess;grid-template-columns:repeat(6,minmax(0,1fr));gap:1px;margin:0;background:#e7ebf1;border:1px solid #e7ebf1;border-radius:10px;overflow:hidden}
+.dashboard-page #motion .motion-assessment>div{border:0!important;background:#fafbfd;padding:10px 14px}
+.dashboard-page #motion .motion-assessment .eyebrow{margin-bottom:4px}
+.dashboard-page #motion .motion-assessment strong{font-size:16px;line-height:1.3}
+.dashboard-page #motion .motion-injury{grid-area:injury;display:flex;align-items:baseline;gap:12px;margin:0;padding:0;border:0;min-width:0}
+.dashboard-page #motion .motion-injury .eyebrow{flex-shrink:0;margin:0}
+.dashboard-page #motion .motion-injury p{margin:0;font-size:13px;line-height:1.5;overflow-wrap:anywhere}
+.dashboard-page[data-phase="IDLE"] #motion .motion-injury{display:none}
+.dashboard-page #motion .incident-facts{grid-area:facts;gap:16px;padding:9px 14px;margin:0}
+.dashboard-page #motion .incident-facts strong{font-size:15px;line-height:1.3;letter-spacing:-.2px;margin:2px 0 0}
+.dashboard-page #motion .sensor-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.dashboard-page #motion .sensor-card{padding:14px 18px 12px;min-width:0}
+.dashboard-page #motion .sensor-card .card-top{align-items:center;flex-wrap:nowrap;gap:10px;margin-bottom:8px;min-height:24px}
+.dashboard-page #motion .sensor-card h2{font-size:14px;font-weight:600;letter-spacing:-.2px;margin:0;white-space:nowrap}
+.dashboard-page #motion .sensor-card .card-top .badge{text-transform:uppercase;letter-spacing:.07em;font-weight:600;white-space:nowrap}
+.dashboard-page #motion .sensor-card .card-top .badge.good:before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor;margin-right:5px}
+.dashboard-page #motion .sensor-actions{display:flex;align-items:center;gap:8px;min-width:0}
+.dashboard-page #motion #calibrate{min-height:0;padding:3px 9px;font-size:10px;line-height:1.5;border-radius:6px}
+.dashboard-page #motion #calibration-message{margin:0;font-size:10px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px}
+.dashboard-page #motion .sensor-readout{display:flex;align-items:flex-end;justify-content:space-between;gap:10px 18px;flex-wrap:wrap;margin:0 0 8px}
+.dashboard-page #motion .sensor-reading{margin:0;gap:4px;flex-wrap:nowrap}
+.dashboard-page #motion .sensor-reading strong{font-size:34px;letter-spacing:-1.4px;line-height:1}
+.dashboard-page #motion .sensor-reading>span{font-size:12px;color:#646c78}
+.dashboard-page #motion .sensor-stats{display:flex;flex-wrap:wrap;gap:6px 16px;margin:0;padding:0}
+.dashboard-page #motion .sensor-stats>div{display:flex;flex-direction:column;min-width:0}
+.dashboard-page #motion .sensor-stats dt{font-size:8px;font-weight:550;letter-spacing:.08em;text-transform:uppercase;color:#8a929d}
+.dashboard-page #motion .sensor-stats dd{margin:2px 0 0;font-size:12px;font-weight:500;color:#273142;font-variant-numeric:tabular-nums;white-space:nowrap}
+.dashboard-page #motion .chart-wrap{min-height:0;margin:0;padding:6px 4px 0}
+.dashboard-page #motion .motion-chart{height:auto;aspect-ratio:400/108}
+.dashboard-page #motion .chart-legend{margin-top:6px}
+.dashboard-page #motion #incident-evidence{padding:12px 18px;margin:0;border-radius:12px}
+.dashboard-page #motion #incident-evidence .card-top{margin-bottom:8px}
+.dashboard-page #motion #incident-evidence h3{font-size:13px;margin:0}
+.dashboard-page #motion #incident-evidence-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px 18px;margin:0}
+.dashboard-page #motion #incident-evidence-facts>div{display:flex;flex-direction:column;gap:2px;padding:0}
+.dashboard-page #motion #incident-evidence-facts dt{font-size:8px;font-weight:550;letter-spacing:.08em;text-transform:uppercase;color:#8a929d}
+.dashboard-page #motion #incident-evidence-facts dd{font-size:14px;font-weight:500;color:#202631;line-height:1.35;white-space:normal}
+.calibration-guide .guide-instruction{min-height:210px}
+@media(max-width:1000px){.dashboard-page #motion .incident-card{grid-template-columns:repeat(2,minmax(0,1fr));grid-template-areas:"head head" "phases phases" "assess assess" "injury facts"}.dashboard-page #motion .motion-assessment{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:900px){.dashboard-page #motion .sensor-grid{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:600px){.dashboard-page #motion .incident-card{grid-template-columns:minmax(0,1fr);grid-template-areas:"head" "phases" "assess" "injury" "facts";padding:16px}.dashboard-page #motion .motion-assessment{grid-template-columns:repeat(2,minmax(0,1fr))}.dashboard-page #motion .motion-injury{flex-direction:column;gap:4px}.dashboard-page #motion .sensor-card .card-top{flex-wrap:wrap}.dashboard-page #motion #incident-evidence-facts{grid-template-columns:minmax(0,1fr)}}
+/* end simplify: motion */
+
+/* simplify: conversation-medical */
+.dashboard-page #context-incident,
+.dashboard-page #checkin-audio-detail,
+.dashboard-page #reply-meta,
+.dashboard-page #reply-transcript:not(.has-reply),
+.dashboard-page #conversation .conversation-detail,
+.dashboard-page #responder-questions .question-result,
+.dashboard-page #responder-questions .badge.is-unknown,
+.dashboard-page #workspace-conversation .wellbeing-record-source,
+.dashboard-page #medical-history-detail,
+.dashboard-page #medical .complete-record,
+.dashboard-page #care-context-summary .clinical-source,
+.dashboard-page #patient-answer-revision,
+.dashboard-page #handoff-source-context,
+.dashboard-page #handoff-generation.is-unknown,
+.dashboard-page #handoff .source-ref,
+.dashboard-page #handoff .handoff-report-meta,
+.dashboard-page #conversation-context:empty,
+.dashboard-page #patient-identity:empty,
+.dashboard-page #care-brief-message:empty,
+.dashboard-page #wellbeing-brief-message:empty{display:none!important}
+/* Conversation: chat on the left, questions + daily wellbeing on the right, one viewport tall */
+.dashboard-page #workspace-conversation .workspace-conversation-grid{display:block;max-width:none}
+.dashboard-page #workspace-conversation .workspace-view-column{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);gap:14px;height:max(420px,calc(100vh - 96px))}
+.dashboard-page #workspace-conversation .card{min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.dashboard-page #workspace-conversation .conversation-card{grid-column:1;grid-row:1/span 2}
+.dashboard-page #workspace-conversation .context-card{grid-column:2;grid-row:1;max-height:42vh}
+.dashboard-page #workspace-conversation .wellbeing-card{grid-column:2;grid-row:2}
+.dashboard-page #workspace-conversation .card-top{flex:none;align-items:flex-start}
+.dashboard-page #workspace-conversation .context-incident,.dashboard-page #workspace-conversation .wellbeing-schedule{margin:3px 0 0;font-size:10px;font-weight:400;line-height:1.4;color:#7c8899}
+.dashboard-page #conversation,.dashboard-page #responder-questions,.dashboard-page #wellbeing-messages{flex:1 1 auto;min-height:0;max-height:none;margin:0;overflow:auto}
+.dashboard-page #conversation .conversation-message{padding:9px 12px;margin:8px 0 0}
+.dashboard-page #conversation>li:first-child{margin-top:0}
+.dashboard-page #conversation .conversation-quote{font-size:13px;line-height:1.5;margin:4px 0 2px}
+.dashboard-page #conversation .conversation-meta{font-size:10px}
+.dashboard-page #workspace-conversation .conversation-checkin{flex:none;border-top:1px solid #e7eaf0;margin-top:12px;padding-top:10px}
+.dashboard-page #workspace-conversation .conversation-checkin .wearer-reply{margin:0;padding:0;border:0}
+.dashboard-page #workspace-conversation .conversation-checkin .card-top{display:flex;align-items:center;gap:10px;margin:0}
+.dashboard-page #workspace-conversation .conversation-checkin h3{flex:none;margin:0;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#7c8899}
+.dashboard-page #workspace-conversation .conversation-checkin .checkin-audio{flex:1;min-width:0;margin:0;padding:0;border:0;background:none}
+.dashboard-page #workspace-conversation .conversation-checkin .checkin-audio strong{font-size:11px;font-weight:550}
+.dashboard-page #workspace-conversation .conversation-checkin .badge{flex:none;max-width:none;text-transform:uppercase}
+.dashboard-page #workspace-conversation #reply-transcript.has-reply{margin:8px 0 0;font-size:13px;line-height:1.5}
+.dashboard-page #responder-questions .question-item{padding:10px 0}
+.dashboard-page #responder-questions .question-item:first-child{padding-top:0}
+.dashboard-page #responder-questions .question-label{margin:6px 0 2px}
+.dashboard-page #responder-questions .question-answer-head{margin:8px 0 4px}
+.dashboard-page #responder-questions .question-answer{padding:7px 10px}
+.dashboard-page #responder-questions .question-meta{margin-top:5px}
+.dashboard-page #workspace-conversation .wellbeing-message{padding:9px 12px;margin-top:7px}
+.dashboard-page #workspace-conversation .wellbeing-message:first-child{margin-top:0}
+.dashboard-page #workspace-conversation .wellbeing-message-text{font-size:12.5px;line-height:1.5;margin:4px 0 2px}
+.dashboard-page #workspace-conversation .wellbeing-earlier{flex:none;margin:10px 0 0;padding-top:8px}
+.dashboard-page #wellbeing-earlier-messages{max-height:120px;margin:8px 0 0}
+.dashboard-page #workspace-conversation .wellbeing-journal{flex:none;margin-top:10px;padding-top:10px;gap:10px}
+.dashboard-page #workspace-conversation .wellbeing-journal .button{margin-left:auto}
+.dashboard-page #wellbeing-voice{margin:0}
+.dashboard-page #wellbeing-brief-message{flex:none;margin-top:6px}
+.dashboard-page #workspace-conversation .button-small,.dashboard-page #medical .button-small{min-height:30px;padding:6px 10px}
+/* Medical: record left, handoff right, one viewport tall */
+.dashboard-page #medical:not([hidden]){display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:14px;height:max(420px,calc(100vh - 96px))}
+.dashboard-page #medical>.card{min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.dashboard-page #medical .card-top{flex:none;align-items:center;flex-wrap:wrap;gap:8px 12px}
+.dashboard-page #medical .patient-actions,.dashboard-page #medical .handoff-tags{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.dashboard-page #patient-scope{width:auto;min-height:30px;padding:5px 8px;font-size:11px}
+.dashboard-page #medical .patient-ehr-link{font-size:11px;color:#4e5867;text-decoration:none;white-space:nowrap}
+.dashboard-page #medical .patient-ehr-link:hover{text-decoration:underline}
+.dashboard-page #medical .patient-heading{flex:none;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:0 0 12px}
+.dashboard-page #patient-name{font-size:20px;font-weight:600;letter-spacing:-.4px;overflow-wrap:anywhere}
+.dashboard-page #patient-identity{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:#7c8899}
+.dashboard-page #patient-load-message{flex:none;margin:-6px 0 10px}
+.dashboard-page #medical .medical-safety-context{flex:none;margin:0 0 14px;padding:10px 14px;gap:14px}
+.dashboard-page #medical .medical-safety-context .eyebrow{font-size:9px;margin:0}
+.dashboard-page #medical .medical-safety-context strong{font-size:15px;margin-top:3px}
+.dashboard-page #care-context-summary{flex:1 1 auto;min-height:0;overflow:auto;margin:0;gap:12px 18px;align-content:start;font-size:12px;line-height:1.5}
+.dashboard-page #care-context-summary .medical-fact-group h3,.dashboard-page #care-context-summary>h3{font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#7c8899;margin:0 0 4px}
+.dashboard-page #care-context-summary li{padding:6px 0}
+.dashboard-page #care-context-summary .medical-fact-group li>strong{font-size:12.5px}
+.dashboard-page #care-context-summary .field-note{font-size:10.5px;margin:1px 0 0}
+.dashboard-page #care-context-summary .medical-vitals{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));column-gap:18px}
+.dashboard-page #medical .patient-question-form{flex:none;margin-top:12px;padding-top:12px}
+.dashboard-page #medical .patient-question-form>label{font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#7c8899}
+.dashboard-page #medical .patient-question-controls input,.dashboard-page #medical .patient-question-controls .button{min-height:34px}
+.dashboard-page #patient-question-message{margin-top:6px}
+.dashboard-page #patient-answer-panel{margin-top:10px;padding:10px 12px}
+.dashboard-page #patient-answer-panel .card-top{margin-bottom:6px}
+.dashboard-page #patient-answer-panel h3{font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#7c8899}
+.dashboard-page #patient-answer{max-height:120px;overflow:auto;font-size:12.5px;line-height:1.55}
+.dashboard-page #care-brief-message{flex:none;margin:-4px 0 8px}
+.dashboard-page #medical .complete-record-disclosure{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+.dashboard-page #handoff{flex:1 1 auto;min-height:0;overflow:auto;font-size:12.5px}
+.dashboard-page #handoff .handoff-line{line-height:1.5;margin:3px 0}
+.dashboard-page #handoff .handoff-heading{font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#7c8899;margin:12px 0 4px}
+.dashboard-page #handoff .handoff-heading:first-child{margin-top:0}
+.dashboard-page #handoff .handoff-report{padding:8px 11px;margin:6px 0}
+.dashboard-page #handoff .handoff-report-quote{font-size:13px;margin:4px 0 0}
+@media(max-width:900px){
+.dashboard-page #workspace-conversation .workspace-view-column{grid-template-columns:1fr;grid-template-rows:none;height:auto}
+.dashboard-page #workspace-conversation .conversation-card,.dashboard-page #workspace-conversation .context-card,.dashboard-page #workspace-conversation .wellbeing-card{grid-column:auto;grid-row:auto;max-height:none}
+.dashboard-page #conversation,.dashboard-page #responder-questions,.dashboard-page #wellbeing-messages{max-height:340px}
+.dashboard-page #medical:not([hidden]){grid-template-columns:1fr;height:auto}
+.dashboard-page #care-context-summary,.dashboard-page #handoff{max-height:380px}
+}
+@media(max-width:600px){.dashboard-page #care-context-summary{grid-template-columns:1fr}}
+/* end simplify: conversation-medical */
+
+/* simplify: verifier */
+.dashboard-page #activity .event-actor{display:none !important}
+@media (min-width:1101px){.dashboard-page #connections .workspace-connections-grid{grid-template-rows:auto 1fr;align-items:start}}
+@media (min-width:801px){.dashboard-page #developer.workspace-view{margin-inline:auto}}
+@media (min-width:901px){.dashboard-page #motion #incident-evidence:not([hidden]){display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:32px;padding:10px 18px}.dashboard-page #motion #incident-evidence .card-top{margin:0;gap:10px;justify-content:flex-start}}
+/* end simplify: verifier */
+
+/* Motion and patient report card: hidden (bloat). JS still fills it. */
+.dashboard-page .motion-report-card{display:none!important}

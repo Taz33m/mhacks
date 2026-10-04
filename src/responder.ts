@@ -14,8 +14,8 @@ export function handleResponderProgress(event: ProviderInbound, controller: Cont
     || !controller.messageMatchesConversation(event.targetMessageId, event)
     || controller.responderIncidentForMessage(event.targetMessageId, responder.id)?.id !== incident.id)) return false;
   if (event.kind === 'reaction') {
-    if (event.reaction !== '👍' || !event.targetMessageId
-      || controller.incidentForMessage(event.targetMessageId, responder.id)?.id !== incident.id) return false;
+    // A thumbs-up on any message about the current incident accepts it (target already checked above).
+    if (event.reaction !== '👍' || !event.targetMessageId) return false;
     controller.accept(incident.id, responder.id, event.messageId, event); return true;
   }
   const original = (event.text ?? '').trim();
@@ -23,12 +23,12 @@ export function handleResponderProgress(event: ProviderInbound, controller: Cont
   const codes = original.match(/\bLF-[A-Z0-9-]+\b/gi) ?? [];
   if (codes.some(id => id.toUpperCase() !== incident.id)) return false;
   const hasCode = codes.length === 1;
-  if (!targeted && !hasCode) return false;
+  // Plain texts (no thread reply, no incident code) refer to the one active incident.
   const text = (hasCode ? original.replace(new RegExp(`\\s*${incident.id}\\b`, 'i'), '') : original)
-    .trim().replace(/[’]/g, "'").toLowerCase();
-  if (['on it', 'i can help'].includes(text)) {
-    // Acceptance always refers to an alert, even when a full incident ID is supplied.
-    if (targeted && controller.incidentForMessage(event.targetMessageId!, responder.id)?.id !== incident.id) return false;
+    .trim().replace(/[’]/g, "'").toLowerCase().replace(/[\s.!]+$/, '');
+  // "On it", a thumbs-up sent as text, or Android's text form of a thumbs-up reaction all accept.
+  if (['on it', "i'm on it", 'ok on it', 'okay on it', 'i can help'].includes(text) || /^👍/u.test(text)
+    || /^(?:liked|reacted 👍 to) ["“]/u.test(text)) {
     controller.accept(incident.id, responder.id, event.messageId, event); return true;
   }
   if (['depart', 'leaving', "i'm leaving", 'on my way'].includes(text)) {

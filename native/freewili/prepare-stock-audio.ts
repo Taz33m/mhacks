@@ -16,11 +16,11 @@ const LOCAL_RATE = 160;
 const defaultAudioDirectory = () => resolve(process.env.LIFELINE_WILI_AUDIO_DIR?.trim() || 'output/freewili-audio');
 export const STOCK_VOICE_PROMPTS = {
   // Spoken to the patient only: calm, short, no backend narration. Names match the demo persona.
-  CHECKIN: 'Morgan, I noticed a possible fall. Can you answer me?',
+  CHECKIN: 'Morgan, do you need help?',
   HELP: 'I’m getting help for you now. Try to stay still.',
-  ACCEPTED: 'Maya has answered. I’m here with you.',
-  ENROUTE: 'Maya is on the way.',
-  ARRIVED: 'Maya is here.',
+  ACCEPTED: 'Alexander has answered. I’m here with you.',
+  ENROUTE: 'Alexander is on his way.',
+  ARRIVED: 'Alexander is here.',
   RESOLVED: 'Take care, Morgan.',
   OKAY: 'Okay. If you don’t need help, press the green button.',
 } as const;

@@ -32,7 +32,7 @@
     "prepare:wili:ui": "python3 scripts/prepare-wili-ui.py",
     "build:location": "node scripts/build-location-view.mjs",
     "prepare:wili:local": "node native/freewili/prepare-stock-audio.ts --provider local",
-    "prepare:wili:elevenlabs": "node --env-file-if-exists=.env native/freewili/prepare-stock-audio.ts --provider elevenlabs",
+    "prepare:wili:elevenlabs": "node --env-file-if-exists=.env native/freewili/prepare-stock-audio.ts --provider elevenlabs && node --env-file-if-exists=.env native/freewili/prepare-movement-audio.ts",
     "check:photon": "node scripts/photon-readiness.ts",
     "twin:export": "node scripts/digital-twin/export-traces.mjs --offline-only",
     "prepare:wili:movement": "node --env-file-if-exists=.env native/freewili/prepare-movement-audio.ts",

@@ -3,6 +3,11 @@ import { createPhotonAdapter, type PhotonFactory } from './photon.ts';
 import { normalizePatientRecord, type PatientRecordSnapshot, type PatientSection } from '../patient-record.ts';
 import { stockVoiceSelection } from '../../native/freewili/prepare-stock-audio.ts';
 
+// FinchNode's demo patient has no anticoagulant; Morgan's care-team medication list adds one,
+// labelled as a local entry wherever the record is shown.
+const CARE_TEAM_MEDICATIONS = [{ id: 'rec_careteam_apixaban', resourceType: 'MedicationRequest', name: 'Apixaban 5 mg tablet',
+  dosage: 'one tablet twice daily', frequency: 'twice daily', status: 'active', startDate: '2025-06-01',
+  prescriber: 'Care team medication list (added locally, not from FinchNode)', reason: 'Atrial fibrillation' }];
 export const FINCH_DEMO_URL = 'https://api.finchnode.com/demo/v1/users/patient-demo-001/records?categories=demographics,medications,conditions,allergies,vitals';
 export const CHECKIN_TEXT = "I detected a possible fall. Do you need help? You can say I need help, or tap I don't need help to cancel.";
 export const DEMO_CHECKIN_TEXT = 'I detected a possible fall. Are you okay?';
@@ -444,6 +449,8 @@ export function createProviders(options: {
       const response = await fetcher(FINCH_DEMO_URL, { signal: AbortSignal.timeout(timeoutMs), redirect: 'error' });
       if (!response.ok) throw new Error('lookup failed');
       const raw = object(await readJson(response));
+      const medications = object(raw?.data)?.medications;
+      if (Array.isArray(medications)) medications.push(...CARE_TEAM_MEDICATIONS.map(row => ({ ...row })));
       const patientRecord = normalizePatientRecord(raw, retrievedAt);
       const extracted = snapshotRecords(patientRecord);
       const summary = [
