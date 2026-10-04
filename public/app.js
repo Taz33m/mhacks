@@ -508,9 +508,10 @@ import { careHighlights } from './care-summary.js';
     for (const point of waist.trace || []) {
       if (!finite(point.at) || !finite(point.totalG) || point.at <= guide.motionAfterAt) continue;
       guide.motionTimes.add(point.at);
-      if (Math.abs(point.totalG - 1) >= .15 || (finite(point.angularSpeed) && point.angularSpeed >= .35)) guide.movementTimes.add(point.at);
+      if (Math.abs(point.totalG - 1) >= .1 || (finite(point.angularSpeed) && point.angularSpeed >= .3)) guide.movementTimes.add(point.at);
     }
-    if (online && wili?.connected && wili.fresh && finite(wili.totalG)) guide.wiliObserved = true;
+    // Stock WILi reports 1-5 times a second, so any reading in the last 1.5 s counts as observed.
+    if (online && wili?.connected && (wili.fresh || (finite(wili.receivedAgeMs) && wili.receivedAgeMs < 1500))) guide.wiliObserved = true;
   }
 
   function beginGuideMovement() {
@@ -520,7 +521,7 @@ import { careHighlights } from './care-summary.js';
     if (identityError) { failCalibrationGuide(identityError); return; }
     const { waist } = guideLiveState();
     if (!guide.baselineVerified || !waist.calibrated) { failCalibrationGuide('The waist baseline is no longer available. Start calibration again.'); return; }
-    guide.stage = 'movement'; guide.deadline = performance.now() + 3000;
+    guide.stage = 'movement'; guide.deadline = performance.now() + 5000;
     guide.error = ''; guide.errorStage = null;
     guide.motionAfterAt = Math.max(-Infinity, ...(waist.trace || []).map(point => point.at).filter(finite));
     guide.motionTimes = new Set();
@@ -545,8 +546,8 @@ import { careHighlights } from './care-summary.js';
       }
       if (guide.stage === 'calibrated' && performance.now() >= guide.deadline) beginGuideMovement();
       if (guide.stage === 'movement' && performance.now() >= guide.deadline) {
-        if (guide.movementTimes.size < 3) { failCalibrationGuide('No movement detected — try again.'); return; }
-        if (!guide.wiliObserved) { failCalibrationGuide('No fresh WILi sample during the walk — try again.'); return; }
+        if (guide.movementTimes.size < 3) { failCalibrationGuide('Baseline saved. No walking movement seen at the waist — walk a few steps and try again.'); return; }
+        if (!guide.wiliObserved) { failCalibrationGuide('Baseline saved. WILi sent no reading during the walk — check its cable and try again.'); return; }
         guide.stage = 'movement-complete';
       }
     }

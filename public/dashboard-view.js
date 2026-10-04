@@ -159,14 +159,17 @@ export function liveMotion(snapshot, wiliPoints = [], online = true, windowSecon
   const waist = snapshot?.sensors?.find(sensor => sensor.source === 'waist-airpod');
   const waistTrace = waist?.connected && Array.isArray(waist.trace) ? waist.trace.filter(point => finite(point?.at)) : [];
   const waistEnd = waistTrace.at(-1)?.at;
-  const recentWaist = finite(waistEnd) ? waistTrace.filter(point => point.at >= waistEnd - windowSeconds) : [];
+  // Trace timestamps may be seconds or milliseconds; infer from the typical gap between readings.
+  const gaps = waistTrace.slice(1).map((point, index) => point.at - waistTrace[index].at).filter(gap => gap > 0).sort((a, b) => a - b);
+  const perSecond = gaps.length && gaps[Math.floor(gaps.length / 2)] > 1 ? 1000 : 1;
+  const recentWaist = finite(waistEnd) ? waistTrace.filter(point => point.at >= waistEnd - windowSeconds * perSecond) : [];
   const wiliTrace = Array.isArray(wiliPoints) ? wiliPoints.filter(point => finite(point?.at) && finite(point?.totalG)) : [];
   const wiliEnd = wiliTrace.at(-1)?.at;
   const recentWili = finite(wiliEnd) ? wiliTrace.filter(point => point.at >= wiliEnd - windowSeconds * 1000) : [];
   const peak = (points, key) => points.reduce((max, point) => finite(point[key]) && point[key] > max ? point[key] : max, -Infinity);
   const impact = peak(recentWili, 'totalG'), rotation = peak(recentWaist, 'angularSpeed');
   const lastMove = recentWaist.findLast(point => finite(point.angularSpeed) && point.angularSpeed > .35)?.at;
-  const still = recentWaist.length ? waistEnd - (finite(lastMove) ? lastMove : recentWaist[0].at) : null;
+  const still = recentWaist.length ? (waistEnd - (finite(lastMove) ? lastMove : recentWaist[0].at)) / perSecond : null;
   return {
     impact: finite(impact) ? `${impact.toFixed(2)} g peak · live` : empty.impact,
     rotation: finite(rotation) ? `${rotation.toFixed(2)} rad/s peak · live` : empty.rotation,

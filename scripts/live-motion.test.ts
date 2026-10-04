@@ -46,3 +46,10 @@ test('offline or missing sensor data never invents a reading', () => {
   const disconnected = { ...snapshot(), sensors: [{ ...sensors[0], connected: false }] };
   assert.equal(liveMotion(disconnected, []).rotation, 'Not recorded');
 });
+
+test('millisecond trace timestamps use the same 10 s window and report stillness in seconds', () => {
+  const msTrace = waistTrace.map(point => ({ ...point, at: point.at * 1000 }));
+  const view = motionPresentation({ ...snapshot(), sensors: [{ ...sensors[0], trace: msTrace }] }, true, wiliPoints);
+  assert.equal(view.rotation, '2.60 rad/s peak · live');
+  assert.equal(view.quiet, '6 s still · live');
+});
