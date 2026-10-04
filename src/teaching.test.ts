@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FreeWili, type BodyWiliSample } from './freewili.ts';
@@ -72,4 +72,40 @@ test('teaching refuses disconnected or uncalibrated sensors without entering pra
  try{const f=fixture();const t=new Teaching(dir);assert.throws(()=>t.start(f.wili,f.motion,f.now()),/calibrate/);
  assert.equal(t.practiceMode,false);assert.equal(t.recording,false);
  }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+test('damaged examples and interrupted temp writes do not prevent recorder startup', () => {
+ const dir=mkdtempSync(join(tmpdir(),'lifeline-teach-corrupt-'));
+ try {
+  writeFileSync(join(dir,'broken.json'),'{truncated');
+  writeFileSync(join(dir,'wrong.json'),JSON.stringify({id:'../outside',window:{version:1}}));
+  writeFileSync(join(dir,'unfinished.json.tmp'),'{');
+  const t=new Teaching(dir); assert.equal(t.view().examples.length,0);
+  assert.equal(t.practiceMode,false);
+ } finally {rmSync(dir,{recursive:true,force:true});}
+});
+test('storage failure finishes recording without crashing or pretending it was saved', () => {
+ const dir=mkdtempSync(join(tmpdir(),'lifeline-teach-storage-'));
+ try {
+  const f=fixture();f.settle(32);f.motion.calibrate(['waist-airpod']);
+  const t=new Teaching(dir);t.start(f.wili,f.motion,f.now());
+  rmSync(dir,{recursive:true,force:true});
+  for(let i=0;i<150;i++){f.frame();assert.doesNotThrow(()=>t.tick(f.wili,f.motion,f.now()));}
+  assert.equal(t.recording,false);assert.equal(t.practiceMode,true);
+  assert.equal(t.view().examples.length,0);assert.match(t.view().error!,/could not be saved/);
+  t.cancel();assert.equal(t.practiceMode,false);
+ } finally {rmSync(dir,{recursive:true,force:true});}
+});
+test('failed relabel leaves the original persisted label and no partial files', () => {
+ const dir=mkdtempSync(join(tmpdir(),'lifeline-teach-label-'));
+ try {
+  const f=fixture();f.settle(32);f.motion.calibrate(['waist-airpod']);
+  const t=new Teaching(dir);t.start(f.wili,f.motion,f.now());
+  for(let i=0;i<150;i++){f.frame();t.tick(f.wili,f.motion,f.now());}
+  const id=t.view().examples[0].id;t.label(id,'standing');
+  assert.deepEqual(readdirSync(dir),[`${id}.json`]);
+  rmSync(dir,{recursive:true,force:true});
+  assert.throws(()=>t.label(id,'shaking'),/could not be saved/);
+  assert.equal(t.view().examples[0].label,'standing');
+ } finally {rmSync(dir,{recursive:true,force:true});}
 });

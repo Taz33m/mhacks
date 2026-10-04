@@ -34,7 +34,8 @@
     "prepare:wili:elevenlabs": "node --env-file-if-exists=.env native/freewili/prepare-stock-audio.ts --provider elevenlabs",
     "check:photon": "node scripts/photon-readiness.ts",
     "twin:export": "node scripts/digital-twin/export-traces.mjs --offline-only",
-    "prepare:wili:movement": "node --env-file-if-exists=.env native/freewili/prepare-movement-audio.ts"
+    "prepare:wili:movement": "node --env-file-if-exists=.env native/freewili/prepare-movement-audio.ts",
+    "postinstall": "node scripts/patch-spectrum-polls.mjs"
   },
   "dependencies": {
     "@photon-ai/advanced-imessage": "2.2.0",

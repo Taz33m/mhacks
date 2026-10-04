@@ -304,11 +304,15 @@ class AmbientDisplay:
             return
         if not self.enabled or blocked or self.now()<self.next_at or remaining is not None and remaining<.35:return
         state,owner,frame=self.model.view(self.now(),capturing,wellbeing_capture)
+        # OG loads whole images, rather than drawing animation into a framebuffer.
+        # Hold the final artwork until the semantic state changes.
+        frame = min(2, FRAMES[state]-1) if state == 'accepted' else 0
         entry=self.manifest['assets'].get(f'{state}:{owner}:{frame}') or self.manifest['assets'].get(f'{state}::{frame}')
         if not entry:return
-        # Reassert a held frame after stock firmware redraws its own screen.
-        # Deduplication must not suppress the ready screen indefinitely.
-        if entry['file']==self.last_file and self.now()<self.refresh_at:return
+        # Physical buttons invalidate last_file in the owning loop. Other SDK
+        # commands invalidate the serial image cache; repaint once after them.
+        dirty = getattr(self.serial, 'display_needs_repaint', lambda: False)()
+        if entry['file']==self.last_file and not dirty:return
         started=time.monotonic()
         try:
             # The official SDK hardware test passes the filename only. The

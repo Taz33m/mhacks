@@ -43,7 +43,7 @@ try {
       assert.equal(reply.generation, 'ai', 'A social template does not pass the local AI rehearsal.');
     } else {
       assert.equal(reply.recordContext!.revision, health.patientRecord.revision);
-      assert.match(reply.text, /fictional; not your personal record/);
+      assert.match(reply.text, /^From your health record:/);
       if (index === 4) assert.equal(reply.generation, 'policy_refusal');
       else if (index === 3) {
         assert.equal(reply.generation, 'degraded', 'Current vitals must remain a deterministic unknown, not invented inference.');

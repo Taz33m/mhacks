@@ -370,7 +370,7 @@ function initializeEhr() {
   const evidenceKinds = { synthetic: 'manual check-in', manual: 'manual request' };
   function renderCare() {
     const care = payload?.care, selected = care?.selectedIncident, i = selected?.incident;
-    setText('care-identity', `${care?.subject?.name || 'Patient name unavailable'} · local care activity. Personal EHR link: ${care?.subject?.recordLink === 'unlinked' ? 'not connected' : 'not established'}. This person is separate from the FinchNode patient record.`);
+    setText('care-identity', `${care?.subject?.name || 'Patient name unavailable'} · care activity`);
     setText('incident-handoff', i?.handoff || 'No prepared handoff is available for the selected local activity.');
     setText('handoff-meta', i ? `${i.id} · ${i.phase}${i.dispatchMode === 'simulated' ? ' · local dispatch' : ''}\n${i.handoffGeneration ? stateLabel(i.handoffGeneration) : 'Provenance unavailable'} · Saved clinical revision ${selected.clinicalRevision || 'unavailable'}${selected.clinicalRevision && selected.clinicalRevision !== record()?.revision ? '\nThis saved handoff uses a different clinical snapshot from the currently displayed hospital record.' : ''}` : 'No incident selected.');
     section('incident-evidence', JSON.stringify([i?.id, i?.evidence]), fragment => {
@@ -387,9 +387,43 @@ function initializeEhr() {
     });
     section('care-messages', JSON.stringify(care || null), fragment => {
       if (!care) return empty(fragment, 'Protected local care activity is not loaded.');
+      add(fragment, 'h3', 'Patient-reported updates');
+      add(fragment, 'p', 'Reported by the patient, separate from hospital records. Impact compares reported answers; it is not a clinical severity score.');
+      const reports = care.wellbeing?.reports || [];
+      if (!reports.length) empty(fragment, 'No structured patient updates yet.');
+      for (const report of [...reports].reverse()) {
+        const article = add(fragment, 'article', '', 'ehr-care-message');
+        add(article, 'h3', report.symptom);
+        article.append(fields([['Updated', date(report.updatedAt)], ['Duration', report.duration || 'Not reported'],
+          ['Daily impact', report.impact || 'Not reported'], ['Change', report.trend]]));
+        const details = add(article, 'details', ''); add(details, 'summary', 'Patient words and sources');
+        for (const evidence of report.evidence || []) add(details, 'p', `${date(evidence.at)} · ${sourceLabel(evidence.source)}: “${evidence.text}”`);
+        for (const followup of report.followups || []) {
+          add(article, 'p', `${followup.author}: ${followup.question}`);
+          add(article, 'p', followup.answer ? `Patient: ${followup.answer} · ${date(followup.answeredAt)}` : 'Awaiting patient answer');
+        }
+        const form = add(article, 'form', '');
+        const member = add(form, 'select', ''); member.setAttribute('aria-label', 'Care team member');
+        for (const person of payload?.careTeam || []) { const option = add(member, 'option', person.name); option.value = person.id; }
+        const input = add(form, 'input', ''); input.placeholder = 'Ask the patient a follow-up'; input.maxLength = 500; input.required = true;
+        input.setAttribute('aria-label', 'Follow-up question');
+        const button = add(form, 'button', 'Send follow-up'); button.type = 'submit';
+        const status = add(form, 'p', ''); status.setAttribute('role', 'status');
+        const requestId = crypto.randomUUID(); let submitted = false;
+        form.addEventListener('submit', async event => {
+          event.preventDefault(); if (submitted || !token) return;
+          submitted = true; button.disabled = true;
+          try {
+            await jsonResponse(await request('POST', '/api/wellbeing/followup', new AbortController(), token,
+              { reportId: report.id, responderId: member.value, question: input.value.trim(), requestId }));
+            status.textContent = 'Queued for the patient’s iMessage. Delivery will appear in the conversation below.';
+          } catch (error) { status.textContent = error.message; }
+        });
+      }
       add(fragment, 'h3', 'Everyday conversation · most recent 40 messages');
-      const daily = care.wellbeing?.messages || [];
-      if (!daily.length) empty(fragment, 'No everyday messages recorded. Silence is not an emergency determination.');
+      const today = new Date().toDateString();
+      const daily = (care.wellbeing?.messages || []).filter(item => Number.isFinite(item?.at) && new Date(item.at).toDateString() === today);
+      if (!daily.length) empty(fragment, 'No everyday messages today. Silence is not an emergency determination.');
       const message = (item, speaker) => {
         const article = add(fragment, 'article', '', 'ehr-care-message'); article.dataset.speaker = item.speaker; article.dataset.source = item.source;
         add(article, 'p', `${speaker} · ${date(item.at)}`, 'ehr-message-heading'); add(article, 'p', item.text, 'ehr-message-text');

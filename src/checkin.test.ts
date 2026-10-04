@@ -102,3 +102,13 @@ test('the supplied physical distress statement promptly escalates a current FREE
     assert.deepEqual(JSON.parse(event.detail), { transcript, decision: 'help_requested' });
   } finally { c.close(); }
 });
+
+ test('natural repeated and polite requests escalate without exact phrase matching', () => {
+  for (const reply of ['I need help, please help', 'I need help please help me!', 'Please, please help me',
+    'I really need help right now', 'Help me my ankle hurts', 'Can you help me?', 'Could you please help me?',
+    'I fell and I need some help', 'Somebody help'])
+    assert.equal(classifyCheckinReply(reply), 'help_requested', reply);
+  for (const reply of ['I do not need help please', 'She said please help me', 'If I need help I will call',
+    'I need help but never mind', 'Do you think I need help?', 'I needed help yesterday'])
+    assert.equal(classifyCheckinReply(reply), 'unresolved', reply);
+ });

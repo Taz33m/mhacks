@@ -35,7 +35,7 @@ test('local daily scheduling respects timezone, due hour, six-hour window and on
     assert.equal(w.view().lastCheckinDate, '2026-10-03'); assert.equal(w.view().schedule.hour, 14);
     for (let n = 0; n < 10; n++) w.tick(false);
     assert.equal(w.view().messages.length, 1); assert.equal(w.view().messages[0].source, 'daily-checkin');
-    assert.equal(w.view().messages[0].text, 'Hi Tazeem, how are you feeling today? Reply here, or hold the blue button on WILi, speak, and release.');
+    assert.match(w.view().messages[0].text, /^How are you feeling today\?/);
     set('2026-10-04T00:00:00Z'); w.tick(false); assert.equal(w.claimAction(), null, '20:00 local is outside the six-hour window');
     assert.equal(w.view().messages[0].delivery, 'cancelled');
     set('2026-10-04T18:00:00Z'); w.tick(false);
@@ -203,4 +203,25 @@ test('explicit incident routing marks an authenticated wearer message handled wi
     assert.equal(w.view().messages[0].text, 'I need help.');
     assert.equal(voice(w, 'new-conversation-message', 'I would like to chat now.'), true); assert.ok(w.replyNeeded());
   } finally { w.close(); }
+});
+
+test('native selections are gated to the latest accepted prompt; numbered voice/text use the same options',()=>{
+ const {w}=setup();try {
+ accepted(w);
+ assert.equal(w.recordText(incoming({messageId:'poll-1',pollQuestion:'How are you feeling today?',text:'A little lonely'})),true);
+ assert.equal(w.replyNeeded()?.text,'A little lonely');
+ assert.equal(w.recordText(incoming({messageId:'stale',pollQuestion:'Old question?',text:'Good'})),false);
+ assert.equal(w.recordText(incoming({messageId:'invented',pollQuestion:'How are you feeling today?',text:'Invented'})),false);
+ assert.equal(w.recordText(incoming({messageId:'number',text:'2'})),true);
+ assert.equal(w.replyNeeded()?.text,'A little lonely');
+ assert.equal(voice(w,'voice-number','three'),true);
+ assert.equal(w.replyNeeded()?.text,'Not feeling well');
+ }finally{w.close()}
+});
+
+test('empty-title provider votes are reconciled only against the accepted choice set',()=>{
+ const {w}=setup();try {accepted(w);
+ assert.equal(w.recordText(incoming({messageId:'unknown-title',pollQuestion:'Unknown patient poll',pollOptions:['Good','A little lonely','Not feeling well'],text:'Good'})),true);
+ assert.equal(w.recordText(incoming({messageId:'other-poll',pollQuestion:'Unknown patient poll',pollOptions:['Yes','No'],text:'Good'})),false);
+ }finally{w.close()}
 });

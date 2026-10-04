@@ -36,7 +36,7 @@ test('social questions, weather, music and ordinary diary observations remain co
   const texts = ['I took my medication.', 'I have allergies.', 'My granddaughter visited.', 'I was diagnosed years ago.',
     'What is the meeting history?', 'What record should I play?', 'What are the weather conditions?', 'What temperature is it outside?',
     'Should I call my granddaughter?', 'I’d like to know how your day went.', 'How should I treat myself this weekend?',
-    'I took my medication today. How are you?', 'I feel lonely.'];
+    'I took my medication today. How are you?'];
   for (const text of texts) {
     assert.equal(isClinicalCareRequest(text), false, text);
     const reply = await care.generate({ ...latest, text }, []);

@@ -179,7 +179,7 @@
 
           </details></div></details><div class="developer-footer"><span class="environment">LOCAL</span><span class="rail-prototype">LIFELINE · Operator controls</span><a href="/storyboard">Landing storyboard <span aria-hidden="true">↗</span></a><footer>MHacks 2026 <span>·</span> Actually Intelligent <span>·</span> LIFELINE</footer></div></section><section id="teaching" class="workspace-view" data-workspace-view="teaching" aria-label="Teach LIFELINE" hidden>
 <section class="card"><p class="eyebrow">MOVEMENT EXAMPLES</p><h2>Teach LIFELINE</h2><p>Calibrate once. Record a movement for 6 seconds, then tell us what happened.</p>
-<div class="calibration-controls"><button id="teach-calibrate" class="button" type="button">1 · Calibrate</button><button id="teach-record" class="button" type="button" disabled>2 · Record movement</button><button id="teach-resume" class="button" type="button">Resume monitoring</button></div>
+<div class="calibration-controls"><button id="teach-calibrate" class="button" type="button">1 · Calibrate</button><button id="teach-record" class="button" type="button" disabled>2 · Record movement</button><button id="teach-resume" class="button" type="button">Resume monitoring</button><div class="control-section"><p class="control-label">One-phone rehearsal</p><div class="button-grid"><button id="role-patient" class="button" type="button">Use phone as Morgan</button><button id="role-responder" class="button" type="button">Use phone as Maya</button></div><p id="role-state" class="field-note" role="status">Phone role: Morgan. Switch to Maya after help is requested.</p></div></div>
 <p id="teach-status" class="command-message" role="status" aria-live="polite">Connecting to the recorder…</p>
 <p class="field-note">Automatic incident alerts pause during practice and review. Choose Resume monitoring when finished. The red help button remains available.</p>
 <div class="calibration-controls"><label for="teach-label">3 · What happened?</label><select id="teach-label" disabled><option value="">Choose a label</option><option value="controlled-descent">Controlled descent</option><option value="fall-like-movement">Fall-like movement</option><option value="shaking">Shaking</option><option value="walking">Walking</option><option value="sitting">Sitting</option><option value="bending">Bending</option><option value="device-adjustment">Adjusting the device</option><option value="standing">Standing still</option></select><button id="teach-save" class="button" type="button" disabled>Save label</button></div>
@@ -196,7 +196,7 @@
     </dialog>
   <script type="module">
 const $ = id => document.getElementById(id);
-let token = '', view = null, busy = false;
+let token = '', view = null, busy = false, refreshing = false, actionError = '';
 const names = { 'controlled-descent': 'Controlled descent', 'fall-like-movement': 'Fall-like movement', shaking: 'Shaking',
   walking: 'Walking', sitting: 'Sitting', bending: 'Bending', 'device-adjustment': 'Device adjustment', standing: 'Standing' };
 function render() {
@@ -206,8 +206,8 @@ function render() {
   $('teach-label').disabled = busy || view.recording || !latest;
   $('teach-save').disabled = busy || view.recording || !latest || !$('teach-label').value;
   $('teach-resume').disabled = busy || !view.practiceMode;
-  $('teach-status').textContent = view.recording ? `Recording · ${Math.ceil(view.remainingMs / 1000)} seconds left. Perform your movement.`
-    : view.practiceMode ? 'Movement saved. Choose its label, record another, or resume monitoring.' : 'Monitoring active. Ready to record a movement.';
+  $('teach-status').textContent = actionError || view.error || (view.recording ? `Recording · ${Math.ceil(view.remainingMs / 1000)} seconds left. Perform your movement.`
+    : view.practiceMode ? 'Movement saved. Choose its label, record another, or resume monitoring.' : 'Monitoring active. Ready to record a movement.');
   $('teach-count').textContent = `${view.examples.filter(e => e.label).length} labelled · ${view.examples.filter(e => !e.label).length} awaiting labels`;
   $('teach-examples').replaceChildren(...view.examples.map(e => {
     const row = document.createElement('li');
@@ -225,9 +225,9 @@ async function request(body) {
   view = data; render();
 }
 async function action(body) {
-  busy = true; render();
+  actionError = ''; busy = true; render();
   try { await request(body); if (body.action === 'start') $('teach-label').value = ''; }
-  catch (error) { $('teach-status').textContent = error.message; }
+  catch (error) { actionError = error.message; $('teach-status').textContent = actionError; }
   finally { busy = false; if (view) {
     $('teach-record').disabled = view.recording;
     $('teach-save').disabled = view.recording || !view.examples[0] || !$('teach-label').value;
@@ -239,15 +239,43 @@ $('teach-resume').addEventListener('click', () => action({ action: 'cancel' }));
 $('teach-label').addEventListener('change', render);
 $('teach-save').addEventListener('click', () => action({ action: 'label', id: view.examples[0].id, label: $('teach-label').value }));
 async function refresh() {
-  if (busy || $('teaching').hidden) return;
+  if (busy || refreshing || $('teaching').hidden) return;
+  refreshing = true;
   try {
-    if (!token) { const setup = await (await fetch('/api/setup')).json(); token = setup.token || ''; }
+    if (!token) { const setup = await (await fetch('/api/setup', { signal: AbortSignal.timeout(5000) })).json(); token = setup.token || ''; }
     if (!token) throw new Error('Use the local workspace to record movements.');
     await request();
   } catch (error) { $('teach-status').textContent = error.message; }
+  finally { refreshing = false; }
 }
 window.addEventListener('hashchange', refresh);
 setInterval(refresh, 1000); void refresh();
+
+async function switchPhoneRole(role) {
+  const status=$('role-state');
+  try {
+    if(!token) { const setup=await(await fetch('/api/setup',{signal:AbortSignal.timeout(5000)})).json(); token=setup.token||''; }
+    const state=await(await fetch('/api/state',{signal:AbortSignal.timeout(5000)})).json();
+    const responder=state.responders.find(r=>r.name==='Maya')||state.responders[0];
+    const response=await fetch('/api/rehearsal/role',{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},
+      body:JSON.stringify({role,incidentId:state.incident?.id,responderId:responder?.id}),signal:AbortSignal.timeout(5000)});
+    const result=await response.json(); if(!response.ok)throw new Error(result.error||'Role switch unavailable.');
+    status.textContent=result.role ? 'Phone role: Maya. Reply “on it”, ask a medical question, then “on my way”. Reset or return to Morgan when finished.' : 'Phone role: Morgan. Normal two-phone routing restored.';
+  }catch(error){status.textContent=error.message;}
+}
+$('role-patient').addEventListener('click',()=>switchPhoneRole('patient'));
+$('role-responder').addEventListener('click',()=>switchPhoneRole('responder'));
+
+async function refreshPhoneRole() {
+  if(!token || $('teaching').hidden)return;
+  try {
+    const response=await fetch('/api/rehearsal/role',{headers:{Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(5000)});
+    if(!response.ok)return;
+    const result=await response.json();
+    $('role-state').textContent=result.role ? 'Phone role: Maya. Reply “on it”, ask about health, then “on my way”. This is an operator rehearsal.' : 'Phone role: Morgan. Switch to Maya after help is requested.';
+  } catch { /* Existing explicit role status remains visible during temporary disconnects. */ }
+}
+setInterval(refreshPhoneRole,3000);void refreshPhoneRole();
 
 </script></body>
 </html>

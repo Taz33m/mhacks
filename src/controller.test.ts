@@ -225,3 +225,18 @@ test('declined or timed-out ownership re-alerts include incident-coded phone acc
     } finally { c.close(); }
   }
 });
+
+test('twenty successive incident resets cancel old work and reject stale controls', () => {
+ const {c,advance}=setup();
+ try {
+  let previous: ReturnType<Controller['trigger']> | null=null;
+  for(let round=0;round<20;round++){
+   const incident=c.trigger({kind:'synthetic',summary:'Isolated reliability cycle'});
+   if(previous)assert.throws(()=>c.cancel(previous!.id,previous!.checkinId),/stale/);
+   c.reset();c.reset();advance(500);
+   assert.equal(c.active(),null);
+   assert.equal(c.actions(incident.id).filter(a=>a.status==='queued').length,0);
+   previous=incident;
+  }
+ } finally {c.close();}
+});

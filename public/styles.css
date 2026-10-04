@@ -56,7 +56,8 @@ html{scroll-behavior:smooth;scroll-padding-top:30px}body{font-family:var(--sans)
 @media(max-width:480px){.dashboard-page .page-heading h1{font-size:29px}.dashboard-page .topbar{height:48px}.dashboard-page .button{min-height:40px}}
 
 /* One image-sequence canvas. Warm material, quiet type, spectral light at state changes. */
-html:has(>body.sequence-page){scroll-behavior:auto;scroll-padding-top:0}
+html:has(>body.sequence-page){scroll-behavior:auto;scroll-padding-top:0;overscroll-behavior-y:none}
+body.sequence-page{overscroll-behavior-y:none}
 .sequence-page{--ink:#18191d;--muted:#72716e;--line:#e5e3de;--paper:#f8f7f4;--sans:Aspekta,Arial,sans-serif;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.6}
 .sequence-page h1,.sequence-page h2,.sequence-page h3{font-family:var(--sans);font-weight:450;font-style:normal}.sequence-page a{text-decoration:none}.sequence-page :focus-visible{outline:2px solid #126dd8;outline-offset:5px}.sequence-page .skip-link{z-index:100}
 .scroll-story{height:100svh;min-height:700px;position:relative}.story-stage{height:100svh;min-height:700px;position:relative;isolation:isolate;overflow:hidden;background:var(--paper);--reframe:1;--nav-reveal:1;--hero-reveal:1;--bloom:0}.sequence-ready .scroll-story{height:705svh;min-height:0}.sequence-ready .story-stage{position:sticky;top:0;min-height:0}
@@ -616,3 +617,61 @@ html:has(>body.sequence-page){scroll-behavior:auto;scroll-padding-top:0}
 
 .sequence-page .device-sound{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;opacity:0;fill:none;stroke:#b9e2ff;stroke-width:1.5;filter:drop-shadow(0 0 2px #83c5ff55)}
 @media(prefers-reduced-motion:reduce){.sequence-page .device-sound{display:none}}
+
+/* A saved check-in becomes context in the two-phone conversation. */
+.sequence-page .care-day-jump{text-align:center;height:22px;margin:0 0 18px;font-size:11px;color:#7f7c74;letter-spacing:.05em}
+.sequence-page .care-poll-thread{position:absolute;inset:0;padding:8px 13px;display:flex;flex-direction:column;gap:15px}
+.sequence-page .care-message-date{text-align:center;font-size:8px;color:#918b80;width:100%;margin:0 0 8px;flex:none}
+.sequence-page .care-poll{max-width:100%;padding:14px}
+.sequence-page .care-poll-options{display:flex;gap:5px;margin:13px 0 8px}
+.sequence-page .care-poll-options>span{flex:1;text-align:center;padding:7px 3px;border-radius:8px;background:#fff;color:#68665f;font-size:11px}
+.sequence-page .care-poll-options>.poll-selected{background:rgb(calc(255 - 236 * var(--poll-selected,0)),calc(255 - 137 * var(--poll-selected,0)),calc(255 - 30 * var(--poll-selected,0)));color:rgb(calc(104 + 151 * var(--poll-selected,0)),calc(102 + 153 * var(--poll-selected,0)),calc(95 + 160 * var(--poll-selected,0)))}
+.sequence-page .care-poll-duration>span{font-size:9px;white-space:nowrap}
+.sequence-page .care-poll small{font-size:8px;color:#5c8176;opacity:var(--poll-selected,0)}
+.sequence-page .care-poll-saved{text-align:center;font-size:10px;color:#5c8176}
+.sequence-page .care-history-card{padding:13px;border:1px solid #dedbd5;border-radius:13px;background:#f4f1eb;max-width:95%}
+.sequence-page .care-history-card>span{font-size:7px;letter-spacing:.06em;color:#858074;display:block}
+.sequence-page .care-history-card strong{display:block;font-size:14px;margin:8px 0 3px}
+.sequence-page .care-history-card p{font-size:11px;margin:0 0 7px}.sequence-page .care-history-card small{font-size:8px;color:#8a8478}
+@media(max-width:760px){.sequence-page .care-poll-phase .care-lane-team{height:0;overflow:hidden;pointer-events:none}.sequence-page .care-poll-phase .care-conversation-lanes{gap:0}}
+
+/* Scroll owns the check-in, date jump, split and incident conversation. */
+.sequence-page .care-scroll{height:420svh;padding:0 5vw;position:relative}
+.sequence-page .care-conversation-pin{position:sticky;top:0;height:100svh;padding:30px 0 18px;display:flex;flex-direction:column;justify-content:center}
+.sequence-page .care-scroll .care-conversation-heading{margin-bottom:15px}
+.sequence-page .care-scroll .care-conversation-heading h2{font-size:clamp(32px,3.2vw,48px)}
+.sequence-page .care-scroll .care-conversation-intro>p{font-size:13px}
+.sequence-page .care-scroll .care-day-jump{margin-bottom:8px;height:18px;flex:none}
+.sequence-page .care-scroll .care-conversation-lanes{width:100%;margin:0 auto}
+.sequence-page .care-scroll .care-lane-heading{margin-bottom:10px}
+.sequence-page .care-scroll .care-lane-heading h3{font-size:20px}
+.sequence-page .care-scroll .care-phone{height:clamp(350px,calc(100svh - 340px),650px)}
+.sequence-page .care-scroll .care-lane-caption{margin-top:8px}
+.sequence-page .care-scroll .care-conversation-bridge{margin:12px 0 0}
+@media(max-width:760px){
+.sequence-page .care-scroll{padding:0 16px;height:440svh}
+.sequence-page .care-conversation-pin{padding:18px 0 12px}
+.sequence-page .care-scroll .care-conversation-heading{display:block;margin-bottom:8px}
+.sequence-page .care-scroll .care-conversation-heading h2{font-size:29px;line-height:1.06}
+.sequence-page .care-scroll .care-conversation-intro>p{display:none}
+.sequence-page .care-scroll .care-photon-proof{font-size:8px;margin-top:7px}
+.sequence-page .care-scroll .sequence-eyebrow{font-size:8px;margin-bottom:7px}
+.sequence-page .care-scroll .care-conversation-lanes{grid-template-columns:1fr 1fr;gap:12px;align-items:start}
+.sequence-page .care-scroll.care-poll-phase .care-lane-team{height:auto;overflow:visible;pointer-events:none}
+.sequence-page .care-scroll .care-lane-heading h3{font-size:12px}.sequence-page .care-scroll .care-lane-eyebrow{font-size:7px}
+.sequence-page .care-scroll .care-phone{max-width:none;height:calc(100svh - 280px);min-height:360px;border-width:4px;border-radius:27px}
+.sequence-page .care-scroll .care-device-island{width:48px;height:13px;top:6px}
+.sequence-page .care-scroll .care-device-status{height:30px;font-size:7px;padding:11px 10px 6px}
+.sequence-page .care-scroll .care-phone-header{padding:5px 5px 9px;gap:3px}
+.sequence-page .care-scroll .care-phone-header strong{font-size:9px}.sequence-page .care-scroll .care-phone-header>div>span{font-size:6px}
+.sequence-page .care-scroll .care-phone-back{left:7px;top:10px;font-size:23px}
+.sequence-page .care-scroll .care-phone-contact{height:27px;width:27px}.sequence-page .care-scroll .care-phone-group{height:27px}.sequence-page .care-scroll .care-phone-group>span{height:25px;width:25px}
+.sequence-page .care-scroll .care-phone-messages,.sequence-page .care-scroll .care-team-thread{padding:5px 6px;gap:8px}
+.sequence-page .care-scroll .care-team-message{padding:8px;border-radius:12px;max-width:100%}.sequence-page .care-scroll .care-team-message>p{font-size:9px}.sequence-page .care-scroll .care-team-message>span{font-size:6px}
+.sequence-page .care-scroll .care-poll>p{font-size:12px}.sequence-page .care-scroll .care-poll-thread{padding:8px 12px}
+.sequence-page .care-scroll .care-incident-brief{padding:8px}.sequence-page .care-scroll .care-incident-brief h4{font-size:12px}.sequence-page .care-scroll .care-brief-quote{font-size:9px}
+.sequence-page .care-scroll .care-incident-brief dl>div{grid-template-columns:30px 1fr;gap:3px}.sequence-page .care-scroll .care-incident-brief dt,.sequence-page .care-scroll .care-incident-brief dd{font-size:7px}.sequence-page .care-scroll .care-incident-brief dd small{font-size:6px}
+.sequence-page .care-scroll .care-location-attachment{padding:7px;gap:4px}.sequence-page .care-scroll .care-location-attachment strong{font-size:8px}.sequence-page .care-scroll .care-location-attachment>div>span{font-size:7px}
+.sequence-page .care-scroll .care-lane-caption{font-size:8px}.sequence-page .care-scroll .care-phone-composer{font-size:8px;margin:0 6px 8px}.sequence-page .care-scroll .care-conversation-bridge{font-size:9px}
+}
+@media(prefers-reduced-motion:reduce){.sequence-page .care-scroll{height:auto;padding-top:40px;padding-bottom:40px}.sequence-page .care-conversation-pin{position:relative;height:auto}.sequence-page .care-scroll .care-phone{height:650px}.sequence-page .care-scroll .care-message-viewport{mask-image:none}}

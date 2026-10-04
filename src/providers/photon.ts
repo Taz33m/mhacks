@@ -1,3 +1,4 @@
+import { patientChoices } from '../patient-followup.ts';
 import { setTimeout as pause } from 'node:timers/promises';
 import type { ProviderInbound, ProviderResult } from '../contracts.ts';
 import { phoneIdentity } from '../identity.ts';
@@ -22,6 +23,7 @@ export interface PhotonMessage {
 }
 export interface PhotonSpace extends PhotonChannel {
   send(text: string): Promise<PhotonSentMessage | undefined>;
+  sendPoll?(title: string, options: string[]): Promise<PhotonSentMessage | undefined>;
   getMessage?(id: string): Promise<PhotonMessage | undefined>;
   /** Spectrum typing indicator; providers without one no-op. Best-effort. */
   startTyping?(): Promise<void>;
@@ -36,7 +38,7 @@ export interface PhotonClient {
 export type PhotonFactory = (projectId: string, projectSecret: string) => Promise<PhotonClient>;
 
 export const createCloudPhoton: PhotonFactory = async (projectId, projectSecret) => {
-  const [{ Spectrum }, { imessage }] = await Promise.all([
+  const [{ Spectrum, poll }, { imessage }] = await Promise.all([
     import('@spectrum-ts/core'), import('@spectrum-ts/imessage'),
   ]);
   const app = await Spectrum({
@@ -44,10 +46,17 @@ export const createCloudPhoton: PhotonFactory = async (projectId, projectSecret)
     telemetry: false, options: { logLevel: 'error' },
   });
   const im = imessage(app);
+  const decorate = (space: Awaited<ReturnType<typeof im.space.create>>) => space ? Object.assign(space, {
+    sendPoll: async (title: string, options: string[]) => {
+      const question = await space.send(`${title}\nTap a choice, or reply with its number. WILi voice works too.`);
+      if (!question) throw new Error('Patient poll question delivery unknown');
+      return space.send(poll(title, options));
+    },
+  }) : undefined;
   return {
     messages: app.messages,
-    openDm: async (phone) => im.space.create(await im.user(phone)),
-    openSpace: async (chatId, lineId) => im.space.get(chatId, { phone: lineId }),
+    openDm: async (phone) => decorate(await im.space.create(await im.user(phone))),
+    openSpace: async (chatId, lineId) => decorate(await im.space.get(chatId, { phone: lineId })),
     stop: () => app.stop(),
   };
 };
@@ -129,6 +138,13 @@ export function normalizePhoton(message: PhotonMessage): ProviderInbound | null 
     ...(Number.isFinite(at) ? { providerTimestamp: at } : {}),
     ...(service ? { service } : {}),
   };
+  if (content.type === 'poll_option' && content.selected === true) {
+    const question = object(content.poll)?.title, title = object(content.option)?.title;
+    if (typeof question === 'string' && typeof title === 'string' && question.length <= 200 && title.length <= 100)
+      return { ...base, kind: 'text', text: title, pollQuestion: question,
+        pollOptions: (object(content.poll)?.options as {title:string}[] | undefined)?.map(o=>o.title) };
+    return null;
+  }
   if (content.type === 'text' && typeof content.text === 'string') {
     return { ...base, kind: 'text', text: content.text };
   }
@@ -314,7 +330,10 @@ export function createPhotonAdapter(options: {
         }
       }
       try {
-        const sent = await withDeadline(replyTarget ? replyTarget.reply!(text) : space.send(text), timeoutMs);
+        const choices = patientChoices(text);
+        const sent = await withDeadline(choices && space.sendPoll
+          ? space.sendPoll(choices.title, choices.options)
+          : replyTarget ? replyTarget.reply!(text) : space.send(text), timeoutMs);
         stopTyping();
         if (!sent?.id) {
           detail = 'Send returned no message ID; delivery outcome unknown';
@@ -390,6 +409,7 @@ export function createPhotonAdapter(options: {
                 }), abort.signal);
                 if (abort.signal.aborted) break;
                 if (next.done) throw new ListenerEnded();
+                if (object(next.value[1].content)?.type === 'poll_option') console.info('Patient poll event', JSON.stringify({platform:next.value[1].platform,direction:next.value[1].direction,kind:next.value[1].sender?.kind,selected:object(next.value[1].content)?.selected,title:object(object(next.value[1].content)?.poll)?.title}));
                 const event = normalizePhoton(next.value[1]);
                 if (!event) continue;
                 failures = 0;

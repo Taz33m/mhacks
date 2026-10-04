@@ -905,7 +905,7 @@ import { careHighlights } from './care-summary.js';
       if (entries.length > 6) appendText(brief, 'p', 'overview-card-meta', `${entries.length - 6} more in care context.`);
       if (!entries.length) appendText(brief, 'p', 'empty-list', 'No care facts returned.');
       const demographic = patientRecord.records.find(row => row.section === 'demographics');
-      appendText(brief, 'p', 'overview-card-meta', `FinchNode ${patientContext().incidentId ? 'incident snapshot' : 'current record'} · ${demographic?.label || 'name unavailable'}. Separate from ${dashboardPresentation(snapshot).wearerName}.`);
+      appendText(brief, 'p', 'overview-card-meta', `FinchNode ${patientContext().incidentId ? 'incident snapshot' : 'current record'} · ${demographic?.label || 'name unavailable'}.`);
       const medicalGroups = new Map();
       for (const [kind, heading] of [['Allergy', 'Allergies'], ['Active prescription', 'Current medications'], ['Condition', 'Conditions']]) {
         const section = appendText(full, 'section', 'medical-fact-group', '');
@@ -1471,7 +1471,10 @@ import { careHighlights } from './care-summary.js';
     text('#wellbeing-schedule', scheduleLabel);
     text('#wellbeing-status', !wellbeing ? 'Unavailable' : !online ? 'Last state' : wellbeing.enabled ? 'Scheduled daily' : 'Not enabled');
     $('#wellbeing-status').className = `badge${online && wellbeing?.enabled ? ' good' : ''}`;
-    const allMessages = Array.isArray(wellbeing?.messages) ? wellbeing.messages.filter(message => message && typeof message === 'object')
+    // The daily card is today's conversation; earlier days stay in the care journal export.
+    const today = new Date().toDateString();
+    const allMessages = Array.isArray(wellbeing?.messages) ? wellbeing.messages.filter(message => message && typeof message === 'object'
+        && finite(message.at) && new Date(message.at).toDateString() === today)
       .slice().sort((a, b) => (finite(a.at) ? a.at : 0) - (finite(b.at) ? b.at : 0)).slice(-40) : [];
     const messages = allMessages.slice(-4), earlier = allMessages.slice(0, -4);
     const deliveries = { pending: ['Queued', ''], queued: ['Queued', ''], attempting: ['Submitting', 'warning'], provider_accepted: ['Provider accepted', ''],
@@ -1510,7 +1513,7 @@ import { careHighlights } from './care-summary.js';
       }
     };
     const fragment = document.createDocumentFragment(), olderFragment = document.createDocumentFragment();
-    if (!messages.length) appendText(fragment, 'li', 'empty-list', !wellbeing ? 'Daily conversation state is unavailable.' : 'No daily conversation recorded yet.');
+    if (!messages.length) appendText(fragment, 'li', 'empty-list', !wellbeing ? 'Daily conversation state is unavailable.' : 'No daily check-in yet today.');
     messages.forEach(message => renderMessage(fragment, message));
     earlier.forEach(message => renderMessage(olderFragment, message));
     $('#wellbeing-messages').replaceChildren(fragment);

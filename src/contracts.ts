@@ -76,6 +76,7 @@ export interface SensorView {
   trace: { at: number; totalG: number; tiltDegrees: number | null; angularSpeed: number }[];
 }
 export interface Snapshot {
+  rehearsalRole?: {incidentId:string;responderId:string;expiresAt:number}|null;
   eventUnderstanding?: boolean;
   serverTime: number; incident: Incident | null; responders: Responder[];
   wearer?: { name: string };
@@ -113,6 +114,9 @@ export type Command =
   | { type: 'reset'; readyImmediately?: boolean };
 export interface ProviderInbound {
   messageId: string; sender: string; targetMessageId?: string;
+  /** Native selected patient poll title; gated against persisted conversation choices. */
+  pollQuestion?: string;
+  pollOptions?: string[];
   kind: 'reaction' | 'text'; text?: string; reaction?: string; removed?: boolean;
   chatId?: string; lineId?: string; providerTimestamp?: number;
   /** Native sender transport, when supplied by Photon; never inferred from platform. */

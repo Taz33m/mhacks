@@ -399,48 +399,80 @@
   function initCareConversation() {
     const section = document.getElementById('care-conversation');
     if (!section) return;
-    const phones = [...section.querySelectorAll('.care-phone')];
-    const lanes = phones.map((phone, index) => ({ phone, viewport: phone.querySelector('.care-message-viewport'),
-      thread: phone.querySelector('.care-phone-messages, .care-team-thread'), typing: phone.querySelector('.care-typing'),
-      starts: index === 0 ? [1.0, 3.0, 11.7] : [4.4, 5.4, 7.0, 8.3, 10.1],
-      windows: index === 0 ? [[.2, 1], [10.9, 11.7]] : [[3.7, 4.4], [6.3, 7], [7.7, 8.3], [9.3, 10.1]] }));
-    let visible = false, animation = 0, previous = null, elapsed = 0;
+    const container = section.querySelector('.care-conversation-lanes');
+    const patient = section.querySelector('.care-lane-patient');
+    const team = section.querySelector('.care-lane-team');
+    const polls = [...section.querySelectorAll('.care-poll')];
+    const pollThread = section.querySelector('.care-poll-thread');
+    const saved = section.querySelector('.care-poll-saved');
+    const jump = section.querySelector('.care-day-jump');
+    const lanes = [...section.querySelectorAll('.care-phone')].map((phone, index) => ({
+      viewport: phone.querySelector('.care-message-viewport'),
+      thread: phone.querySelector('.care-phone-messages, .care-team-thread'),
+      typing: phone.querySelector('.care-typing'),
+      starts: index === 0 ? [11, 11.5, 12.8, 22.8] : [11, 14, 16, 18, 20, 22],
+      windows: index === 0 ? [[11.1,11.5],[12.2,12.8],[22.1,22.8]] : [[13.2,14],[17.3,18],[19.3,20],[21.3,22]]
+    }));
+    const pin = section.querySelector('.care-conversation-pin');
+    let animation = 0;
+    const revealAt = (t, start) => ease(interval(t, start, start + .5));
     function paint(seconds, staticView = false) {
-      const reset = staticView ? 1 : 1 - ease(interval(seconds, 14.4, 15.1));
+      const t = staticView ? 24 : seconds;
+      const split = ease(interval(t, 9.5, 11));
+      const reset = 1;
+      section.classList.toggle('care-poll-phase', split < .99);
+      const patientPhone = patient.querySelector('.care-phone');
+      const narrow = innerWidth <= 760;
+      patientPhone.style.width = narrow ? `${Math.min(320, container.clientWidth) * (1 - split) + patient.clientWidth * split}px` : '';
+      const centerOffset = narrow ? (container.clientWidth - patientPhone.offsetWidth) / 2 : (container.clientWidth - patient.offsetWidth) / 2;
+      patient.style.transform = `translateX(${centerOffset * (1 - split)}px)`;
+      team.style.opacity = String(split * reset);
+      team.style.transform = `translateX(${(1 - split) * -30}px)`;
+      team.style.visibility = split > 0 ? 'visible' : 'hidden';
+      section.querySelectorAll('.care-lane-heading,.care-lane-caption,.care-conversation-bridge').forEach(el => el.style.opacity = String(split * reset));
+      jump.style.opacity = String(ease(interval(t, 9, 9.5)) * (1 - ease(interval(t, 12, 13))) * reset);
+      pollThread.style.opacity = String((1 - ease(interval(t, 9.4, 10.2))) * reset);
+      pollThread.style.visibility = t < 10.2 ? 'visible' : 'hidden';
+      pollThread.style.transform = `translateY(${-ease(interval(t, 9.4, 10.2)) * 15}px)`;
+      polls.forEach((poll, index) => {
+        const reveal = revealAt(t, index ? 4.3 : .5);
+        const selected = revealAt(t, index ? 6.7 : 2.7);
+        poll.style.opacity = String(reveal);
+        poll.style.transform = `translateY(${(1 - reveal) * 12}px)`;
+        poll.style.setProperty('--poll-selected', selected);
+      });
+      saved.style.opacity = String(revealAt(t, 8));
       lanes.forEach(lane => {
         let shift = 0;
         [...lane.thread.children].forEach((message, index) => {
-          const start = lane.starts[index], reveal = staticView ? 1 : ease(interval(seconds, start, start + .42));
-          const spring = staticView ? 0 : Math.sin(interval(seconds, start, start + .62) * Math.PI) * .035;
+          const reveal = staticView ? 1 : revealAt(t, lane.starts[index]);
           const outgoing = message.classList.contains('care-patient-text') || message.classList.contains('care-team-agent');
           message.style.opacity = String(reveal * reset);
-          message.style.transform = `translate(${(1 - reveal) * (outgoing ? 18 : -16)}px, ${(1 - reveal) * 16}px) scale(${.82 + reveal * .18 + spring})`;
-          message.style.filter = `blur(${(1 - reveal) * 4 + (1 - reset) * 3}px)`;
+          message.style.transform = `translate(${(1 - reveal) * (outgoing ? 16 : -12)}px, ${(1 - reveal) * 12}px)`;
+          message.style.filter = `blur(${(1 - reveal) * 3}px)`;
           if (reveal > 0) shift = Math.max(shift, (message.offsetTop + message.offsetHeight - lane.viewport.clientHeight + 10) * reveal);
         });
         lane.viewport.style.overflowY = staticView ? 'auto' : 'hidden';
         lane.thread.style.transform = staticView ? 'none' : `translateY(${-Math.max(0, shift)}px)`;
-        const typing = !staticView && lane.windows.some(([start, end]) => seconds >= start && seconds < end);
+        const typing = !staticView && lane.windows.some(([start,end]) => t >= start && t < end);
         lane.typing.style.opacity = typing ? '1' : '0';
-        [...lane.typing.children].forEach((dot, index) => dot.style.transform = typing ? `translateY(${Math.sin(seconds * 9 - index * 1.2) * 2}px)` : '');
+        [...lane.typing.children].forEach((dot,index) => dot.style.transform = typing ? `translateY(${Math.sin(t * 9 - index * 1.2) * 2}px)` : '');
       });
-      section.dataset.conversationTime = seconds.toFixed(2);
+      section.dataset.conversationTime = t.toFixed(2);
     }
-    function frame(now) {
+    function renderConversation() {
       animation = 0;
-      if (reduce.matches) { previous = null; paint(0, true); return; }
-      if (!visible || document.hidden) { previous = null; return; }
-      if (previous !== null) elapsed += Math.min(.08, (now - previous) / 1000);
-      previous = now; paint(elapsed % 16); animation = requestAnimationFrame(frame);
+      const progress = clamp(-section.getBoundingClientRect().top / Math.max(1, section.offsetHeight - pin.offsetHeight));
+      paint(progress * 24, reduce.matches);
+      section.dataset.conversationProgress = progress.toFixed(4);
     }
-    function resume() {
-      if (reduce.matches) { if (animation) cancelAnimationFrame(animation); animation = 0; previous = null; paint(0, true); }
-      else if (visible && !document.hidden && !animation) { previous = null; animation = requestAnimationFrame(frame); }
+    function scheduleConversation() {
+      if (!animation) animation = requestAnimationFrame(renderConversation);
     }
-    new IntersectionObserver(entries => { visible = entries[0].isIntersecting; resume(); }, { threshold: 0 }).observe(section);
-    document.addEventListener('visibilitychange', resume);
-    reduce.addEventListener('change', resume);
-    paint(0, true); resume();
+    window.addEventListener('scroll', scheduleConversation, { passive: true });
+    window.addEventListener('resize', scheduleConversation);
+    reduce.addEventListener('change', scheduleConversation);
+    renderConversation();
   }
   initCareConversation();
   initSignals();

@@ -474,6 +474,15 @@ export class Controller {
       this.event(i, 'MOTION_WINDOW_CAPTURED', 'measured-sensors', window.summary);
     });
   }
+  queueRehearsalAlert(id: string, responderId: string): void {
+    this.transaction(() => {
+      const i=this.current(id);
+      if(i.phase==='CONFIRMING'||!i.contacted.includes(responderId)||i.declined.includes(responderId))
+        throw new PolicyError('Responder has not been contacted for this incident.');
+      this.event(i,'REHEARSAL_ROLE_SWITCH','development-operator',`Single-phone rehearsal acting as ${responderId}; not a second human participant.`);
+      this.enqueue(i,i.ownerId?'handoff':'alert',responderId,this.alertText(i),`${i.id}:rehearsal-role:${randomUUID()}`);
+    });
+  }
   reset(): void {
     this.transaction(() => {
       const i = this.active(); if (!i) return;

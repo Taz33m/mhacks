@@ -1,3 +1,5 @@
+import { clinicalMessage } from './clinical-message.ts';
+import { RehearsalRole } from './rehearsal-role.ts';
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -72,6 +74,7 @@ const policyProfile = parsePolicy(process.env);
 const selectedDetectionProfile = detectionProfile(process.env.LIFELINE_DETECTION_PROFILE);
 const policy = { demoMode: policyProfile.demoMode, checkinMs: policyProfile.checkinMs, configuredCheckinMs: policyProfile.configuredCheckinMs,
   ...(selectedDetectionProfile === 'early-checkin' ? { detectionProfile: selectedDetectionProfile } : {}) };
+const rehearsalRole = new RehearsalRole();
 const controller = new Controller(resolve(dataDir, 'lifeline.sqlite'), responders, Date.now, policyProfile,
   { wearerName: process.env.LIFELINE_WEARER_NAME, dispatchMode });
 const simulatedStepMs = process.env.LIFELINE_SIMULATED_STEP_MS === undefined ? undefined
@@ -236,7 +239,7 @@ function snapshot(): Snapshot {
     detail: !wearerPhone ? 'Set LIFELINE_WEARER_PHONE to the approved patient phone for the iMessage check-in.'
       : !providers.photon?.configured ? 'Patient phone configured; Photon credentials are required for iMessage check-in.'
         : 'Patient phone and Photon credentials configured.' };
-  return { serverTime: Date.now(), wearer: { name: controller.wearerName }, incident, responders: responders.map(r => ({ ...r, phone: r.phone ? 'configured' : null })),
+  return { rehearsalRole: rehearsalRole.view(controller.active()?.id), serverTime: Date.now(), wearer: { name: controller.wearerName }, incident, responders: responders.map(r => ({ ...r, phone: r.phone ? 'configured' : null })),
     dispatch: { mode: dispatchMode, detail: dispatchMode === 'simulated'
       ? 'Local dispatch: Maya’s acceptance, travel, arrival and outcome run automatically.'
       : 'Approved human responders accept and report their own progress over Photon.' },
@@ -319,6 +322,7 @@ function prepareAudio(): void {
 }
 async function providerWorker(channel: MessageLane): Promise<void> {
   const lane = messageLanes[channel];
+  if (channel === 'wearer' && rehearsalRole.view(controller.active()?.id)) return;
   if (lane.busy || stopping || Date.now() < lane.nextAt || !providerStatus().photon?.configured
     || (channel === 'responders' && dispatchMode === 'simulated')) return;
   lane.busy = true;
@@ -346,15 +350,17 @@ async function providerWorker(channel: MessageLane): Promise<void> {
       }
       const daily = wellbeing.claimAction(); if (!daily || !wearerPhone) return;
       lane.nextAt = Date.now() + messageGapMs;
-      const result = await sendMessage(wearerPhone, daily.text,
-        () => !stopping && wellbeing.actionPermitted(daily, Boolean(controller.active())), daily.replyToMessageId
+      const result = await sendMessage(wearerPhone, daily.type === 'followup' ? `${daily.author || 'Care team'} asks: ${daily.text}` : clinicalMessage(daily.text, controller.wearerName),
+        () => !stopping && wellbeing.actionPermitted(daily, Boolean(controller.active())), daily.replyChatId
           ? { replyToMessageId: daily.replyToMessageId, chatId: daily.replyChatId, lineId: daily.replyLineId } : undefined);
       if (!stopping) wellbeing.finishAction(daily.id, result.status, result.detail, result.messageId, result);
       return;
     }
     const wearerAction = ['wearer_checkin', 'wearer_ack', 'wearer_status', 'wearer_location'].includes(a.type);
     const recipientId = a.recipientId;
-    const phone = wearerAction ? wearerPhone : responders.find(r => r.id === recipientId)?.phone;
+    const role = rehearsalRole.view(controller.active()?.id);
+    const roleRoute = !wearerAction && role?.responderId === recipientId;
+    const phone = wearerAction || roleRoute ? wearerPhone : responders.find(r => r.id === recipientId)?.phone;
     if (!phone) { controller.finishAction(a.id, 'failed', wearerAction
       ? 'No approved patient phone configured; iMessage was not sent.' : 'No approved phone configured; message not sent.'); return; }
     let prepared = a.text;
@@ -367,7 +373,8 @@ async function providerWorker(channel: MessageLane): Promise<void> {
       prepared = prepared.replace('Location not provided.', 'Current location appears in the separate shared-location section.') + `\n\nShared location:\n${locationBrief()}`;
     if (prepared.length <= 6000 && prepared !== a.text) a = controller.decorateAction(a.id, prepared);
     lane.nextAt = Date.now() + messageGapMs;
-    const result = await sendMessage(phone, a.text, () => !stopping && controller.actionPermitted(a)
+    const result = await sendMessage(phone, a.type === 'answer' ? clinicalMessage(a.text, controller.wearerName) : a.text, () => !stopping && controller.actionPermitted(a)
+      && Boolean(rehearsalRole.view(controller.active()?.id)?.responderId === recipientId) === Boolean(roleRoute)
       && (a.type !== 'wearer_location' || Boolean(locationView().eta)), a.replyToMessageId
       ? { replyToMessageId: a.replyToMessageId, chatId: a.replyChatId, lineId: a.replyLineId } : undefined);
     if (!stopping) controller.finishAction(a.id, result.status, result.detail, result.messageId, result);
@@ -379,11 +386,16 @@ async function inbound(e: ProviderInbound): Promise<void> {
   try {
     // Cloud input without persisted exact-channel provenance cannot operate the incident.
     if (!e.chatId || !e.lineId) return;
-    if (wearerPhone && phoneIdentity(e.sender) === phoneIdentity(wearerPhone)) {
+    const role = rehearsalRole.view(controller.active()?.id);
+    const roleResponder = role ? responders.find(r => r.id === role.responderId) : null;
+    const mapped = rehearsalRole.map(e, controller.active()?.id, wearerPhone, roleResponder?.phone ?? null);
+    if (mapped) e = mapped;
+    else if (roleResponder?.phone && phoneIdentity(e.sender) === phoneIdentity(roleResponder.phone)) return;
+    if (!mapped && wearerPhone && phoneIdentity(e.sender) === phoneIdentity(wearerPhone)) {
       if (controller.active()) {
         if (controller.matchesConversation(e, null)) handleWearerInbound(e, wearerPhone, controller);
       } else if (wellbeing.matchesConversation(e) && wellbeing.recordText(e)) {
-        if (!wellbeingHelp(e.text!, 'photon-imessage', e)) void prepareWellbeingReply();
+        if (!wellbeingHelp(wellbeing.replyNeeded()?.text ?? e.text!, 'photon-imessage', e)) void prepareWellbeingReply();
       }
       return;
     }
@@ -457,7 +469,7 @@ function execute(c: Command): { calibratedSources: Source[] } | undefined {
     }
     case 'reset': {
       if (c.readyImmediately !== undefined && typeof c.readyImmediately !== 'boolean') throw new PolicyError('Invalid reset readiness option.');
-      controller.reset();
+      rehearsalRole.clear(); controller.reset();
       eventCapture = null;
       teaching.cancel();
       const fast = c.readyImmediately === true;
@@ -494,7 +506,7 @@ const server = createServer(async (req, res) => {
         incidents, selectedIncident, responders,
         timeline: selectedIncident ? controller.events(selectedIncident.id) : [],
         conversation: selectedIncident ? controller.conversation(selectedIncident.id) : [] });
-      if (url.pathname === '/api/ehr') return json(res, 200, workspace);
+      if (url.pathname === '/api/ehr') return json(res, 200, { ...workspace, careTeam: responders.map(r => ({ id: r.id, name: r.name })) });
       const journal = wellbeing.careJournal();
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store',
         'Content-Disposition': 'attachment; filename="lifeline-care-record.json"' });
@@ -552,6 +564,22 @@ const server = createServer(async (req, res) => {
       if (!authorized(req)) return json(res, 401, { error: 'Operator/pairing token required.' });
       const result = execute(await commandBody(req)); broadcast(); return json(res, 200, { ok: true, ...result });
     }
+    if (url.pathname === '/api/rehearsal/role') {
+      if (!authorized(req)) return json(res,401,{error:'Operator token required.'});
+      if (req.method === 'GET') return json(res,200,{role:rehearsalRole.view(controller.active()?.id)});
+      if (req.method !== 'POST') return json(res,405,{error:'Method not allowed.'});
+      const body = await requestBody(req) as {role?:unknown;responderId?:unknown;incidentId?:unknown};
+      if(body?.role==='patient') {rehearsalRole.clear();broadcast();return json(res,200,{role:null});}
+      const incident=controller.active();
+      if(body?.role!=='responder'||!incident||body.incidentId!==incident.id||incident.phase==='CONFIRMING'
+        ||dispatchMode!=='live'||!wearerPhone) throw new PolicyError('Escalate the current live incident before switching to the care-team role.');
+      const responder=responders.find(r=>r.id===body.responderId&&r.phone);
+      if(!responder) throw new PolicyError('Select an approved responder.');
+      if(incident.ownerId&&incident.ownerId!==responder.id) throw new PolicyError('Another responder owns this incident.');
+      controller.queueRehearsalAlert(incident.id,responder.id);
+      rehearsalRole.set(incident.id,responder.id);broadcast();
+      return json(res,200,{role:rehearsalRole.view(incident.id)});
+    }
     if (url.pathname === '/api/teaching') {
       if (!authorized(req)) return json(res, 401, { error: 'Operator token required.' });
       if (req.method === 'GET') return json(res, 200, teaching.view());
@@ -590,6 +618,17 @@ const server = createServer(async (req, res) => {
       await requestBody(req);
       const queued = wellbeing.queueDailyCheckin(); broadcast();
       return json(res, 200, { ok: true, queued, wellbeing: wellbeing.view() });
+    }
+    if (url.pathname === '/api/wellbeing/followup' && req.method === 'POST') {
+      if (!authorized(req)) return json(res, 401, { error: 'Care team access requires the operator token.' });
+      if (controller.active()) return json(res, 409, { error: 'Use the active incident conversation while an incident is open.' });
+      const body = await requestBody(req) as { reportId?: string; responderId?: string; question?: string; requestId?: string };
+      const responder = responders.find(r => r.id === body?.responderId);
+      if (!responder || typeof body?.reportId !== 'string' || typeof body.question !== 'string' || typeof body.requestId !== 'string')
+        return json(res, 400, { error: 'Select a patient report, approved care team member, and question.' });
+      const queued = wellbeing.queueFollowup(body.reportId, responder.name, body.question, body.requestId);
+      if (!queued) return json(res, 400, { error: 'Invalid or already submitted follow-up.' });
+      broadcast(); return json(res, 202, { queued: true });
     }
     if (url.pathname === '/api/wellbeing/brief' && req.method === 'GET') {
       if (!authorized(req)) return json(res, 401, { error: 'Care journal access requires the operator token.' });
@@ -899,7 +938,7 @@ server.on('upgrade', (req, socket, head) => {
             if (wellbeing.recordVoice(packet)) {
               wellbeingVoiceSession = packet.sessionId;
               wellbeingVoice = { stage: 'complete', at: Date.now() };
-              if (!wellbeingHelp(packet.transcript, 'freewili-local-speech')) void prepareWellbeingReply();
+              if (!wellbeingHelp(wellbeing.replyNeeded()?.text ?? packet.transcript, 'freewili-local-speech')) void prepareWellbeingReply();
             }
             sendContext(); sendWellbeingContext(); broadcast(); return;
           }

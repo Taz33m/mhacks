@@ -417,6 +417,18 @@ class StockGateway:
                     not isinstance(value, int) or isinstance(value, bool) or value < -32768 or value > 32767 for value in samples):
                 self.capture["invalid"] = True
                 return
+            if self.capture.get("kind") != "wellbeing":
+                # End an utterance on sustained quiet, not on missing USB frames.
+                # Keep the original six-second cap for continuous speech/noise.
+                mean = sum(samples) / len(samples)
+                rms = math.sqrt(sum((v - mean) ** 2 for v in samples) / len(samples))
+                if rms >= 250:
+                    self.capture["voicedSamples"] = self.capture.get("voicedSamples", 0) + len(samples)
+                    self.capture["lastVoice"] = self.now()
+                elif self.capture.get("voicedSamples", 0) >= 1600:
+                    self.capture["quietSamples"] = self.capture.get("quietSamples", 0) + len(samples)
+                if rms >= 250:
+                    self.capture["quietSamples"] = 0
             remaining = self.capture.get("maxSamples", MAX_SAMPLES) - len(self.capture["pcm"]) // 2
             if self.ui is not None:
                 self.ui.model.pcm(samples[:remaining], self.now())
@@ -827,7 +839,10 @@ class StockGateway:
                 # This indicates an enabled, bounded microphone window, not
                 # a successful transcript or a safety determination.
                 self.show_status("LIFELINE | LISTENING | Say I need help | Green: close check-in | Red: help")
-        if self.capture is not None and (self.now() >= self.capture["deadline"] or len(self.capture["pcm"]) >= self.capture.get("maxSamples", MAX_SAMPLES) * 2):
+        speech_ended = (self.capture is not None and self.capture.get("kind") != "wellbeing"
+                        and self.capture.get("voicedSamples", 0) >= 1600
+                        and self.capture.get("quietSamples", 0) >= 6000)
+        if self.capture is not None and (speech_ended or self.now() >= self.capture["deadline"] or len(self.capture["pcm"]) >= self.capture.get("maxSamples", MAX_SAMPLES) * 2):
             if self.capture.get("kind") == "wellbeing":
                 if not self.capture["capped"]:
                     self.capture["capped"] = True

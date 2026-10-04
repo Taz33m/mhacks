@@ -26,6 +26,9 @@ class StockDisplaySerial(FreeWiliSerial):
         self._consecutive_image = False
         return super().close(*args, **kwargs)
 
+    def display_needs_repaint(self):
+        return not self._consecutive_image
+
     def invalidate_display(self):
         # A physical button can navigate the firmware menu without an SDK
         # command. Resynchronize the next paint once; do not send from callbacks.

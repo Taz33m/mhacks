@@ -1,7 +1,7 @@
 import type { CheckinDecision } from './contracts.ts';
 
-// Exact commands keep a transcript or model interpretation from becoming a
-// safety determination. Positive replies still require the explicit cancel control.
+// Distress can escalate without exact wording; positive replies still require
+// the explicit cancel control. Recognition never establishes clinical safety.
 const help = new Set([
   'help', 'help me', 'please help', 'please help me', 'i need help',
   'yes i need help', 'i need help please', 'im not safe', 'i am not safe',
@@ -23,6 +23,8 @@ export function reportsCurrentSeizure(transcript: string): boolean {
 export function classifyCheckinReply(transcript: string): CheckinDecision {
   const command = transcript.toLowerCase().replace(/['’]/g, '')
     .replace(/[.,!?;:\-]/g, ' ').replace(/\s+/g, ' ').trim();
+  // A direct polite request is still a request even when STT adds a question mark.
+  if (!/["“”‘]/.test(transcript) && /^(?:please )?(?:can|could|would) you (?:please )?help(?: me)?(?: please| now| right now)?$/.test(command)) return 'help_requested';
   // Quoted/reported speech and questions cannot become a first-person distress report.
   if (/[?"“”‘]/.test(transcript) || /(?:^|\s)'[^']*'/.test(transcript)) return 'unresolved';
   if (help.has(command)) return 'help_requested';
@@ -33,6 +35,9 @@ export function classifyCheckinReply(transcript: string): CheckinDecision {
   const conflicting = /\b(?:dont|do not|never|never mind|no longer|not|but|however)\b/.test(command);
   const unableToRise = /\bi (?:cant|cannot) (?:stand up|get up)\b/.test(command)
     || /\bi (?:cant|cannot) stand(?:$|\s+(?:now|anymore|on my feet)\b)/.test(command);
-  if (unableToRise && !reportedOrConditional && !conflicting) return 'help_requested';
+  const directHelp = /\b(?:i (?:really |urgently )?(?:need|want) (?:some |your )?help|(?:please )?help me|please help|(?:someone|somebody) help|can you help me)\b/.test(command);
+  const helpQuestion = /^(?:please )?(?:can|could|would) you (?:please )?help(?: me)?(?: please| now| right now)?$/.test(command);
+  if (helpQuestion && !conflicting) return 'help_requested';
+  if ((unableToRise || directHelp) && !reportedOrConditional && !conflicting) return 'help_requested';
   return 'unresolved';
 }

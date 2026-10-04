@@ -137,6 +137,30 @@ def context(phase="CONFIRMING", asset="CHECKIN"):
 
 
 class StockTests(unittest.TestCase):
+    def test_checkin_speech_finishes_after_quiet_without_waiting_six_seconds(self):
+        gateway, serial, now, packets = self.setup_gateway()
+        gateway.assets["CHECKIN"] = .1
+        gateway.command(context())
+        now[0] = .31; gateway.audio_tick()
+        for i in range(2):
+            gateway.on_event(EventType.Audio, frame(i), types.SimpleNamespace(data=[-1000, 1000] * 512))
+        for i in range(6):
+            gateway.on_event(EventType.Audio, frame(i + 2), types.SimpleNamespace(data=[0] * 1000))
+        now[0] = 1.4; gateway.audio_tick()
+        self.assertIsNone(gateway.capture)
+        self.assertTrue(any(p.get("type") == "stock.utterance" for p in packets))
+
+    def test_silence_or_missing_audio_does_not_end_checkin_early(self):
+        gateway, serial, now, packets = self.setup_gateway()
+        gateway.assets["CHECKIN"] = .1
+        gateway.command(context())
+        now[0] = .31; gateway.audio_tick()
+        for i in range(8):
+            gateway.on_event(EventType.Audio, frame(i), types.SimpleNamespace(data=[0] * 1000))
+        now[0] = 1.4; gateway.audio_tick()
+        self.assertIsNotNone(gateway.capture)
+        self.assertFalse(any(p.get("type") == "stock.utterance" for p in packets))
+
     def test_movement_prompt_uses_same_guarded_microphone_capture_as_fall(self):
         gateway, serial, now, packets = self.setup_gateway()
         gateway.assets["MOVEMENT"] = .1

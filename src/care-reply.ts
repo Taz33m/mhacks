@@ -1,3 +1,4 @@
+import { patientFollowup } from './patient-followup.ts';
 import type { HealthContext } from './contracts.ts';
 import type { PatientRecordSnapshot } from './patient-record.ts';
 import { answerPatientQuestionDetailed as defaultPatientAnswer, loadHealth as defaultLoadHealth, type DetailedAnswer } from './providers/index.ts';
@@ -84,7 +85,11 @@ export function createCareReply(options: CareReplyOptions = {}) {
   const loadHealth = options.loadHealth ?? defaultLoadHealth;
   const patientAnswer = options.answerPatientQuestionDetailed ?? defaultPatientAnswer;
   async function generate(latest: WellbeingPendingMessage, history: WellbeingMessage[]): Promise<CareReply> {
+    if (/^(?:on it|on my way|arrived|depart|decline)[.!]*$/i.test(latest.text.trim()))
+      return { text: 'No active incident to update.', generation: 'degraded' };
     if (!isClinicalCareRequest(latest.text)) {
+      const followup = patientFollowup(latest.text, history);
+      if (followup) return { text: followup, generation: 'degraded' };
       const reply = await companion.generate(latest, history.filter(message => !message.recordContext));
       if (inventedRecordClaim(reply.text)) return { text: 'Thanks for sharing. What has your day been like?', generation: 'degraded' };
       return reply;

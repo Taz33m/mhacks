@@ -195,7 +195,7 @@ class AmbientTests(unittest.TestCase):
         self.assertEqual(serial.calls[-1],('image',self.demo_manifest['assets']['resolved::0']['file']))
         clock[0]+=3;gateway.ui_tick()
         self.assertEqual(gateway.ui.model.view(clock[0])[0],'ready')
-        self.assertEqual(serial.calls[-1][1],self.demo_manifest['assets'][f'ready::{gateway.ui.model.view(clock[0])[2]}']['file'])
+        self.assertEqual(serial.calls[-1][1],self.demo_manifest['assets']['ready::0']['file'])
 
     def test_live_context_never_uses_demo_art_and_status_text_cannot_infer_mode(self):
         gateway,serial,_,_=self.gateway(simulated=True)
@@ -380,9 +380,9 @@ class AmbientTests(unittest.TestCase):
         gateway.ui.model.context('HELP_REQUESTED'); gateway.ui_tick()
         clock[0] += .1; gateway.ui_tick()
         self.assertEqual(len(serial.calls), 1)
-        # Dispatch now holds its frame; the next keep-visible refresh still
-        # detects a failed image command and falls back to text.
-        clock[0] += 2.1; serial.fail_image = True; gateway.ui_tick()
+        # A real state change attempts a new image and detects failures.
+        clock[0] += 2.1; serial.fail_image = True
+        gateway.ui.model.context('ON_SCENE'); gateway.ui_tick()
         self.assertFalse(gateway.ui.enabled)
         self.assertEqual(serial.calls[-1][0], 'display')
 
@@ -407,6 +407,22 @@ class AmbientTests(unittest.TestCase):
         gateway.audio_enabled = True; gateway.ui_tick()
         self.assertEqual(len(serial.calls), 1)
         gateway.capture = None; gateway.audio_enabled = False; gateway.ui_tick()
+        self.assertEqual(serial.calls, [expected])
+        gateway.display_restore_pending = True; gateway.ui_tick()
+        self.assertEqual(serial.calls, [expected, ('invalidate-display',), expected])
+
+    def test_idle_holds_one_image_and_sdk_commands_repaint_once(self):
+        gateway, serial, clock, _ = self.gateway()
+        gateway.ui_tick()
+        expected = serial.calls[-1]
+        for t in (2, 3, 10, 30, 60):
+            clock[0] = t; gateway.ui_tick()
+        self.assertEqual(serial.calls, [expected])
+        serial.display_needs_repaint = lambda: True
+        clock[0] += 1; gateway.ui_tick()
+        self.assertEqual(serial.calls, [expected, expected])
+        serial.display_needs_repaint = lambda: False
+        clock[0] += 5; gateway.ui_tick()
         self.assertEqual(serial.calls, [expected, expected])
 
     def test_unknown_person_gets_generic_artwork(self):

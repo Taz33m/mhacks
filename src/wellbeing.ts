@@ -1,10 +1,12 @@
+import { patientChoices, choiceText, resolvePatientChoice } from './patient-followup.ts';
+import { patientReports, type PatientReport } from './patient-reports.ts';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import type { ProviderInbound, ProviderResult } from './contracts.ts';
 import { phoneIdentity } from './identity.ts';
 import type { PatientRecordSnapshot } from './patient-record.ts';
 
-export type WellbeingSource = 'agent' | 'daily-checkin' | 'photon-imessage' | 'freewili-local-speech';
+export type WellbeingSource = 'care-team' | 'agent' | 'daily-checkin' | 'photon-imessage' | 'freewili-local-speech';
 export type WellbeingDelivery = 'recorded' | 'queued' | 'attempting' | ProviderResult['status'];
 export interface WellbeingRecordContext {
   source: 'finchnode-synthetic'; synthetic: true;
@@ -14,16 +16,19 @@ export interface WellbeingRecordContext {
 export interface WellbeingMessage {
   id: string; speaker: 'wearer' | 'lifeline'; text: string; source: WellbeingSource;
   at: number; delivery: WellbeingDelivery; generation?: 'ai' | 'degraded' | 'policy_refusal';
+  author?: string; reportId?: string;
   recordContext?: WellbeingRecordContext;
 }
 export interface WellbeingView {
+  reports: PatientReport[];
   conversationId: string; enabled: boolean;
   schedule: { hour: number; timeZone: string; label: string };
   lastCheckinDate: string | null; messages: WellbeingMessage[]; pendingCount: number;
   voice?: { stage: string; at: number };
 }
 export interface WellbeingAction {
-  id: string; conversationId: string; type: 'daily_checkin' | 'reply'; text: string;
+  author?: string; reportId?: string;
+  id: string; conversationId: string; type: 'daily_checkin' | 'reply' | 'followup'; text: string;
   status: 'queued' | 'attempting' | ProviderResult['status']; attempts: number; createdAt: number;
   providerMessageId: string | null; providerResult: string | null;
   providerChatId?: string; providerLineId?: string;
@@ -34,7 +39,7 @@ export interface WellbeingPendingMessage extends WellbeingMessage {
   replyToMessageId?: string; replyChatId?: string; replyLineId?: string;
 }
 type StoredAction = WellbeingAction & { messageId: string; wearerMessageId?: string; phone: string;
-  dailyDate?: string; scheduled?: boolean };
+  dailyDate?: string; scheduled?: boolean; author?: string; reportId?: string };
 type MessageRow = { body: string; reply_to: string | null; chat_id: string | null; line_id: string | null };
 type LocalDate = { date: string; hour: number; minute: number };
 const validId = (value: unknown): value is string => typeof value === 'string' && value.trim() === value
@@ -61,6 +66,7 @@ export class Wellbeing {
     this.now = now;
     this.db = new DatabaseSync(dbPath);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
+      CREATE TABLE IF NOT EXISTS patient_reports (id TEXT PRIMARY KEY, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS wellbeing_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS wellbeing_messages (id TEXT PRIMARY KEY, speaker TEXT NOT NULL, reply_state TEXT,
         body TEXT NOT NULL, reply_to TEXT, chat_id TEXT, line_id TEXT);
@@ -78,6 +84,22 @@ export class Wellbeing {
     });
   }
 
+  private allMessages(): WellbeingMessage[] {
+    return this.db.prepare('SELECT body FROM wellbeing_messages ORDER BY rowid').all().map(r => JSON.parse(String(r.body)));
+  }
+  reports(): PatientReport[] {
+    const reports = patientReports(this.allMessages());
+    this.transaction(() => {
+      this.db.exec('DELETE FROM patient_reports');
+      const insert = this.db.prepare('INSERT INTO patient_reports VALUES (?,?)');
+      for (const report of reports) insert.run(report.id, JSON.stringify(report));
+    });
+    return reports.slice(-40);
+  }
+  queueFollowup(reportId: string, author: string, question: string, requestId: string): boolean {
+    if (!this.options.enabled || !validId(requestId) || !validText(question) || !validText(author) || !this.reports().some(r => r.id === reportId)) return false;
+    return this.transaction(() => this.enqueue('followup', question.trim(), `followup:${requestId}`, { reportId, author }));
+  }
   private transaction<T>(fn: () => T): T {
     this.db.exec('BEGIN IMMEDIATE');
     try { const result = fn(); this.db.exec('COMMIT'); return result; }
@@ -122,7 +144,7 @@ export class Wellbeing {
   private enqueue(type: WellbeingAction['type'], text: string, key: string, extra: Partial<StoredAction> = {}, generation?: WellbeingMessage['generation'],
     clinical?: { context: WellbeingRecordContext; snapshot: PatientRecordSnapshot | null }): boolean {
     const message: WellbeingMessage = { id: randomUUID(), speaker: 'lifeline', text, source: type === 'daily_checkin' ? 'daily-checkin' : 'agent',
-      at: this.now(), delivery: 'queued', ...(generation ? { generation } : {}), ...(clinical ? { recordContext: clinical.context } : {}) };
+      at: this.now(), delivery: 'queued', ...(type === 'followup' ? { source: 'care-team' as const, author: extra.author, reportId: extra.reportId } : {}), ...(generation ? { generation } : {}), ...(clinical ? { recordContext: clinical.context } : {}) };
     const action: StoredAction = { id: randomUUID(), conversationId: this.conversationId, type, text, status: 'queued', attempts: 0,
       createdAt: this.now(), providerMessageId: null, providerResult: null, messageId: message.id, phone: this.options.phone ?? '', ...extra };
     const inserted = this.db.prepare('INSERT OR IGNORE INTO wellbeing_actions VALUES (?,?,?,?)').run(action.id, key, action.status, JSON.stringify(action)).changes === 1;
@@ -136,7 +158,7 @@ export class Wellbeing {
     if (!this.options.enabled || !this.options.phone) return false;
     const date = this.localDate().date;
     return this.transaction(() => this.enqueue('daily_checkin',
-      `Hi ${this.options.wearerName}, how are you feeling today? Reply here, or hold the blue button on WILi, speak, and release.`, `daily:${date}`, { dailyDate: date, scheduled }));
+      choiceText('How are you feeling today?', ['Good', 'A little lonely', 'Not feeling well']), `daily:${date}`, { dailyDate: date, scheduled }));
   }
   /** Explicit authenticated demo request; scheduler-only catch-up limits still apply to tick(). */
   queueDailyCheckin(): boolean { return this.queueDaily(false); }
@@ -198,7 +220,7 @@ export class Wellbeing {
       && validId(a.providerMessageId) && validId(a.providerChatId) && validId(a.providerLineId));
     return action ? { chatId: action.providerChatId!, lineId: action.providerLineId! } : null;
   }
-  private appendWearer(text: string, source: 'photon-imessage' | 'freewili-local-speech', eventId: string, channel?: { target: string; chatId: string; lineId: string }): boolean {
+  private appendWearer(text: string, source: 'photon-imessage' | 'freewili-local-speech', eventId: string, channel?: { target?: string; chatId: string; lineId: string }): boolean {
     const inserted = this.db.prepare('INSERT OR IGNORE INTO wellbeing_inbound VALUES (?,?)').run(source, eventId).changes === 1;
     if (!inserted) return false;
     this.db.prepare("UPDATE wellbeing_messages SET reply_state='superseded' WHERE speaker='wearer' AND reply_state='pending'").run();
@@ -212,20 +234,25 @@ export class Wellbeing {
   }
   recordText(event: ProviderInbound): boolean {
     if (event.kind !== 'text' || event.removed || !validId(event.messageId) || !validText(event.text) || !this.matchesConversation(event)) return false;
-    return this.transaction(() => this.appendWearer(event.text!, 'photon-imessage', event.messageId,
-      { target: event.messageId, chatId: event.chatId!, lineId: event.lineId! }));
+    if (event.pollQuestion) {
+      const last = this.actions().findLast(a => a.status === 'provider_accepted');
+      const choices = last ? patientChoices(last.text) : null;
+      if (!choices || (choices.title !== event.pollQuestion && !(event.pollQuestion === 'Unknown patient poll' && JSON.stringify(event.pollOptions) === JSON.stringify(choices.options))) || !choices.options.includes(event.text!)) return false;
+    }
+    return this.transaction(() => this.appendWearer(resolvePatientChoice(event.text!, this.actions().findLast(a=>a.status==='provider_accepted')?.text ?? ''), 'photon-imessage', event.messageId,
+      { ...(event.pollQuestion ? {} : { target: event.messageId }), chatId: event.chatId!, lineId: event.lineId! }));
   }
   recordVoice(input: { eventId: string; conversationId: string; transcript: string; sessionId: string }): boolean {
     if (!this.options.enabled || input.conversationId !== this.conversationId || !validId(input.eventId)
       || !validId(input.sessionId) || !validText(input.transcript)) return false;
-    return this.transaction(() => this.appendWearer(input.transcript, 'freewili-local-speech', input.eventId));
+    return this.transaction(() => this.appendWearer(resolvePatientChoice(input.transcript, this.actions().findLast(a=>a.status==='provider_accepted')?.text ?? ''), 'freewili-local-speech', input.eventId));
   }
   replyNeeded(): WellbeingPendingMessage | null {
     if (!this.options.enabled) return null;
     const row = this.db.prepare("SELECT body,reply_to,chat_id,line_id FROM wellbeing_messages WHERE speaker='wearer' AND reply_state='pending' ORDER BY rowid DESC LIMIT 1").get() as MessageRow | undefined;
     if (!row) return null;
     return { ...JSON.parse(row.body) as WellbeingMessage, speaker: 'wearer', conversationId: this.conversationId,
-      ...(row.reply_to && row.chat_id && row.line_id ? { replyToMessageId: row.reply_to, replyChatId: row.chat_id, replyLineId: row.line_id } : {}) };
+      ...(row.chat_id && row.line_id ? { ...(row.reply_to ? { replyToMessageId: row.reply_to } : {}), replyChatId: row.chat_id, replyLineId: row.line_id } : {}) };
   }
   /** Root incident policy calls this after independently routing an authenticated help request. */
   markIncidentRouted(messageId: string): void {
@@ -237,7 +264,7 @@ export class Wellbeing {
       const pending = this.replyNeeded();
       if (!pending || pending.id !== messageId || this.latestWearerId() !== messageId) return false;
       const queued = this.enqueue('reply', text.trim(), `reply:${messageId}`, { wearerMessageId: messageId,
-        ...(pending.replyToMessageId ? { replyToMessageId: pending.replyToMessageId, replyChatId: pending.replyChatId, replyLineId: pending.replyLineId } : {}) }, generation);
+        ...(pending.replyChatId ? { ...(pending.replyToMessageId ? { replyToMessageId: pending.replyToMessageId } : {}), replyChatId: pending.replyChatId, replyLineId: pending.replyLineId } : {}) }, generation);
       if (queued) this.db.prepare("UPDATE wellbeing_messages SET reply_state='queued' WHERE id=?").run(messageId);
       return queued;
     });
@@ -268,7 +295,7 @@ export class Wellbeing {
       const pending = this.replyNeeded();
       if (!pending || pending.id !== messageId || this.latestWearerId() !== messageId) return false;
       const queued = this.enqueue('reply', text.trim(), `reply:${messageId}`, { wearerMessageId: messageId,
-        ...(pending.replyToMessageId ? { replyToMessageId: pending.replyToMessageId, replyChatId: pending.replyChatId, replyLineId: pending.replyLineId } : {}) },
+        ...(pending.replyChatId ? { ...(pending.replyToMessageId ? { replyToMessageId: pending.replyToMessageId } : {}), replyChatId: pending.replyChatId, replyLineId: pending.replyLineId } : {}) },
       generation, { context: copiedContext, snapshot: serialized ? JSON.parse(serialized) as PatientRecordSnapshot : null });
       if (queued) this.db.prepare("UPDATE wellbeing_messages SET reply_state='queued' WHERE id=?").run(messageId);
       return queued;
@@ -286,7 +313,7 @@ export class Wellbeing {
     return { schemaVersion: 1, kind: 'LIFELINE care journal', exportedAt: new Date(this.now()).toISOString(),
       hospitalRecords: { source: 'FinchNode (read-only)', snapshots },
       lifelineObservations: { source: 'LIFELINE local everyday conversation; not hospital EHR entries',
-        conversationId: this.conversationId, historyWindow: 'Most recent 40 messages', messages,
+        reports: this.reports(), conversationId: this.conversationId, historyWindow: 'Most recent 40 messages', messages,
         limitations: 'Messages are attributed reports. This journal does not diagnose, score mood, or write to hospital records.' },
     };
   }
@@ -294,7 +321,7 @@ export class Wellbeing {
     const date = this.db.prepare("SELECT json_extract(body,'$.dailyDate') AS date FROM wellbeing_actions WHERE json_extract(body,'$.type')='daily_checkin' ORDER BY rowid DESC LIMIT 1").get();
     const messages = this.db.prepare('SELECT body FROM wellbeing_messages ORDER BY rowid DESC LIMIT 40').all().reverse().map(row => JSON.parse(String(row.body)) as WellbeingMessage);
     const pendingReplies = Number(this.db.prepare("SELECT COUNT(*) AS count FROM wellbeing_messages WHERE speaker='wearer' AND reply_state='pending'").get()!.count);
-    return { conversationId: this.conversationId, enabled: this.options.enabled,
+    return { reports: this.reports(), conversationId: this.conversationId, enabled: this.options.enabled,
       schedule: { hour: this.options.hour, timeZone: this.options.timezone, label: `${String(this.options.hour).padStart(2, '0')}:00 ${this.options.timezone}` },
       lastCheckinDate: date?.date ? String(date.date) : null, messages,
       pendingCount: pendingReplies + this.actions().filter(action => ['queued', 'attempting'].includes(action.status)).length };
