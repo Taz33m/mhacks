@@ -4,6 +4,72 @@ MHacks 2026 — Actually Intelligent (AI). LIFELINE combines read-only patient r
 
 **Current implementation:** structured Finch synthetic records, record questions, immutable incident context, threaded Photon replies, wearer updates, and source-separated care-brief export are implemented. The iPhone app is communication only. The connected original FREE-WILi uses its official stock SDK for acceleration, display, help/okay buttons and board audio. A provisional WILi + waist-AirPod detector and bounded local microphone transcription are implemented; physical sensing accuracy and end-to-end messaging still require rehearsal. See the [migration plan](docs/device-and-record-migration.md). Camera work is out of scope.
 
+## Tech stack
+
+| Layer | Technology and role |
+| --- | --- |
+| Backend | Node.js 24 + TypeScript; HTTP and WebSocket services |
+| Persistence | SQLite; incident state, deadlines, action outbox, conversations and audit history |
+| Frontend | HTML, CSS and JavaScript; Three.js for the interactive apartment location view |
+| Primary wearable | FREE-WILi stock SDK; chest acceleration, microphone, speaker, buttons and display |
+| WILi bridge | Python + TypeScript over USB |
+| Secondary sensing | Left AirPod at the waist; native Swift macOS app using Core Motion, incorporating Kinesthetic acquisition code |
+| Phone | Native Swift/SwiftUI iOS communication companion and the patient's existing messaging interface |
+| Messaging | Photon / Spectrum API; patient and care-team conversations |
+| Voice | Local Whisper transcription; ElevenLabs speech generation |
+| Clinical context | FinchNode read-only synthetic records; source-validated answers and saved clinical snapshots |
+| AI and policy | Configurable LLM for conversational interpretation and record answers; deterministic incident state machine for escalation, ownership and resolution |
+
+The Mac acquires AirPod motion directly. The iPhone is the communication surface, not the chest sensor or camera.
+
+## Architecture
+
+```mermaid
+flowchart TB
+    Patient["Morgan · patient"]
+    Team["Maya · caregiver / care team"]
+    subgraph Wearable["Wearable sensing & interaction"]
+        WILi["FREE-WILi · chest\nAcceleration · mic · speaker\nDisplay · physical controls"]
+        AirPod["Left AirPod · waist\nMotion & orientation"]
+    end
+    subgraph Backend["LIFELINE · Mac"]
+        Bridge["Python / TypeScript USB bridge"]
+        Native["Swift macOS / Core Motion\nKinesthetic acquisition"]
+        Motion["Time-aligned motion assessment\nCalibration · freshness · event evidence"]
+        Policy["Deterministic incident state machine\nCheck-in → escalation → ownership → resolution"]
+        Agent["AI orchestration\nInterpret replies · answer record questions\nCoordinate patient & care team"]
+        Voice["Whisper + ElevenLabs"]
+        Checkins["Daily check-ins & patient choices"]
+        DB[("SQLite\nIncidents · conversations · patient reports\nSources · delivery state · audit trail")]
+    end
+    Spectrum["Photon / Spectrum API"]
+    PatientPhone["Patient messaging"]
+    TeamPhone["Care-team messaging"]
+    Finch["FinchNode · read-only\nMedications · conditions · allergies\nHistorical clinical records"]
+    Workspace["Care workspace / EHR view\nMotion · location · status · medical"]
+    Patient <-->|"Speak · listen · buttons"| WILi
+    WILi <-->|USB| Bridge
+    AirPod --> Native --> Motion
+    Bridge --> Motion -->|"Possible incident"| Policy
+    Policy <--> Agent
+    Agent <--> Voice <--> Bridge
+    Policy -->|"Display state"| Bridge
+    Agent <--> Spectrum
+    Checkins <--> Spectrum
+    Spectrum <--> PatientPhone
+    Spectrum <--> TeamPhone
+    Patient <--> PatientPhone
+    Team <--> TeamPhone
+    Finch --> Agent
+    Finch --> Workspace
+    Policy <--> DB
+    Agent <--> DB
+    Checkins <--> DB
+    DB --> Workspace
+```
+
+One LIFELINE agent coordinates multiple human interfaces against one incident state. Sending an alert is not responder acceptance. Patient-reported observations remain separate from hospital records, and missing measurements remain unknown. The apartment view is a configured location visualization, not measured indoor positioning.
+
 ## Start
 
 Requires Node 24+ and npm. Native builds require Xcode on macOS.
