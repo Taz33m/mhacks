@@ -20,6 +20,24 @@ test('duplicate samples rejected; reconnect gaps and bud switches invalidate cal
   m.calibrate(); assert.equal(m.views()[1].calibrated, true);
   m.sample('waist-airpod', { ...sample(61), sensorLocation: 'Right' }); assert.equal(m.views()[1].calibrated, false);
 });
+test('paired trial reset preserves only a fresh session baseline and never previous history or clocks', () => {
+  let t = 100; const m = new Motion(() => t);
+  for (let seq = 1; seq <= 31; seq++) { t += 40; m.sample('waist-airpod', sample(seq)); }
+  assert.deepEqual(m.calibrate(['waist-airpod']), ['waist-airpod']);
+  const ping = m.ping('waist-airpod');
+  m.pong('waist-airpod', { type: 'clock.pong', id: ping.id, sessionId: 'test-session',
+    deviceReceivedMs: t, deviceSentMs: t });
+  m.reset({ clocks: true, cooldown: false, preserveCalibration: true });
+  assert.equal(m.views()[1].calibrated, true); assert.equal(m.views()[1].alignmentUncertaintyMs, null);
+  assert.deepEqual(m.observations('waist-airpod'), []);
+  assert.equal(m.sample('waist-airpod', sample(31)), false, 'recording boundary preserves replay rejection');
+  t += 40; m.sample('waist-airpod', sample(32)); assert.equal(m.views()[1].calibrated, true);
+  t += 600; m.sample('waist-airpod', sample(33)); assert.equal(m.views()[1].calibrated, false, 'normal gaps invalidate the preserved baseline');
+  for (let seq = 34; seq <= 65; seq++) { t += 40; m.sample('waist-airpod', sample(seq)); }
+  assert.deepEqual(m.calibrate(['waist-airpod']), ['waist-airpod']);
+  t += 600; m.reset({ clocks: true, preserveCalibration: true });
+  t += 40; m.sample('waist-airpod', sample(66)); assert.equal(m.views()[1].calibrated, false, 'stale baselines cannot be preserved');
+});
 test('ping/pong records bounded clock uncertainty without inventing synchronized samples', () => {
   let t = 100; const m = new Motion(() => t); m.sample('waist-airpod', sample());
   const ping = m.ping('waist-airpod'); t += 10;

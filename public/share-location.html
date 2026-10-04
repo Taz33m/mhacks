@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f5f7fb">
+    <meta name="referrer" content="no-referrer">
+    <title>LIFELINE — Share location</title>
+    <link rel="stylesheet" href="/share-location.css">
+    <script src="/share-location.js" defer></script>
+  </head>
+  <body>
+    <main class="share-shell">
+      <header><span class="brand">Lifeline</span><span id="sharing-status" class="status">Checking invitation</span></header>
+      <p class="eyebrow">OPTIONAL BROWSER SHARING</p>
+      <h1>Find each other.</h1>
+      <p id="sharing-identity" class="intro">Checking who this invitation is for.</p>
+      <p id="sharing-context" class="muted"></p>
+      <section class="share-controls" aria-label="Location sharing controls">
+        <p id="sharing-detail" role="status" aria-live="polite">You choose when to share. You can stop at any time.</p>
+        <label for="travel-mode">Travel mode</label>
+        <select id="travel-mode"><option value="walking">Walking</option><option value="driving">Driving</option></select>
+        <div class="button-row"><button id="start-sharing" class="button primary" type="button" disabled>Share my location</button><button id="stop-sharing" class="button secondary" type="button" disabled>Stop browser sharing</button></div>
+        <button id="retry-access" class="text-button" type="button" hidden>Retry connection</button>
+        <p class="foreground-note">Keep this page open. Sharing pauses when the page is hidden; tap Resume when you return.</p>
+        <p id="sharing-error" class="error" role="alert" hidden></p>
+      </section>
+      <section class="shared-people" aria-label="Shared locations">
+        <article class="point-card"><p class="eyebrow">WEARER LOCATION</p><h2 id="wearer-name">Wearer</h2><p id="wearer-position" class="coordinates">Not shared</p><p id="wearer-meta" class="muted">No shared location received.</p><a id="wearer-map" class="map-link" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" hidden>Open in Apple Maps ↗</a></article>
+        <article class="point-card"><p class="eyebrow">RESPONDER APPROACH</p><h2 id="responder-name">Responder</h2><p id="responder-position" class="coordinates">Not shared</p><p id="responder-meta" class="muted">No shared location received.</p><a id="responder-map" class="map-link" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" hidden>Open in Apple Maps ↗</a></article>
+      </section>
+      <section class="eta-card" aria-label="Approach estimate"><strong id="approach-eta">Waiting for shared locations</strong><p id="approach-detail" class="muted">Location does not confirm responder arrival.</p></section>
+      <footer id="sharing-scope">Browser location requires permission. Stop controls browser sharing only.</footer>
+    </main>
+  </body>
+</html>

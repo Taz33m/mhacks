@@ -115,10 +115,11 @@ async function localSpeech(text: string): Promise<Buffer> {
   } catch { throw new Error('macOS local speech generation failed.'); }
   finally { await rm(directory, { recursive: true, force: true }); }
 }
-async function elevenLabsSpeech(text: string, apiKey: string, selection: { voiceId: string; modelId: string }, speed: number, fetcher: typeof fetch): Promise<Buffer> {
+export async function elevenLabsSpeech(text: string, apiKey: string, selection: { voiceId: string; modelId: string }, speed: number,
+  fetcher: typeof fetch, signal?: AbortSignal): Promise<Buffer> {
   try {
     const response = await fetcher(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(selection.voiceId)}?output_format=mp3_44100_128`, {
-      method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
+      method: 'POST', redirect: 'error', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
       headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
       body: JSON.stringify({ text, model_id: selection.modelId, voice_settings: { speed } }),
     });

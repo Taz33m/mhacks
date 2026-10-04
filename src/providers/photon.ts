@@ -10,7 +10,7 @@ export interface PhotonMessage {
   id: string;
   platform: string;
   direction: string;
-  sender?: { id: string; kind?: string };
+  sender?: { id: string; kind?: string; service?: unknown };
   content: unknown;
   reactionRecord?: { selected?: boolean };
   space?: PhotonChannel;
@@ -81,6 +81,22 @@ function safeErrorDetail(error: unknown, method: 'space.prepare' | 'space.send' 
     facts.push('Target not allowed for this project; verify registered Photon project Users');
   return ` [${method}${facts.length ? ': ' + facts.join('; ') : ': no safe SDK error metadata'}]`;
 }
+function resourceLimitReported(error: unknown): boolean {
+  const e = object(error);
+  // The SDK maps RESOURCE_EXHAUSTED to RateLimitError. This identifies a
+  // reported limit, not whether a message reached Apple before the error.
+  return e?.name === 'RateLimitError' || e?.grpcCode === 8;
+}
+function contactWarmupCounters(error: unknown): { sent: number; required: number; replies: number } | null {
+  const e = object(error);
+  if (!resourceLimitReported(error) || typeof e?.message !== 'string') return null;
+  // This exact observed SDK explanation is parsed only into bounded counters.
+  // Never copy surrounding service text, identifiers or arbitrary raw errors.
+  const match = e.message.match(/^\[upstream\] New contact has sent (\d{1,3}) of (\d{1,3}) messages; replies are limited to (\d{1,5}) until they respond$/);
+  if (!match) return null;
+  const [sent, required, replies] = match.slice(1).map(Number);
+  return required > 0 && replies > 0 ? { sent, required, replies } : null;
+}
 function targetId(content: Record<string, unknown>): string | undefined {
   const id = object(content.target)?.id;
   return typeof id === 'string' && id.length > 0 ? id : undefined;
@@ -91,6 +107,9 @@ function channel(space?: PhotonChannel): { chatId?: string; lineId?: string } {
     ...(typeof space?.phone === 'string' && space.phone ? { lineId: space.phone } : {}),
   };
 }
+function nativeService(value: unknown): ProviderInbound['service'] {
+  return value === 'iMessage' || value === 'SMS' || value === 'RCS' || value === 'unknown' ? value : undefined;
+}
 
 /** Preserve provider identities and targets; authorization belongs to the controller. */
 export function normalizePhoton(message: PhotonMessage): ProviderInbound | null {
@@ -99,8 +118,10 @@ export function normalizePhoton(message: PhotonMessage): ProviderInbound | null 
   const content = object(message.content);
   if (!content) return null;
   const at = message.timestamp instanceof Date ? message.timestamp.getTime() : NaN;
+  const service = nativeService(message.sender.service);
   const base = { messageId: message.id, sender: message.sender.id, ...channel(message.space),
     ...(Number.isFinite(at) ? { providerTimestamp: at } : {}),
+    ...(service ? { service } : {}),
   };
   if (content.type === 'text' && typeof content.text === 'string') {
     return { ...base, kind: 'text', text: content.text };
@@ -279,7 +300,12 @@ export function createPhotonAdapter(options: {
         detail = 'Cloud accepted a message; recipient delivery is not established';
         return { status: 'provider_accepted', messageId: sent.id, ...identities, detail };
       } catch (error) {
-        detail = 'Send failed or timed out after submission; outcome unknown, reconcile before retry';
+        const warmup = contactWarmupCounters(error);
+        detail = warmup
+          ? `Photon reported a contact warm-up restriction after submission; outcome unknown. Contact messages ${warmup.sent}/${warmup.required}; reply allowance ${warmup.replies}. A new inbound reply is required; reconcile this attempt before retry`
+          : resourceLimitReported(error)
+          ? 'Photon reported a rate/resource limit after submission; outcome unknown. Pace new messages and reconcile this attempt before retry'
+          : 'Send failed or timed out after submission; outcome unknown, reconcile before retry';
         detail += safeErrorDetail(error, replyTarget ? 'message.reply' : 'space.send');
         return { status: 'unknown', detail };
       }

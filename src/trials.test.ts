@@ -50,3 +50,28 @@ test('trial input/path validation and recording duration limit preserve explicit
     assert.equal(trials.recording, false);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('paired capture records raw board identity/range, accepted counts and explicit operator markers', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'lifeline-paired-recorder-')); let now = 1000;
+  const trials = new Trials(directory, () => now, () => 1790000000000 + now);
+  try {
+    assert.throws(() => trials.marker('before'), /Start/);
+    const view = trials.start('Generated paired recorder fixture', 'other', ['body-wili', 'waist-airpod'], {
+      captureMode: 'wili-waist', initialSessions: { 'body-wili': 'generated-board', 'waist-airpod': 'generated-waist' },
+      preservedCalibration: [{ source: 'waist-airpod', sessionId: 'generated-waist', sensorLocation: 'Right' }],
+    });
+    now += 1; trials.record('device.hello', { sessionId: 'generated-board' }, 'body-wili');
+    now += 1; trials.record('accel.sample', { frameTimestamp: '1015894500660534528', fullScaleG: 2, saturated: true }, 'body-wili');
+    now += 1; trials.record('motion.sample', { fixture: true }, 'waist-airpod');
+    now += 1; trials.marker('Operator says observation begins');
+    assert.throws(() => trials.marker('line\nbreak'), /marker/);
+    assert.equal(trials.view()!.markerCount, 1); assert.equal(trials.view()!.sampleCounts['body-wili'], 1);
+    assert.equal(trials.view()!.sampleCounts['waist-airpod'], 1); assert.equal(trials.view()!.sampleCounts['chest-phone'], 0);
+    trials.stop(); await finished(trials); assert.throws(() => trials.marker('after'), /Start/);
+    const lines = readFileSync(join(directory, `trial-${view.id}.jsonl`), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(lines[0].payload.version, 2); assert.equal(lines[0].payload.stateBoundary, 'fresh-history-and-clocks');
+    assert.deepEqual(lines[0].payload.preservedCalibration, [{ source: 'waist-airpod', sessionId: 'generated-waist', sensorLocation: 'Right' }]);
+    assert.equal(lines[2].payload.frameTimestamp, '1015894500660534528'); assert.equal(lines[2].payload.saturated, true);
+    assert.equal(lines[4].type, 'trial.marker');
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});

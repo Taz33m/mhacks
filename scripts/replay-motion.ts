@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { Motion, validSample } from '../src/motion.ts';
 import type { DetectionMode } from '../src/motion.ts';
 import type { ClockPong, Evidence, MotionSample, Source } from '../src/contracts.ts';
+import { analyseRawWili, replayPairedTrials } from './replay-paired-motion.ts';
 
 // Offline only. Import no server/provider module and make no network requests.
 const SOURCES: Source[] = ['chest-phone', 'waist-airpod'];
@@ -322,12 +323,17 @@ export function analyseRecording(path: string, remainingByteBudget = LIMITS.file
     records.push({ ...at, value });
   }
   requireValue(records.length > 0, location, 'Input has no records.');
-  const legacyFormat = records[0].value.type === 'motion.sample' && Object.hasOwn(records[0].value, 'hostMonotonicMs');
+  const rawFormat = Object.hasOwn(records[0].value, 'hostMonotonicMs');
+  const legacyFormat = records[0].value.type === 'motion.sample' && rawFormat;
+  const rawWiliFormat = records[0].value.type === 'accel.sample' && rawFormat;
+  const pairedFormat = records[0].value.type === 'trial.start' && object(records[0].value.payload) && records[0].value.payload.version === 2;
   for (const record of records) {
-    const isLegacy = record.value.type === 'motion.sample' && Object.hasOwn(record.value, 'hostMonotonicMs');
-    requireValue(isLegacy === legacyFormat, record, 'Legacy samples and ordered trial events cannot be mixed in one file.');
+    const isRaw = Object.hasOwn(record.value, 'hostMonotonicMs');
+    requireValue(isRaw === rawFormat && (!rawFormat || record.value.type === records[0].value.type), record,
+      'Raw sample formats and ordered trial events cannot be mixed in one file.');
   }
-  const result = legacyFormat ? legacy(records) : trials(records);
+  const result = legacyFormat ? legacy(records) : rawWiliFormat ? analyseRawWili(records)
+    : pairedFormat ? replayPairedTrials(records) : trials(records);
   return { file, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), ...result };
 }
 
@@ -369,6 +375,8 @@ function main(): void {
     const report = { version: 1, kind: 'offline-motion-replay', live: false,
       interpretation: 'Algorithm/debug output. Native-stream capture and operator labels do not verify a bodily event. No accuracy percentages are produced.',
       detectorSha256: createHash('sha256').update(readFileSync(new URL('../src/motion.ts', import.meta.url))).digest('hex'), files: reports };
+    Object.assign(report, { pairedDetectorSha256: Object.fromEntries(['freewili.ts', 'motion.ts', 'wili-assessment.ts']
+      .map(file => [file, createHash('sha256').update(readFileSync(new URL(`../src/${file}`, import.meta.url))).digest('hex')])) });
     const json = JSON.stringify(report, null, 2) + '\n';
     if (output) {
       const temporary = resolve(dirname(output), `.${basename(output)}.${process.pid}.tmp`);

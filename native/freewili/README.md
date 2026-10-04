@@ -6,9 +6,17 @@ The connected device is the original FREE-WILi, with MainCPU/DisplayCPU firmware
 npm run setup:freewili
 # Discovery prints MAIN and DISPLAY separately. Select the actual DISPLAY port.
 npm run device:freewili -- --port /dev/cu.usbmodem1201
+# Optional bounded foreground recovery for transient USB/backend transport loss:
+npm run device:freewili -- --port /dev/cu.usbmodem1201 --reconnect
 ```
 
 Run the backend with `npm start`. Keep the board connected by USB to the Mac. Ctrl-C stops the foreground bridge and disables event streams. The pairing token is read from the private local file, never printed. The waist AirPod continues through the existing Mac application and unchanged route keeper; the iPhone supplies communication only.
+
+`--reconnect` retries the **same explicitly selected port** with 500 ms–5 s backoff for up to 120 seconds per outage. Each prior worker and WebSocket is fully closed before a new worker starts with a fresh device session. The retry budget resets only after an attempt has forwarded real samples over at least 30 seconds of uptime; rapid flapping remains bounded. Missing-port and temporary backend network failures are reported as unavailable. No samples are synthesized, expired check-ins are skipped, and original server deadlines remain authoritative.
+
+Authentication rejection, malformed packets, protocol/policy closure, invalid configuration, and an unexplained SDK worker exit while the selected port stays present are fatal. A disappearance observed before teardown remains recoverable even if the port returns while the old worker closes. Very brief USB failures that escape the availability check can remain an unexplained fatal exit; check the actual cause instead of retrying every SDK error. A changed port name requires selecting the verified DISPLAY path again.
+
+This is a long-running foreground command, without an installed service or scheduled restart. SIGINT/Ctrl-C and SIGTERM cancel both active work and backoff and do not relaunch it. Cleanup normally completes promptly; a worker stuck in a synchronous SDK operation gets at most 15 seconds before forced termination. Omitting `--reconnect` retains the single-attempt command used by the physical voice-smoke harness.
 
 ## Physical interaction
 
@@ -17,6 +25,8 @@ Run the backend with `npm start`. Keep the board connected by USB to the Mac. Ct
 - Display: current incident stage and responder name. Accepted and en route are separate stages.
 - Speaker: seven cached 8 kHz mono PCM prompts uploaded into `/sounds`: check-in, help requested, accepted, en route, arrived, resolved and explicit-cancellation guidance. The preparation manifest records the actual generation source; local macOS speech is not an ElevenLabs demonstration.
 - Microphone: one bounded six-second capture after the check-in prompt, with local Whisper transcription. A positive or ambiguous transcript preserves the timer. A positive transcript asks for the green button; exact help requests escalate.
+
+The optional [ambient communication UI](../../docs/wili-ambient-ui.md) replaces text screens with native blue pulses, measured voice bars, message bubbles and actual responder initials. Build it with `npm run prepare:wili:ui` before starting the foreground bridge. Use `--no-ui` for text presentation. Its standalone preview uses the same 320×240 pixels with fictional people and sends no operational commands.
 
 Stock acceleration reporting pauses for the duration of spoken prompts to reduce playback load on the display processor, then resumes before microphone capture. Buttons remain enabled. The resulting measurement gap is retained and can appear as stale telemetry; it never establishes safety. This is a playback mitigation awaiting listening comparison, not proof of improved audio.
 

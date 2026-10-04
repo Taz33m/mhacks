@@ -142,6 +142,17 @@ test('isolated stock WILi acquisition, speech and buttons preserve policy and re
 
     assert.equal((await command({ type: 'trigger', kind: 'synthetic', summary: 'Synthetic board-local speech fixture; no physical event.' })).status, 200);
     const spoken = (await state()).incident!; assert.equal(spoken.phase, 'CONFIRMING');
+    await waitFor(state, value => value.incident?.handoffGeneration === 'degraded');
+    const audioStatus = (eventId: string, stage: string, incidentId = spoken.id, checkinId = spoken.checkinId) =>
+      ws.send(JSON.stringify({ type: 'checkin.audio', source: 'body-wili', sessionId, eventId, incidentId, checkinId, stage }));
+    audioStatus('synthetic-mic-open', 'listening');
+    const listening = await waitFor(state, value => value.checkinAudio?.stage === 'listening');
+    assert.equal(listening.checkinAudio?.sessionId, sessionId);
+    assert.equal(listening.incident?.phase, 'CONFIRMING', 'microphone status cannot change incident policy');
+    assert.equal(listening.incident?.checkinDeadline, spoken.checkinDeadline);
+    audioStatus('synthetic-stale-mic-status', 'transcribing', help.id, help.checkinId);
+    await pause(30);
+    assert.equal((await state()).checkinAudio?.stage, 'listening', 'earlier incidents cannot overwrite current microphone status');
     const reply = (eventId: string, transcript: string) => ws.send(JSON.stringify({ type: 'checkin.reply',
       source: 'body-wili', sessionId, eventId, incidentId: spoken.id, checkinId: spoken.checkinId, transcript }));
     const spokenDecision = (transcript: string, decision: string) => waitFor(state, value => value.timeline.some(event =>
@@ -161,11 +172,36 @@ test('isolated stock WILi acquisition, speech and buttons preserve policy and re
     assert.equal(ambiguous.incident!.checkinDeadline, spoken.checkinDeadline);
     assert.equal(contexts.filter(packet => packet.type === 'audio.command').length, acknowledgements,
       'an ambiguous reply does not receive a safe acknowledgement');
-    reply('synthetic-help-speech', 'I need help');
-    const requested = await spokenDecision('I need help', 'help_requested');
+    const ankleReport = "I fell pretty hard. My ankle hurts and I can't stand up.";
+    reply('synthetic-help-speech', ankleReport);
+    const requested = await spokenDecision(ankleReport, 'help_requested');
     assert.equal(requested.incident!.phase, 'HELP_REQUESTED', 'an exact help command escalates before the silence deadline');
     assert.equal(requested.incident!.checkinDeadline, spoken.checkinDeadline);
     assert.equal(requested.serverTime < spoken.checkinDeadline, true);
+    audioStatus('synthetic-post-help-mic-status', 'listening');
+    await pause(30);
+    assert.equal((await state()).checkinAudio?.at, listening.checkinAudio?.at,
+      'a microphone-open report after escalation cannot reopen listening');
+    audioStatus('synthetic-transcription-complete', 'complete');
+    await waitFor(state, value => value.checkinAudio?.stage === 'complete');
+    const refreshed = await waitFor(state, value => value.incident?.handoff.includes(ankleReport) === true);
+    const recordedReport = refreshed.conversation!.find(message => message.text === ankleReport)!;
+    assert.match(refreshed.incident!.handoff, /local observations, not hospital records/);
+    assert.ok(refreshed.incident!.handoff.includes(`[conversation:${recordedReport.id}]`),
+      'speech arriving after initial composition refreshes the handoff with its exact source citation');
+    const beforeQuestion = await state();
+    const question = await fetch(`${base}/api/context/question`, { method: 'POST', headers: {
+      Authorization: `Bearer ${setup.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ incidentId: spoken.id, question: 'What did the wearer say?' }) });
+    assert.equal(question.status, 200);
+    const answer = await question.json();
+    assert.equal(answer.generation, 'degraded', 'offline source quote cannot be labelled AI');
+    assert.ok(answer.answer.includes(ankleReport));
+    assert.ok(answer.answer.includes(`[conversation:${recordedReport.id}]`));
+    const afterQuestion = await state();
+    assert.deepEqual(afterQuestion.actions, beforeQuestion.actions, 'local clinical rehearsal sends no messages');
+    assert.equal(afterQuestion.incident!.phase, beforeQuestion.incident!.phase);
+    assert.equal(afterQuestion.incident!.ownerId, null);
     for (const type of ['accept', 'depart', 'arrive'] as const)
       assert.equal((await command({ type, incidentId: spoken.id, responderId: 'maya' })).status, 200);
     assert.equal((await command({ type: 'resolve', incidentId: spoken.id, responderId: 'maya',
@@ -190,6 +226,7 @@ test('isolated stock WILi acquisition, speech and buttons preserve policy and re
     const unavailable = await waitFor(state, value => value.wili?.connected === false);
     assert.equal(unavailable.wili!.fresh, false); assert.equal(unavailable.wili!.usable, false);
     assert.equal(unavailable.wili!.accelerationG, null, 'explicit acquisition failure clears formerly fresh evidence');
+    assert.equal(unavailable.checkinAudio, null, 'disconnected microphone status is cleared');
 
     const ackSocket = new WebSocket(`ws://127.0.0.1:${port}/motion?source=body-wili&token=${setup.token}`); sockets.push(ackSocket);
     await once(ackSocket, 'open');

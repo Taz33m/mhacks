@@ -8,6 +8,7 @@ import json
 import pathlib
 import sys
 import tempfile
+import time
 import types
 import unittest
 import wave
@@ -22,6 +23,7 @@ class EventType(enum.Enum):
 class ButtonColor(enum.Enum):
     Green = 1
     Red = 2
+    Blue = 3
 
 
 class Processor(enum.Enum):
@@ -74,11 +76,13 @@ class SerialDouble:
     def enable_button_events(self, enable, interval):
         self.calls.append(("buttons", enable, interval)); return Result()
     def read_all_buttons(self):
-        return Result({ButtonColor.Green: False, ButtonColor.Red: False})
+        return Result({ButtonColor.Green: False, ButtonColor.Red: False, ButtonColor.Blue: False})
     def set_event_callback(self, callback):
         self.callback = callback
     def send_file(self, path, target, callback):
         self.calls.append(("upload", path.name, target)); return Result()
+    def remove_directory_or_file(self, path):
+        self.calls.append(("remove", path)); return Result()
     def get_file(self, source, destination, callback):
         self.calls.append(("download", source))
         self.downloads.append(destination)
@@ -133,6 +137,311 @@ class StockTests(unittest.TestCase):
         serial.gateway = gateway
         serial.opened = True
         return gateway, serial, now, packets
+
+    def wellbeing_context(self, gateway, enabled=True, conversation="wellbeing-1"):
+        return {"type": "wellbeing.context", "sessionId": gateway.session, "conversationId": conversation,
+                "enabled": enabled, "statusText": "How are you feeling today?"}
+
+    def blue(self, gateway, sequence, pressed, red=False, green=False):
+        gateway.on_event(EventType.Button, frame(sequence), types.SimpleNamespace(blue=pressed, red=red, green=green))
+
+    def start_wellbeing(self, gateway, now):
+        gateway.sync_buttons({ButtonColor.Blue: False})
+        gateway.command(self.wellbeing_context(gateway))
+        self.blue(gateway, 1, True)
+        now[0] = .350
+        gateway.audio_tick()
+
+    def test_blue_hold_records_real_wav_and_release_only_reports_transcription(self):
+        gateway, serial, now, packets = self.setup_gateway()
+        gateway.sync_buttons({ButtonColor.Blue: False})
+        gateway.command(self.wellbeing_context(gateway))
+        self.assertIn("HOLD BLUE TO TALK", gateway.displayed)
+        self.blue(gateway, 1, True)
+        now[0] = .349; gateway.audio_tick()
+        self.assertNotIn(("audio", True), serial.calls)
+        now[0] = .350; gateway.audio_tick()
+        self.assertIn(("audio", True), serial.calls)
+        self.assertIn("RECORDING", gateway.displayed)
+        gateway.on_event(EventType.Audio, frame(1), types.SimpleNamespace(data=[-32768, 100, 32767]))
+        pcm = gateway.capture["pcm"]
+        now[0] = .5; self.blue(gateway, 2, False)
+        raw = [p for p in packets if p["type"] == "stock.wellbeing-utterance"]
+        self.assertEqual(len(raw), 1)
+        self.assertEqual(raw[0]["conversationId"], "wellbeing-1")
+        self.assertEqual(raw[0]["sessionId"], gateway.session)
+        self.assertEqual(raw[0]["durationMs"], 3 / 8)
+        with wave.open(io.BytesIO(base64.b64decode(raw[0]["audioBase64"])), "rb") as clip:
+            self.assertEqual((clip.getframerate(), clip.getnchannels(), clip.getsampwidth()), (8000, 1, 2))
+            self.assertEqual(clip.readframes(3), b"\x00\x80\x64\x00\xff\x7f")
+        self.assertEqual(pcm, bytearray())
+        self.assertEqual(serial.calls.count(("audio", False)), 1)
+        self.assertIn("TRANSCRIBING", gateway.displayed)
+        self.assertFalse(any(p["type"] in ("button.press", "checkin.reply", "stock.utterance") for p in packets))
+        result = {"type": "wellbeing.result", "sessionId": gateway.session, "conversationId": "wellbeing-1",
+                  "eventId": raw[0]["eventId"], "stage": "complete"}
+        with self.assertRaises(ValueError):
+            gateway.command({**result, "eventId": "wrong-event"})
+        gateway.command(result)
+        self.assertIn("VOICE TRANSCRIBED", gateway.displayed)
+        self.assertNotIn("SENT", gateway.displayed)
+        with self.assertRaises(ValueError): gateway.command(result)
+
+    def test_short_tap_and_startup_held_blue_cannot_open_microphone(self):
+        gateway, serial, now, packets = self.setup_gateway()
+        gateway.sync_buttons({ButtonColor.Blue: True})
+        gateway.command(self.wellbeing_context(gateway))
+        self.blue(gateway, 1, True)
+        now[0] = 1; gateway.audio_tick()
+        self.assertNotIn(("audio", True), serial.calls)
+        self.blue(gateway, 2, False); self.blue(gateway, 3, True)
+        now[0] = 1.2; self.blue(gateway, 4, False); gateway.audio_tick()
+        self.assertNotIn(("audio", True), serial.calls)
+        self.blue(gateway, 5, True); now[0] = 1.551; gateway.audio_tick()
+        self.assertIn(("audio", True), serial.calls)
+        self.assertFalse(any(p["type"] == "stock.wellbeing-utterance" for p in packets))
+
+    def test_wellbeing_15_second_sample_cap_stops_mic_and_waits_for_release(self):
+        gateway, serial, now, packets = self.setup_gateway()
+        self.start_wellbeing(gateway, now)
+        for sequence in range(1, 125):
+            gateway.on_event(EventType.Audio, frame(sequence), types.SimpleNamespace(data=[123] * 1024))
+        pcm = gateway.capture["pcm"]
+        self.assertEqual(len(pcm), 240000)
+        gateway.audio_tick()
+        self.assertFalse(gateway.audio_enabled)
+        self.assertIn("RELEASE BLUE TO SEND", gateway.displayed)
+        self.assertFalse(any(p["type"] == "stock.wellbeing-utterance" for p in packets))
+        gateway.on_event(EventType.Audio, frame(126), types.SimpleNamespace(data=[42] * 1024))
+        self.assertEqual(len(pcm), 240000)
+        self.blue(gateway, 2, False)
+        raw = [p for p in packets if p["type"] == "stock.wellbeing-utterance"]
+        self.assertEqual(len(raw), 1); self.assertEqual(raw[0]["durationMs"], 15000)
+        self.assertLess(len(json.dumps(raw[0]).encode()), 400000)
+        self.assertEqual(pcm, bytearray())
+        self.assertEqual(serial.calls.count(("audio", False)), 1)
+
+    def test_wellbeing_deadline_cap_preserves_actual_short_capture_until_release(self):
+        gateway, serial, now, packets = self.setup_gateway()
+        self.start_wellbeing(gateway, now)
+        gateway.on_event(EventType.Audio, frame(1), types.SimpleNamespace(data=[123] * 8))
+        now[0] = 15.35; gateway.audio_tick()
+        self.assertFalse(gateway.audio_enabled)
+        gateway.on_event(EventType.Audio, frame(2), types.SimpleNamespace(data=[456] * 8))
+        self.assertFalse(any(p["type"] == "stock.wellbeing-utterance" for p in packets))
+        self.blue(gateway, 2, False)
+        raw = next(p for p in packets if p["type"] == "stock.wellbeing-utterance")
+        self.assertEqual(raw["durationMs"], 1)
+        self.assertEqual(serial.calls.count(("audio", False)), 1)
+
+    def test_disabled_new_context_incident_and_playback_cancel_wellbeing_and_wipe_audio(self):
+        for boundary in ("disabled", "new-context", "incident", "playback"):
+            with self.subTest(boundary=boundary):
+                gateway, serial, now, packets = self.setup_gateway()
+                self.start_wellbeing(gateway, now)
+                gateway.on_event(EventType.Audio, frame(1), types.SimpleNamespace(data=[123]))
+                pcm = gateway.capture["pcm"]
+                if boundary == "disabled": gateway.command(self.wellbeing_context(gateway, False))
+                elif boundary == "new-context": gateway.command(self.wellbeing_context(gateway, conversation="wellbeing-2"))
+                elif boundary == "incident": gateway.command(context(asset=None))
+                else:
+                    gateway.assets["RESOLVED"] = .1
+                    gateway.play("RESOLVED")
+                self.assertIsNone(gateway.capture); self.assertFalse(gateway.audio_enabled)
+                self.assertEqual(pcm, bytearray())
+                now[0] = 1; gateway.audio_tick()
+                self.blue(gateway, 2, False)
+                self.assertFalse(any(p["type"] == "stock.wellbeing-utterance" for p in packets))
+                self.assertEqual(serial.calls.count(("audio", True)), 1)
+
+    def test_red_help_is_published_before_cancelling_blue_and_simultaneous_press_is_not_recorded(self):
+        gateway, serial, now, packets = self.setup_gateway()
+        self.start_wellbeing(gateway, now)
+        gateway.on_event(EventType.Audio, frame(1), types.SimpleNamespace(data=[123]))
+        pcm = gateway.capture["pcm"]
+        def disable(enable):
+            self.assertTrue(any(p["type"] == "button.press" and p["action"] == "help" for p in packets))
+            serial.calls.append(("audio", enable)); return Result()
+        serial.enable_audio_events = disable
+        self.blue(gateway, 2, True, red=True)
+        self.assertEqual(pcm, bytearray()); self.assertIsNone(gateway.capture)
+        self.assertFalse(any(p["type"] == "stock.wellbeing-utterance" for p in packets))
+        gateway, serial, now, packets = self.setup_gateway()
+        gateway.sync_buttons({ButtonColor.Blue: False})
+        gateway.command(self.wellbeing_context(gateway))
+        self.blue(gateway, 1, True, red=True)
+        now[0] = 1; gateway.audio_tick()
+        self.assertNotIn(("audio", True), serial.calls)
+        self.assertEqual([p["action"] for p in packets if p["type"] == "button.press"], ["help"])
+
+    def test_blue_is_disabled_during_incident_but_green_and_incident_microphone_still_work(self):
+        gateway, serial, now, packets = self.setup_gateway()
+        gateway.sync_buttons({ButtonColor.Blue: False})
+        gateway.command(self.wellbeing_context(gateway))
+        self.start_capture(gateway, now)
+        self.blue(gateway, 1, True); now[0] += .4; gateway.audio_tick()
+        self.assertNotEqual(gateway.capture.get("kind"), "wellbeing")
+        gateway.on_event(EventType.Audio, frame(1), types.SimpleNamespace(data=[123]))
+        self.blue(gateway, 2, True, green=True)
+        self.assertEqual([p["action"] for p in packets if p["type"] == "button.press"], ["cancel"])
+        now[0] = gateway.capture["deadline"]; gateway.audio_tick()
+        self.assertEqual(len([p for p in packets if p["type"] == "stock.utterance"]), 1)
+        self.assertFalse(any(p["type"] == "stock.wellbeing-utterance" for p in packets))
+
+    def test_empty_invalid_and_shutdown_wellbeing_never_commit_audio(self):
+        for reason in ("empty", "invalid", "shutdown"):
+            with self.subTest(reason=reason):
+                gateway, serial, now, packets = self.setup_gateway()
+                self.start_wellbeing(gateway, now)
+                pcm = gateway.capture["pcm"]
+                if reason == "invalid": gateway.on_event(EventType.Audio, frame(1), types.SimpleNamespace(data=[32768]))
+                elif reason == "shutdown":
+                    gateway.on_event(EventType.Audio, frame(1), types.SimpleNamespace(data=[123]))
+                    gateway.request_stop(); gateway.cancel_wellbeing()
+                self.blue(gateway, 2, False)
+                self.assertEqual(pcm, bytearray())
+                self.assertFalse(any(p["type"] == "stock.wellbeing-utterance" for p in packets))
+                self.assertIn("unavailable", [p["stage"] for p in packets if p["type"] == "wellbeing.audio"])
+
+    def dynamic_packet(self, gateway, filename="1234ABCD.WAV", event="responder-1"):
+        return {"type": "conversation.play", "sessionId": gateway.session, "eventId": event,
+                "incidentId": "LF-TEST1234", "speakerName": "Maya", "text": "Stay seated.\nI'm coming now.", "filename": filename}
+
+    def dynamic_file(self, gateway, directory, filename="1234ABCD.WAV"):
+        gateway.conversation_dir = pathlib.Path(directory)
+        path = gateway.conversation_dir / filename
+        with wave.open(str(path), "wb") as clip:
+            clip.setnchannels(1); clip.setsampwidth(2); clip.setframerate(8000); clip.writeframes(b"\x01\x00" * 800)
+        path.chmod(0o600)
+        return path
+
+    def test_dynamic_speech_upload_button_restore_elapsed_status_screen_hold_and_phase_voice_order(self):
+        gateway, serial, now, packets = self.setup_gateway()
+        gateway.command(context("HELP_REQUESTED", None))
+        gateway.assets["ACCEPTED"] = .1
+        with tempfile.TemporaryDirectory(prefix="lifeline-offline-dynamic-") as directory:
+            self.dynamic_file(gateway, directory)
+            command = self.dynamic_packet(gateway)
+            gateway.command(command); gateway.command(command)
+            gateway.audio_tick()
+            self.assertEqual(serial.calls.count(("upload", "1234ABCD.WAV", "/sounds/1234ABCD.WAV")), 1)
+            self.assertEqual(serial.calls.count(("play", "1234ABCD.WAV")), 1)
+            self.assertLess(serial.calls.index(("buttons", False, 50)), serial.calls.index(("upload", "1234ABCD.WAV", "/sounds/1234ABCD.WAV")))
+            self.assertLess(serial.calls.index(("buttons", True, 50)), serial.calls.index(("play", "1234ABCD.WAV")))
+            self.assertTrue(gateway.accel_paused)
+            self.assertIn("Maya says: Stay seated. I'm coming now.", gateway.displayed)
+            gateway.command(context("ACKNOWLEDGED", "ACCEPTED"))
+            self.assertIn("Maya says:", gateway.displayed)
+            self.assertNotIn(("play", "ACCEPTED.WAV"), serial.calls)
+            gateway.on_event(EventType.Accel, frame(1), types.SimpleNamespace(g=2, x=0, y=0, z=16000))
+            self.assertFalse(any(p["type"] == "accel.sample" for p in packets))
+            now[0] = .31; gateway.audio_tick()
+            self.assertIn(("remove", "/sounds/1234ABCD.WAV"), serial.calls)
+            self.assertIn(("play", "ACCEPTED.WAV"), serial.calls)
+            statuses = [p for p in packets if p["type"] == "voice.playback"]
+            self.assertEqual([p["status"] for p in statuses], ["playing", "spoken"])
+            self.assertTrue(all(p["eventId"] == command["eventId"] and p["incidentId"] == command["incidentId"] for p in statuses))
+            self.assertNotIn(("audio", True), serial.calls)
+            self.assertIn("Maya says:", gateway.displayed)
+            now[0] = 3.32; gateway.audio_tick()
+            self.assertEqual(gateway.displayed, gateway.phase_display)
+
+    def test_context_received_during_dynamic_upload_prevents_stale_playback(self):
+        gateway, serial, _now, packets = self.setup_gateway()
+        gateway.command(context("HELP_REQUESTED", None))
+        def upload(path, target, callback):
+            serial.calls.append(("upload", path.name, target))
+            gateway.inputs.put_nowait(context("RESOLVED", None))
+            return Result()
+        serial.send_file = upload
+        with tempfile.TemporaryDirectory(prefix="lifeline-offline-stale-") as directory:
+            self.dynamic_file(gateway, directory)
+            gateway.command(self.dynamic_packet(gateway)); gateway.audio_tick()
+        self.assertNotIn(("play", "1234ABCD.WAV"), serial.calls)
+        self.assertFalse(gateway.accel_paused)
+        self.assertEqual([p["status"] for p in packets if p["type"] == "voice.playback"], ["failed"])
+        self.assertIn("RESOLVED", gateway.displayed)
+        self.assertIn(("buttons", True, 50), serial.calls)
+
+    def test_dynamic_speech_waits_for_prompt_and_cancels_microphone_echo_window(self):
+        gateway, serial, now, _packets = self.setup_gateway()
+        gateway.assets["CHECKIN"] = .1
+        gateway.command(context())
+        with tempfile.TemporaryDirectory(prefix="lifeline-offline-order-") as directory:
+            self.dynamic_file(gateway, directory)
+            gateway.command(self.dynamic_packet(gateway))
+            now[0] = .1; gateway.audio_tick()
+            self.assertNotIn(("play", "1234ABCD.WAV"), serial.calls)
+            now[0] = .31; gateway.audio_tick()
+            self.assertIn(("play", "1234ABCD.WAV"), serial.calls)
+            self.assertIsNone(gateway.capture)
+            self.assertIsNone(gateway.pending_capture)
+            self.assertNotIn(("audio", True), serial.calls)
+
+    def test_terminal_context_during_playback_never_marks_stale_message_completed(self):
+        gateway, serial, now, packets = self.setup_gateway()
+        gateway.command(context("HELP_REQUESTED", None))
+        with tempfile.TemporaryDirectory(prefix="lifeline-offline-terminal-") as directory:
+            self.dynamic_file(gateway, directory)
+            gateway.command(self.dynamic_packet(gateway)); gateway.audio_tick()
+            gateway.command(context("RESOLVED", None))
+            self.assertIn("RESOLVED", gateway.displayed)
+            now[0] = .31; gateway.audio_tick()
+        self.assertEqual([p["status"] for p in packets if p["type"] == "voice.playback"], ["playing", "failed"])
+        self.assertFalse(gateway.accel_paused)
+
+    def test_dynamic_play_failure_restores_streams_and_invalid_filename_never_uploads(self):
+        gateway, serial, _now, packets = self.setup_gateway()
+        gateway.command(context("HELP_REQUESTED", None))
+        with self.assertRaises(ValueError):
+            gateway.command(self.dynamic_packet(gateway, "../CHECKIN.WAV"))
+        with tempfile.TemporaryDirectory(prefix="lifeline-offline-failed-") as directory:
+            path = self.dynamic_file(gateway, directory)
+            path.chmod(0o644)
+            gateway.command(self.dynamic_packet(gateway)); gateway.audio_tick()
+            self.assertFalse(any(call[0] == "upload" for call in serial.calls))
+            path.chmod(0o600); serial.fail_play = True
+            gateway.command(self.dynamic_packet(gateway, event="second")); gateway.audio_tick()
+        self.assertEqual([p["status"] for p in packets if p["type"] == "voice.playback"], ["failed", "failed"])
+        self.assertFalse(gateway.accel_paused)
+        self.assertIn(("buttons", True, 50), serial.calls)
+        self.assertNotIn(("audio", True), serial.calls)
+
+    def test_upload_watchdog_interrupts_stalled_sdk_and_requires_gateway_shutdown(self):
+        gateway, serial, _now, packets = self.setup_gateway()
+        gateway.command(context("HELP_REQUESTED", None))
+        original = worker.upload_watchdog
+        worker.upload_watchdog = lambda: original(.01)
+        serial.send_file = lambda *_args: time.sleep(.2)
+        try:
+            with tempfile.TemporaryDirectory(prefix="lifeline-offline-watchdog-") as directory:
+                self.dynamic_file(gateway, directory)
+                gateway.command(self.dynamic_packet(gateway))
+                with self.assertRaises(worker.StockUploadTimeout):
+                    gateway.audio_tick()
+            self.assertFalse(gateway.running)
+            self.assertIn(("buttons", True, 50), serial.calls)
+            self.assertEqual([p["status"] for p in packets if p["type"] == "voice.playback"], ["failed"])
+            self.assertNotIn(("play", "1234ABCD.WAV"), serial.calls)
+            self.assertFalse(any(p.get("status") == "accel-resumed" for p in packets))
+            self.assertIsNone(gateway.conversation)
+        finally:
+            worker.upload_watchdog = original
+
+    def test_shutdown_during_upload_restores_buttons_before_acquisition_closes(self):
+        gateway, serial, _now, packets = self.setup_gateway()
+        gateway.command(context("HELP_REQUESTED", None))
+        serial.send_file = lambda *_args: gateway.request_stop()
+        with tempfile.TemporaryDirectory(prefix="lifeline-offline-upload-stop-") as directory:
+            self.dynamic_file(gateway, directory)
+            gateway.command(self.dynamic_packet(gateway))
+            with self.assertRaises(worker.StockTransferFailure):
+                gateway.audio_tick()
+        self.assertFalse(gateway.running)
+        self.assertFalse(gateway.upload_in_progress)
+        self.assertIn(("buttons", True, 50), serial.calls)
+        self.assertEqual([p["status"] for p in packets if p["type"] == "voice.playback"], ["failed"])
+        self.assertNotIn(("play", "1234ABCD.WAV"), serial.calls)
 
     def start_capture(self, gateway, now):
         gateway.assets["CHECKIN"] = .1
@@ -190,6 +499,11 @@ class StockTests(unittest.TestCase):
         self.assertLess(serial.calls.index(("directory", "/sounds")), serial.calls.index(("play", "CHECKIN.WAV")))
         self.assertLess(serial.calls.index(("play", "CHECKIN.WAV")), serial.calls.index(("audio", True)))
         self.assertIn("LISTENING", serial.calls[-1][1])
+        voice_states = [p for p in packets if p["type"] == "checkin.audio"]
+        self.assertEqual([p["stage"] for p in voice_states], ["prompting", "listening"])
+        self.assertTrue(all(p["sessionId"] == gateway.session and p["incidentId"] == "LF-TEST1234"
+                            and p["checkinId"] == "test-checkin" for p in voice_states))
+        protocol_packets.extend(voice_states)
         self.assertLess(serial.calls.index(("audio", True)), len(serial.calls) - 1)
         display_count = len([call for call in serial.calls if call[0] == "display"])
         gateway.command(context())
@@ -236,7 +550,8 @@ class StockTests(unittest.TestCase):
         now[0] = 7
         gateway.audio_tick()
         self.assertFalse(any(p["type"] == "stock.utterance" for p in packets))
-        self.assertEqual(packets[-1]["status"], "audio-unavailable")
+        self.assertEqual(next(p for p in reversed(packets) if p["type"] == "stock.status")["status"], "audio-unavailable")
+        self.assertEqual(packets[-1]["stage"], "unavailable")
         self.assertEqual(serial.calls[-2], ("audio", False))
         self.assertEqual(serial.calls[-1], ("display", gateway.phase_display))
 
@@ -251,6 +566,7 @@ class StockTests(unittest.TestCase):
             gateway.audio_tick()
         self.assertIsNone(gateway.capture)
         self.assertFalse(gateway.audio_enabled)
+        self.assertFalse(any(p["type"] == "checkin.audio" and p["stage"] == "listening" for p in _packets))
         self.assertFalse(any(call[0] == "display" and "LISTENING" in call[1] for call in serial.calls))
 
         gateway, serial, now, _packets = self.setup_gateway()
@@ -363,7 +679,8 @@ class StockTests(unittest.TestCase):
         self.assertIsNone(gateway.playback_until)
         self.assertIsNone(gateway.pending_capture)
         self.assertNotIn(("audio", True), serial.calls)
-        self.assertEqual(packets[-1]["status"], "audio-error")
+        self.assertEqual(next(p for p in reversed(packets) if p["type"] == "stock.status")["status"], "audio-error")
+        self.assertEqual(packets[-1]["stage"], "unavailable")
         self.assertLess(serial.calls.index(("play", "CHECKIN.WAV")), serial.calls.index(("accel", True, 33)))
 
         gateway, serial, _now, _packets = self.setup_gateway()
@@ -487,7 +804,7 @@ class StockTests(unittest.TestCase):
             worker.StockGateway.write_packet({"type": "stock.status", "detail": "bounded"})
         self.assertEqual(json.loads(output.getvalue()), {"type": "stock.status", "detail": "bounded"})
         with self.assertRaises(ValueError):
-            worker.StockGateway.write_packet({"audio": "x" * 140000})
+            worker.StockGateway.write_packet({"audio": "x" * 400000})
 
     def test_disable_failure_wipes_transient_audio_and_never_emits_a_transcript(self):
         gateway, serial, now, packets = self.setup_gateway()

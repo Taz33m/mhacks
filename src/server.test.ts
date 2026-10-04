@@ -72,7 +72,20 @@ test('isolated HTTP/WS server accepts native packets, authenticates commands, an
         sensorTime: performance.now() / 1000, quaternion: [0,0,0,1], gravity: [0,-1,0], userAcceleration: [0,0,0], rotationRate: [0,0,0] })), 20));
     }
     await new Promise(resolve => setTimeout(resolve, 2200));
-    assert.equal((await commands({ type: 'calibrate' })).status, 200);
+    const beforeCalibration = await state();
+    const waist = beforeCalibration.sensors.find(s => s.source === 'waist-airpod')!;
+    assert.equal((await commands({ type: 'calibrate', expectedSessionId: 'retired-session', expectedSensorLocation: 'Left' })).status, 400);
+    assert.equal((await commands({ type: 'calibrate', expectedSessionId: waist.sessionId, expectedSensorLocation: 'Right' })).status, 400);
+    assert.equal((await commands({ type: 'calibrate', expectedSessionId: waist.sessionId })).status, 400);
+    assert.equal((await state()).sensors.every(s => !s.calibrated), true, 'stale or incomplete guided requests cannot establish a baseline');
+    const guided = await commands({ type: 'calibrate', expectedSessionId: waist.sessionId, expectedSensorLocation: 'Left' });
+    assert.equal(guided.status, 200);
+    assert.deepEqual(await guided.json(), { ok: true, calibratedSources: ['waist-airpod'] });
+    assert.equal((await state()).sensors.find(s => s.source === 'chest-phone')!.calibrated, false,
+      'guided waist calibration cannot label a different sensor calibrated');
+    const legacyCalibration = await commands({ type: 'calibrate' });
+    assert.equal(legacyCalibration.status, 200);
+    assert.deepEqual(await legacyCalibration.json(), { ok: true, calibratedSources: ['chest-phone', 'waist-airpod'] });
     const measured = await state();
     assert.equal(measured.sensors.every(s => s.fresh && s.calibrated && s.alignmentUncertaintyMs !== null), true);
     assert.equal(measured.trial!.sampleCounts['chest-phone'] > 30, true);

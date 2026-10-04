@@ -12,8 +12,14 @@ export function handleWearerInbound(event: ProviderInbound, phone: string | null
     || !event.text.trim() || event.text.length > 500) return true;
 
   const incident = controller.active();
-  if (!incident || incident.phase !== 'CONFIRMING') return true;
+  if (!incident) return true;
+  if (incident.phase !== 'CONFIRMING') {
+    controller.recordWearerUpdate(event, phone!);
+    return true;
+  }
   const text = event.text.trim();
+  const codes = text.match(/\bLF-[A-Z0-9-]+\b/gi) ?? [];
+  if (codes.length > 1 || codes.some(code => code !== incident.id)) return true;
   const codeAt = text.length - incident.id.length;
   const hasCode = codeAt > 0 && text.slice(codeAt) === incident.id && /\s/.test(text[codeAt - 1]);
 
@@ -22,8 +28,12 @@ export function handleWearerInbound(event: ProviderInbound, phone: string | null
     const target = event.targetMessageId ? controller.wearerIncidentForMessage(event.targetMessageId) : null;
     if (!target || target.id !== incident.id) return true;
     if (event.chatId && !controller.messageMatchesConversation(event.targetMessageId!, event)) return true;
-  } else if (!hasCode || !controller.actions(incident.id).some(action => action.type === 'wearer_checkin')) {
-    return true;
+  } else if (hasCode) {
+    if (!controller.actions(incident.id).some(action => action.type === 'wearer_checkin')) return true;
+  } else {
+    // A normal text in the already-bound current wearer conversation needs no
+    // copied code or threaded reply. Explicit stale targets still fail above.
+    if (!controller.matchesConversation(event, null)) return true;
   }
 
   const transcript = hasCode ? text.slice(0, codeAt).trim() : text;

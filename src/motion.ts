@@ -110,9 +110,12 @@ export class Motion {
     if (calibrated.length) this.lastCandidateAt = -Infinity;
     return calibrated;
   }
-  reset(options: { clocks?: boolean; cooldown?: boolean } = {}): void {
+  reset(options: { clocks?: boolean; cooldown?: boolean; preserveCalibration?: boolean } = {}): void {
     for (const s of this.streams.values()) {
-      s.baseline = null; s.points = []; s.samples = [];
+      // A paired recording may retain a fresh, session-bound standing baseline.
+      // Session/bud changes, disconnects and ordinary gaps still invalidate it in sample().
+      if (!options.preserveCalibration || !this.fresh(s, this.now())) s.baseline = null;
+      s.points = []; s.samples = [];
       if (options.clocks) { s.offset = null; s.uncertainty = null; s.syncAt = null; s.lastCaptureAt = null; s.pending.clear(); }
     }
     this.lastCandidateAt = options.cooldown === false ? -Infinity : this.now();
@@ -126,8 +129,7 @@ export class Motion {
       captureFresh: p.captureFresh, totalG: p.totalG, tiltDegrees: p.tiltDegrees,
       angularSpeed: p.angularSpeed, linearG: p.linearG }));
   }
-  views(): SensorView[] {
-    const t = this.now();
+  views(t = this.now()): SensorView[] {
     return sources.map(source => {
       const s = this.streams.get(source)!;
       const age = s.lastAt === null ? null : Math.max(t - s.lastAt, s.lastCaptureAt === null ? 0 : t - s.lastCaptureAt);

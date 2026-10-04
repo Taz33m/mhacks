@@ -1,10 +1,12 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
-import type { Action, ActionType, CheckinDecision, CheckinReply, Evidence, HealthContext, Incident, Phase, ProviderInbound, Responder, TimelineEvent } from './contracts.ts';
+import type { Action, ActionType, CheckinDecision, CheckinReply, ConversationMessage, DispatchMode, Evidence, HealthContext, Incident, Phase, ProviderInbound, Responder, TimelineEvent } from './contracts.ts';
 import { classifyCheckinReply } from './checkin.ts';
+import { phoneIdentity } from './identity.ts';
 
 export const terminal = (phase: Phase) => phase === 'RESOLVED' || phase === 'CANCELLED_FALSE_ALARM';
 type StoredIncident = Incident & { contacted: string[]; declined: string[] };
+type StoredConversation = ConversationMessage & { responderId?: string; deviceSessionId?: string; providerTimestamp?: number };
 export interface Policy { checkinMs: number; acceptMs: number; progressMs: number }
 export class PolicyError extends Error {}
 
@@ -12,13 +14,23 @@ export class Controller {
   readonly db: DatabaseSync;
   readonly responders: Responder[];
   readonly policy: Policy;
+  readonly wearerName: string;
+  readonly dispatchMode: DispatchMode;
   private readonly now: () => number;
 
   constructor(path: string, responders: Responder[], now = Date.now,
-    policy: Policy = { checkinMs: 20_000, acceptMs: 60_000, progressMs: 120_000 }) {
+    policy: Policy = { checkinMs: 20_000, acceptMs: 60_000, progressMs: 120_000 }, options: { wearerName?: string; dispatchMode?: DispatchMode } = {}) {
     if (responders.some(r => !r.id || !r.name) || new Set(responders.map(r => r.id)).size !== responders.length)
       throw new Error('Responder IDs must be unique and named.');
     this.responders = responders; this.now = now; this.policy = policy;
+    this.dispatchMode = options.dispatchMode ?? 'live';
+    if (!['live', 'simulated'].includes(this.dispatchMode)) throw new PolicyError('Unknown dispatch mode.');
+    if (this.dispatchMode === 'simulated' && (!responders.length || responders.some(r => r.simulated !== true || r.phone !== null)))
+      throw new PolicyError('Simulated dispatch requires explicitly simulated responders without phone numbers.');
+    if (this.dispatchMode === 'live' && responders.some(r => r.simulated))
+      throw new PolicyError('Simulated responders cannot be used in live dispatch.');
+    this.wearerName = options.wearerName?.trim().slice(0, 100) || 'Wearer';
+    if (/[\u0000-\u001f\u007f]/.test(this.wearerName)) throw new PolicyError('Wearer name cannot contain control characters.');
     this.db = new DatabaseSync(path);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS incidents (id TEXT PRIMARY KEY, phase TEXT NOT NULL, body TEXT NOT NULL);
@@ -28,11 +40,28 @@ export class Controller {
         status TEXT NOT NULL, next_at REAL NOT NULL, provider_message_id TEXT, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS inbound (id TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS clinical_context (incident_id TEXT PRIMARY KEY, body TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS conversation (id TEXT PRIMARY KEY, incident_id TEXT NOT NULL, body TEXT NOT NULL);
     `);
+    const existing = this.active();
+    if (existing && (existing.dispatchMode ?? 'live') !== this.dispatchMode) {
+      this.db.close();
+      throw new PolicyError('Finish the active incident before changing dispatch mode.');
+    }
     for (const row of this.db.prepare("SELECT body FROM actions WHERE status='attempting'").all()) {
       const a = JSON.parse(String(row.body)) as Action;
-      a.status = 'unknown'; a.providerResult = 'Previous worker stopped during send; reconcile before retrying.';
+      const local = this.incident(a.incidentId)?.dispatchMode === 'simulated'
+        && this.responders.some(r => r.id === a.recipientId && r.simulated && r.phone === null);
+      a.status = local ? 'queued' : 'unknown';
+      a.providerResult = local ? 'Interrupted local demo delivery recovered; no external message was submitted.'
+        : 'Previous worker stopped during send; reconcile before retrying.';
       this.saveAction(a);
+    }
+    for (const row of this.db.prepare('SELECT body FROM conversation').all()) {
+      const message = JSON.parse(String(row.body)) as StoredConversation;
+      if (message.deviceSessionId && ['queued', 'playing'].includes(message.delivery)) {
+        message.delivery = 'failed'; message.detail = 'Previous wearable connection ended before playback confirmation; not replayed automatically.';
+        this.saveConversation(message);
+      }
     }
   }
 
@@ -75,8 +104,16 @@ export class Controller {
   }
   private phase(i: StoredIncident, phase: Phase, actor: string, detail: string): void {
     i.phase = phase; i.version++; i.updatedAt = this.now(); this.save(i); this.event(i, phase, actor, detail);
+    if (terminal(phase)) {
+      for (const message of this.storedConversation(i.id).filter(message => ['queued', 'playing'].includes(message.delivery))) {
+        message.delivery = 'failed'; message.detail = 'Incident ended before playback completion was confirmed; queued speech will not be replayed.';
+        this.saveConversation(message);
+      }
+    }
   }
   private enqueue(i: StoredIncident, type: ActionType, recipientId: string | null, text: string, dedupeKey?: string): Action | null {
+    if (i.dispatchMode === 'simulated' && recipientId === null && type !== 'checkin')
+      text = `[DEMO · simulated dispatch]\n${text}`;
     const a: Action = { id: randomUUID(), incidentId: i.id, type, recipientId, text,
       status: 'queued', attempts: 0, providerMessageId: null, providerResult: null,
       nextAttemptAt: this.now(), createdAt: this.now() };
@@ -99,6 +136,7 @@ export class Controller {
   }
   private stopPending(i: Incident, types?: ActionType[]): void {
     for (const a of this.actions(i.id).filter(a => (a.status === 'queued' || a.status === 'failed') && (!types || types.includes(a.type)))) {
+      if (!types && a.type === 'wearer_relay' && !terminal(i.phase)) continue;
       a.status = 'cancelled'; a.providerResult = 'Action no longer permitted by current incident state.'; this.saveAction(a);
     }
   }
@@ -113,6 +151,7 @@ export class Controller {
     for (const r of eligible) {
       i.contacted.push(r.id);
       this.enqueue(i, 'alert', r.id, this.alertText(i));
+      this.queueWearerReports(i, r.id);
     }
     this.save(i);
     this.enqueue(i, 'wearer_status', null, `${i.id}: Help requested. No responder has accepted yet. ${eligible.length ? 'Approved contacts are being notified.' : 'No additional approved contact is available.'}`,
@@ -121,7 +160,12 @@ export class Controller {
   }
   private alertText(i: Incident): string {
     const evidence = i.handoffGeneration ? '' : `${i.evidence.summary}\n`;
-    return `LIFELINE ${i.id}: Possible incident.\n${evidence}${i.handoff}\nReact 👍 to this alert to accept responsibility, or reply ON IT ${i.id}. If unavailable, reply DECLINE ${i.id}.`;
+    const report = this.storedConversation(i.id).findLast(message => message.speaker === 'wearer');
+    // Urgent alerts can carry the exact report while the model refreshes the
+    // clinical handoff. Do not wait for inference to disclose reported distress.
+    const quote = report && !i.handoff.includes(`[conversation:${report.id}]`)
+      ? `${report.speakerName}: “${report.text}”\n` : '';
+    return `LIFELINE ${i.id}: Possible incident.\n${quote}${evidence}${i.handoff}\nReact 👍 to this alert to accept responsibility, or reply ON IT ${i.id}. If unavailable, reply DECLINE ${i.id}.`;
   }
 
   trigger(evidence: Evidence): Incident {
@@ -136,14 +180,17 @@ export class Controller {
       const t = this.now();
       const i: StoredIncident = {
         id: `LF-${randomUUID().slice(0, 8).toUpperCase()}`, phase: 'DETECTED', version: 1,
+        dispatchMode: this.dispatchMode,
         createdAt: t, updatedAt: t, evidence, checkinId: randomUUID(), checkinDeadline: t + this.policy.checkinMs,
         progressDeadline: null, ownerId: null, handoff: 'Synthetic health context pending. Unknowns remain unknown.',
         outcome: null, resolutionActor: null, contacted: [], declined: []
       };
       this.save(i); this.event(i, 'DETECTED', 'sensor-or-operator', evidence.summary);
+      if (i.dispatchMode === 'simulated') this.event(i, 'DISPATCH_MODE', 'simulated-dispatch',
+        'Demo human responder actions are simulated locally. Wearer messages and sensing keep their actual sources. No responder iMessage or GPS is fabricated.');
       this.phase(i, 'CONFIRMING', 'policy', 'Current check-in opened. Explicit cancellation is required.');
-      this.enqueue(i, 'checkin', null, "I detected a possible fall. Do you need help? You can say I need help, or tap I don't need help to cancel.");
-      this.enqueue(i, 'wearer_checkin', null, `LIFELINE ${i.id}: I detected a possible fall. Are you okay?\nReply I NEED HELP ${i.id} to request help. If you are okay, tap I don't need help in LIFELINE before the check-in ends.`);
+      this.enqueue(i, 'checkin', null, "I detected a possible fall. Do you need help? You can say I need help, or press the green button on WILi if you don't need help.");
+      this.enqueue(i, 'wearer_checkin', null, `LIFELINE ${i.id}: I detected a possible fall. Are you okay?\nReply here with what happened, or “I need help”. If you don't need help, press the green button on WILi before the check-in ends.`);
       if (evidence.kind === 'manual') this.requestHelp(i, 'Explicit manual help request.');
       return i;
   }
@@ -174,13 +221,16 @@ export class Controller {
         || !reply.transcript.trim() || reply.transcript.length > 500)
         throw new PolicyError('A check-in reply of 1–500 characters is required.');
       const transcript = reply.transcript.trim();
+      if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(transcript)) throw new PolicyError('A check-in reply cannot contain control characters.');
       const decision = classifyCheckinReply(transcript);
       this.event(i, 'CHECKIN_REPLY', source, JSON.stringify({ transcript, decision }));
+      this.addConversation({ id: randomUUID(), incidentId: i.id, speaker: 'wearer', speakerName: this.wearerName,
+        text: transcript, source, at: this.now(), delivery: 'recorded' });
       if (decision === 'help_requested') this.requestHelp(i, source === 'photon-imessage'
         ? 'Wearer requested help in the current Photon iMessage check-in.' : 'Subject requested help in the current spoken check-in.');
       if (source === 'photon-imessage' && inboundId && decision === 'confirmation_required') {
         const inserted = this.enqueue(i, 'wearer_ack', null,
-          "Glad you're okay. To close this check-in, tap 'I DON'T NEED HELP' on your phone.",
+          "Glad you're okay. To close this check-in, press the green 'I DON'T NEED HELP' button on WILi.",
           `${i.id}:${i.version}:wearer_ack:${JSON.stringify([i.checkinId, inboundId])}`);
         if (!inserted) throw new Error('Wearer acknowledgement was not persisted; inbound ID remains unprocessed.');
         if (event?.chatId && event.lineId) {
@@ -192,9 +242,48 @@ export class Controller {
       return decision;
     });
   }
-  accept(id: string, responderId: string, inboundId?: string, event?: ProviderInbound): void {
+  private responderSource(i: Incident, r: Responder, source: 'live' | 'simulated-dispatch'): string {
+    if (source === 'simulated-dispatch') {
+      if (this.dispatchMode !== 'simulated' || i.dispatchMode !== 'simulated' || !r.simulated || r.phone !== null)
+        throw new PolicyError('Simulated reports require the current simulated incident and demo responder.');
+      return `simulated-dispatch:${r.id}`;
+    }
+    if (i.dispatchMode === 'simulated' || r.simulated)
+      throw new PolicyError('Demo responder progress is controlled by simulated dispatch.');
+    return r.id;
+  }
+  private simulatedReport(i: Incident, r: Responder, text: string, delivery: 'queued' | 'recorded' = 'queued'): void {
+    const message: StoredConversation = { id: randomUUID(), incidentId: i.id, speaker: 'responder',
+      speakerName: r.name, responderId: r.id, text, source: 'simulated-dispatch', at: this.now(), delivery };
+    this.addConversation(message);
+    this.event(i, 'RESPONDER_REPORT', 'simulated-dispatch', JSON.stringify({
+      conversationId: message.id, responderId: r.id, transcript: text, phase: i.phase, source: 'simulated-dispatch',
+    }));
+    // Keep each phase notice and its attributed reply in one genuine wearer send.
+    const notice = delivery === 'queued' ? this.actions(i.id).findLast(a => a.type === 'wearer_status'
+      && a.status === 'queued' && this.actionPermitted(a)) : null;
+    if (notice) {
+      notice.text += `\n\nDemo responder ${r.name}: “${text}”`; this.saveAction(notice);
+    }
+  }
+  /** Demo human reports use the same ownership/phase rules, without impersonating native messages. */
+  simulateResponder(id: string, responderId: string, stage: 'accept' | 'depart' | 'arrive' | 'resolve'): void {
+    if (stage === 'accept') {
+      if (!this.actions(id).some(a => a.type === 'alert' && a.recipientId === responderId && a.status === 'simulated'))
+        throw new PolicyError('Simulated responder must first receive the incident alert.');
+      this.accept(id, responderId, undefined, undefined, 'simulated-dispatch');
+    }
+    else if (stage === 'depart' || stage === 'arrive') this.progress(id, responderId, stage, undefined, 'simulated-dispatch');
+    else if (stage === 'resolve') this.resolve(id, responderId,
+      `Simulated dispatch outcome: ${this.responder(responderId).name} reached the wearer and stayed with them while arranging further assistance. No real arrival or patient assessment is claimed.`,
+      undefined, 'simulated-dispatch');
+    else throw new PolicyError('Unknown simulated responder stage.');
+  }
+  accept(id: string, responderId: string, inboundId?: string, event?: ProviderInbound, source: 'live' | 'simulated-dispatch' = 'live'): void {
     this.transaction(() => {
       const i = this.current(id); const r = this.responder(responderId);
+      const actor = this.responderSource(i, r, source);
+      if (source === 'simulated-dispatch' && (inboundId || event)) throw new PolicyError('Simulation cannot attach native provider evidence.');
       if (inboundId && this.db.prepare('SELECT id FROM inbound WHERE id=?').get(inboundId)) return;
       if (i.ownerId === responderId) return;
       if (i.phase !== 'HELP_REQUESTED' || i.ownerId || i.declined.includes(responderId))
@@ -202,26 +291,30 @@ export class Controller {
       if (!i.contacted.includes(responderId)) throw new PolicyError('Responder has not been contacted for this incident.');
       if (inboundId) this.db.prepare('INSERT INTO inbound VALUES(?)').run(inboundId);
       i.ownerId = responderId; i.progressDeadline = this.now() + this.policy.progressMs;
-      this.phase(i, 'ACKNOWLEDGED', responderId, `${r.name} accepted responsibility; departure is not yet confirmed.`);
+      this.phase(i, 'ACKNOWLEDGED', actor, `${source === 'simulated-dispatch' ? 'Demo: ' : ''}${r.name} accepted responsibility; departure is not yet confirmed.`);
       this.stopPending(i);
       this.notify(i, `${r.name} accepted ${i.id}. Departure has not been confirmed.\nAssigned responder ${r.name}: reply DEPART ${i.id} when leaving, ARRIVED ${i.id} when on scene, or DECLINE ${i.id} if unavailable. Other contacts: keep available for updates.`);
       this.addNaturalGuidance(i, r.id, 'Reply directly to this message with “leaving”, “arrived”, or “I can’t help”. You can also ask about the recorded health information.');
       this.report(i, event);
+      if (source === 'simulated-dispatch') this.simulatedReport(i, r, 'I received your alert and accepted. I’m getting ready to come to you.');
     });
   }
   private addNaturalGuidance(i: Incident, ownerId: string, text: string): void {
     const a = this.actions(i.id).findLast(a => a.type === 'status' && a.recipientId === ownerId && a.status === 'queued');
     if (a) { a.text += `\n${text}`; this.saveAction(a); }
   }
-  progress(id: string, responderId: string, stage: 'depart' | 'arrive', event?: ProviderInbound): void {
+  progress(id: string, responderId: string, stage: 'depart' | 'arrive', event?: ProviderInbound, source: 'live' | 'simulated-dispatch' = 'live'): void {
     this.transaction(() => {
       if (event && this.seenInbound(event.messageId)) return;
       const i = this.current(id); const r = this.responder(responderId);
+      const actor = this.responderSource(i, r, source);
+      if (source === 'simulated-dispatch' && event) throw new PolicyError('Simulation cannot attach native provider evidence.');
       if (i.ownerId !== r.id) throw new PolicyError('Only the assigned owner can update progress.');
       const allowed = stage === 'depart' ? ['ACKNOWLEDGED'] : ['ACKNOWLEDGED', 'RESPONDER_EN_ROUTE'];
       if (!allowed.includes(i.phase)) throw new PolicyError('Progress update is not valid for this phase.');
       i.progressDeadline = this.now() + this.policy.progressMs;
-      this.phase(i, stage === 'depart' ? 'RESPONDER_EN_ROUTE' : 'ON_SCENE', r.id, stage === 'depart' ? 'Owner explicitly reported departure.' : 'Owner explicitly reported arrival.');
+      this.phase(i, stage === 'depart' ? 'RESPONDER_EN_ROUTE' : 'ON_SCENE', actor,
+        `${source === 'simulated-dispatch' ? 'Demo: ' : ''}${stage === 'depart' ? 'Owner explicitly reported departure.' : 'Owner explicitly reported arrival.'}`);
       this.notify(i, stage === 'depart'
         ? `${r.name} reported departure for ${i.id}.\nAssigned responder ${r.name}: reply ARRIVED ${i.id} when on scene, or DECLINE ${i.id} if unavailable. Other contacts: keep available for updates.`
         : `${r.name} reported arrival for ${i.id}. An outcome has not been recorded.\nAssigned responder ${r.name}: reply RESOLVED ${i.id} <concrete outcome>, replacing <concrete outcome> with what you observed and what help was provided. If unable to continue, reply DECLINE ${i.id}.`);
@@ -229,12 +322,15 @@ export class Controller {
         ? 'Reply directly with “arrived” when you are with the wearer.'
         : 'Reply directly with “resolved: ” followed by what you observed and what help was provided.');
       this.report(i, event);
+      if (source === 'simulated-dispatch') this.simulatedReport(i, r, stage === 'depart'
+        ? 'I’m coming downstairs now. Don’t try to stand.' : 'I’m here with you now. I’ll stay while we arrange further help.');
     });
   }
   decline(id: string, responderId: string, event?: ProviderInbound): void {
     this.transaction(() => {
       if (event && this.seenInbound(event.messageId)) return;
       const i = this.current(id); this.responder(responderId);
+      if (i.dispatchMode === 'simulated') throw new PolicyError('Demo responder progress is controlled by simulated dispatch.');
       if (!i.contacted.includes(responderId)) throw new PolicyError('Responder was not contacted.');
       if (!i.declined.includes(responderId)) i.declined.push(responderId);
       this.event(i, 'DECLINED', responderId, 'Responder explicitly declined.');
@@ -246,16 +342,19 @@ export class Controller {
       this.report(i, event);
     });
   }
-  resolve(id: string, responderId: string, outcome: string, event?: ProviderInbound): void {
+  resolve(id: string, responderId: string, outcome: string, event?: ProviderInbound, source: 'live' | 'simulated-dispatch' = 'live'): void {
     this.transaction(() => {
       if (event && this.seenInbound(event.messageId)) return;
-      const i = this.current(id); this.responder(responderId);
+      const i = this.current(id); const r = this.responder(responderId);
+      const actor = this.responderSource(i, r, source);
+      if (source === 'simulated-dispatch' && event) throw new PolicyError('Simulation cannot attach native provider evidence.');
       if (i.ownerId !== responderId || i.phase !== 'ON_SCENE') throw new PolicyError('Only the on-scene owner can resolve the incident.');
       if (typeof outcome !== 'string' || outcome.trim().length < 5 || outcome.length > 2000) throw new PolicyError('A concrete outcome is required (5–2000 characters).');
-      i.outcome = outcome.trim(); i.resolutionActor = responderId; i.progressDeadline = null;
-      this.phase(i, 'RESOLVED', responderId, i.outcome); this.stopPending(i);
+      i.outcome = outcome.trim(); i.resolutionActor = actor; i.progressDeadline = null;
+      this.phase(i, 'RESOLVED', actor, i.outcome); this.stopPending(i);
       this.notify(i, `${i.id} closed by the on-scene owner. Outcome: ${i.outcome}`);
       this.report(i, event);
+      if (source === 'simulated-dispatch') this.simulatedReport(i, r, i.outcome, 'recorded');
     });
   }
   tick(): void {
@@ -285,9 +384,25 @@ export class Controller {
         a.text = this.alertText(i); this.saveAction(a);
       }
       const alreadyAttempted = new Set(this.actions(id).filter(a => a.type === 'alert'
-        && ['attempting', 'provider_accepted', 'unknown'].includes(a.status)).map(a => a.recipientId));
-      for (const recipient of alreadyAttempted) if (recipient)
-        this.enqueue(i, 'handoff', recipient, `${i.id}: Updated synthetic health context.\n${handoff}`);
+        && ['attempting', 'provider_accepted', 'simulated', 'unknown'].includes(a.status)).map(a => a.recipientId));
+      const reportIds = this.storedConversation(i.id).filter(message => message.speaker === 'wearer').map(message => message.id);
+      for (const recipient of alreadyAttempted) if (recipient) {
+        const text = `${i.id}: Updated incident handoff.\n${handoff}`;
+        const key = `${i.id}:${i.version}:handoff:${recipient}${reportIds.length ? `:${JSON.stringify(reportIds)}` : ''}`;
+        const existing = this.db.prepare('SELECT body FROM actions WHERE dedupe_key=?').get(key);
+        if (existing) {
+          const action = JSON.parse(String(existing.body)) as Action;
+          // Refresh an unsent composition; accepted/uncertain sends retain their
+          // original evidence and are never silently resubmitted.
+          if (['queued', 'failed'].includes(action.status)) { action.text = text; this.saveAction(action); }
+          continue;
+        }
+        for (const action of this.actions(i.id).filter(a => a.type === 'handoff' && a.recipientId === recipient
+          && ['queued', 'failed'].includes(a.status))) {
+          action.status = 'cancelled'; action.providerResult = 'Superseded by a handoff containing newer wearer reports.'; this.saveAction(action);
+        }
+        this.enqueue(i, 'handoff', recipient, text, key);
+      }
     });
   }
   reset(): void {
@@ -299,6 +414,124 @@ export class Controller {
   }
   events(id: string): TimelineEvent[] {
     return this.db.prepare('SELECT body FROM events WHERE incident_id=? ORDER BY rowid').all(id).map(row => JSON.parse(String(row.body)) as TimelineEvent);
+  }
+  private storedConversation(id: string): StoredConversation[] {
+    return this.db.prepare('SELECT body FROM conversation WHERE incident_id=? ORDER BY rowid').all(id)
+      .map(row => JSON.parse(String(row.body)) as StoredConversation);
+  }
+  conversation(id: string): ConversationMessage[] {
+    return this.storedConversation(id).map(({ responderId, deviceSessionId, providerTimestamp, ...message }) => message);
+  }
+  private addConversation(message: StoredConversation): void {
+    this.db.prepare('INSERT INTO conversation VALUES(?,?,?)').run(message.id, message.incidentId, JSON.stringify(message));
+  }
+  private saveConversation(message: StoredConversation): void {
+    this.db.prepare('UPDATE conversation SET body=? WHERE id=?').run(JSON.stringify(message), message.id);
+  }
+  private queueWearerReports(i: StoredIncident, responderId: string): void {
+    for (const message of this.storedConversation(i.id).filter(message => message.speaker === 'wearer'))
+      this.enqueue(i, 'wearer_relay', responderId, `${message.speakerName}: “${message.text}”`,
+        `${i.id}:wearer_relay:${message.id}:${responderId}`);
+  }
+  /** Continue the wearer's bound conversation after escalation; reports never resolve or change ownership. */
+  recordWearerUpdate(event: ProviderInbound, approvedPhone: string): boolean {
+    return this.transaction(() => {
+      if (typeof approvedPhone !== 'string' || typeof event.sender !== 'string') return false;
+      const i = this.active(), expected = phoneIdentity(approvedPhone);
+      if (!i || i.phase === 'CONFIRMING' || !expected || phoneIdentity(event.sender) !== expected
+        || event.removed || event.kind !== 'text' || typeof event.messageId !== 'string'
+        || !event.messageId.trim() || event.messageId.length > 500 || this.seenInbound(event.messageId)
+        || typeof event.text !== 'string' || !event.text.trim() || event.text.length > 500
+        || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(event.text)
+        || !this.matchesConversation(event, null)) return false;
+      if (event.targetMessageId !== undefined && (!event.targetMessageId
+        || this.wearerConversationIncidentForMessage(event.targetMessageId)?.id !== i.id
+        || !this.messageMatchesConversation(event.targetMessageId, event))) return false;
+      const original = event.text.trim();
+      const codes = original.match(/\bLF-[A-Z0-9-]+\b/gi) ?? [];
+      if (codes.some(code => code !== i.id) || codes.length > 1) return false;
+      const text = original.replace(new RegExp(`\\s+${i.id}$`), '').trim();
+      if (!text) return false;
+      const message: StoredConversation = { id: randomUUID(), incidentId: i.id, speaker: 'wearer',
+        speakerName: this.wearerName, text, source: 'photon-imessage', at: this.now(), delivery: 'recorded',
+        ...(event.providerTimestamp !== undefined ? { providerTimestamp: event.providerTimestamp } : {}) };
+      this.addConversation(message); this.rememberInbound(event.messageId);
+      this.event(i, 'WEARER_REPORT', 'photon-imessage', JSON.stringify({ conversationId: message.id,
+        inboundId: event.messageId, transcript: text, providerTimestamp: event.providerTimestamp ?? null }));
+      for (const responderId of i.contacted.filter(id => !i.declined.includes(id))) this.queueWearerReports(i, responderId);
+      return true;
+    });
+  }
+  recordResponderRelay(event: ProviderInbound, responderId: string): boolean {
+    return this.transaction(() => {
+      const i = this.active(), r = this.responders.find(r => r.id === responderId);
+      if (!i || !r?.phone || phoneIdentity(event.sender) !== phoneIdentity(r.phone)
+        || !i.contacted.includes(r.id) || i.declined.includes(r.id) || event.removed || event.kind !== 'text'
+        || typeof event.messageId !== 'string' || !event.messageId.trim() || event.messageId.length > 500
+        || this.seenInbound(event.messageId) || typeof event.text !== 'string' || !event.text.trim()
+        || event.text.length > 500 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(event.text)
+        || !r.name.trim() || r.name.length > 100 || /[\u0000-\u001f\u007f]/.test(r.name)
+        || !this.matchesConversation(event, r.id)) return false;
+      const actions = this.actions(i.id).filter(a => a.recipientId === r.id && a.status === 'provider_accepted'
+        && a.providerMessageId && a.providerChatId === event.chatId && a.providerLineId === event.lineId);
+      if (event.targetMessageId !== undefined) {
+        if (!actions.some(a => a.providerMessageId === event.targetMessageId
+          && ['alert', 'status', 'handoff', 'answer', 'wearer_relay'].includes(a.type))) return false;
+      } else if (!actions.some(a => a.type === 'alert')) return false;
+      const message: StoredConversation = { id: randomUUID(), incidentId: i.id, speaker: 'responder',
+        speakerName: r.name, responderId: r.id, text: event.text.trim(), source: 'photon-imessage', at: this.now(),
+        delivery: 'queued', ...(event.providerTimestamp !== undefined ? { providerTimestamp: event.providerTimestamp } : {}) };
+      this.addConversation(message); this.rememberInbound(event.messageId);
+      this.event(i, 'CONVERSATION_MESSAGE', r.id, JSON.stringify({ conversationId: message.id,
+        transcript: message.text, speaker: 'responder', source: message.source, providerTimestamp: event.providerTimestamp ?? null }));
+      return true;
+    });
+  }
+  claimResponderSpeech(sessionId: string): ConversationMessage | null {
+    return this.transaction(() => {
+      const i = this.active(); if (!i) return null;
+      if (this.storedConversation(i.id).some(message => message.deviceSessionId && ['queued', 'playing'].includes(message.delivery))) return null;
+      for (const message of this.storedConversation(i.id)) {
+        if (message.speaker !== 'responder' || message.delivery !== 'queued' || message.deviceSessionId) continue;
+        if (this.now() - message.at > 120_000 || !message.responderId || i.declined.includes(message.responderId)) {
+          message.delivery = 'failed'; message.detail = 'Wearable reply expired or its sender is no longer eligible.';
+          this.saveConversation(message); continue;
+        }
+        message.deviceSessionId = sessionId; this.saveConversation(message);
+        const { responderId, deviceSessionId, providerTimestamp, ...visible } = message;
+        return visible;
+      }
+      return null;
+    });
+  }
+  recordResponderPlayback(id: string, incidentId: string, sessionId: string, status: 'queued' | 'playing' | 'spoken' | 'failed'): boolean {
+    return this.transaction(() => {
+      const row = this.db.prepare('SELECT body FROM conversation WHERE id=?').get(id); if (!row) return false;
+      const message = JSON.parse(String(row.body)) as StoredConversation;
+      const i = this.active();
+      if (!i || i.id !== incidentId || message.incidentId !== i.id || message.deviceSessionId !== sessionId
+        || message.speaker !== 'responder' || !message.responderId || i.declined.includes(message.responderId)) return false;
+      const allowed = status === 'queued' ? message.delivery === 'queued' : status === 'playing' ? message.delivery === 'queued'
+        : status === 'spoken' ? message.delivery === 'playing' : ['queued', 'playing'].includes(message.delivery);
+      if (!allowed) return false;
+      if (status === 'queued') return true;
+      message.delivery = status;
+      message.detail = status === 'spoken' ? 'Wearable playback window completed; audibility was not independently confirmed.'
+        : status === 'failed' ? 'Wearable synthesis or playback failed; reply text remains recorded.' : undefined;
+      this.saveConversation(message);
+      this.event(i, 'CONVERSATION_PLAYBACK', 'freewili', JSON.stringify({ conversationId: id, status }));
+      return true;
+    });
+  }
+  failResponderSpeechSession(sessionId: string): void {
+    this.transaction(() => {
+      for (const row of this.db.prepare('SELECT body FROM conversation').all()) {
+        const message = JSON.parse(String(row.body)) as StoredConversation;
+        if (message.deviceSessionId !== sessionId || !['queued', 'playing'].includes(message.delivery)) continue;
+        message.delivery = 'failed'; message.detail = 'Wearable disconnected before playback confirmation; not replayed automatically.';
+        this.saveConversation(message);
+      }
+    });
   }
   boardButton(action: 'help' | 'cancel', incidentId: string | null, checkinId: string | null, eventId: string): Incident | null {
     return this.transaction(() => {
@@ -354,8 +587,8 @@ export class Controller {
     if (!i || !event.chatId || !event.lineId) return false;
     return this.actions(i.id).some(a => a.recipientId === recipientId && a.status === 'provider_accepted'
       && Boolean(a.providerMessageId) && a.providerChatId === event.chatId && a.providerLineId === event.lineId
-      && (recipientId === null ? ['wearer_checkin', 'wearer_ack', 'wearer_status'].includes(a.type)
-        : ['alert', 'status', 'handoff', 'answer'].includes(a.type)));
+      && (recipientId === null ? ['wearer_checkin', 'wearer_ack', 'wearer_status', 'wearer_location'].includes(a.type)
+        : ['alert', 'status', 'handoff', 'answer', 'wearer_relay'].includes(a.type)));
   }
   messageMatchesConversation(messageId: string, event: ProviderInbound): boolean {
     const row = this.db.prepare('SELECT body FROM actions WHERE provider_message_id=?').get(messageId);
@@ -396,10 +629,33 @@ export class Controller {
     this.db.prepare('UPDATE actions SET status=?,next_at=?,provider_message_id=?,body=? WHERE id=?')
       .run(a.status, a.nextAttemptAt, a.providerMessageId, JSON.stringify(a), a.id);
   }
+  /** Persist the exact submitted body, including scoped mobile links, for reconciliation. */
+  decorateAction(id: string, text: string): Action {
+    const row = this.db.prepare('SELECT body FROM actions WHERE id=?').get(id);
+    if (!row) throw new PolicyError('Message action no longer exists.');
+    const a = JSON.parse(String(row.body)) as Action;
+    if (a.status !== 'attempting' || typeof text !== 'string' || !text.trim() || text.length > 6000)
+      throw new PolicyError('Only the current bounded message attempt can be prepared.');
+    a.text = text; this.saveAction(a); return a;
+  }
+  queueApproachUpdate(id: string, version: number, text: string): boolean {
+    return this.transaction(() => {
+      const i = this.current(id);
+      if (i.version !== version || !i.ownerId || i.phase !== 'RESPONDER_EN_ROUTE') return false;
+      if (!text.trim() || text.length > 1000) throw new PolicyError('A bounded approach update is required.');
+      return Boolean(this.enqueue(i, 'wearer_location', null, text,
+        `${i.id}:${i.version}:wearer_location:${Math.floor(this.now() / 60_000)}`));
+    });
+  }
   actionPermitted(a: Action): boolean {
     const row = this.db.prepare('SELECT body FROM incidents WHERE id=?').get(a.incidentId);
     if (!row) return false;
     const i = JSON.parse(String(row.body)) as StoredIncident;
+    if (a.type === 'wearer_location') {
+      const row = this.db.prepare('SELECT dedupe_key FROM actions WHERE id=?').get(a.id);
+      return row !== undefined && i.phase === 'RESPONDER_EN_ROUTE' && Boolean(i.ownerId)
+        && Number(String(row.dedupe_key).split(':')[1]) === i.version;
+    }
     if (a.type === 'wearer_checkin' || a.type === 'wearer_ack') return i.phase === 'CONFIRMING' && this.now() < i.checkinDeadline;
     if (a.type === 'wearer_status') {
       if (this.latest()?.id !== i.id) return false;
@@ -409,6 +665,7 @@ export class Controller {
     if (!a.recipientId || !this.responders.some(r => r.id === a.recipientId) || !i.contacted.includes(a.recipientId)) return false;
     if (a.type === 'alert') return i.phase === 'HELP_REQUESTED' && !i.ownerId && !i.declined.includes(a.recipientId);
     if (a.type === 'handoff') return !terminal(i.phase) && !i.declined.includes(a.recipientId);
+    if (a.type === 'wearer_relay') return !terminal(i.phase) && !i.declined.includes(a.recipientId);
     if (a.type === 'status' || a.type === 'answer') {
       const action = this.db.prepare('SELECT dedupe_key FROM actions WHERE id=?').get(a.id);
       return action !== undefined && Number(String(action.dedupe_key).split(':')[1]) === i.version
@@ -416,13 +673,20 @@ export class Controller {
     }
     return false;
   }
-  claimAction(channel: 'any' | 'wearer' | 'responders' = 'any'): Action | null {
+  claimAction(channel: 'any' | 'wearer' | 'responders' = 'any', prioritize = false, incidentId?: string): Action | null {
     return this.transaction(() => {
-      for (const row of this.db.prepare("SELECT body FROM actions WHERE status IN ('queued','failed') AND next_at<=? ORDER BY rowid").all(this.now())) {
-        const a = JSON.parse(String(row.body)) as Action;
+      const pending = this.db.prepare("SELECT body FROM actions WHERE status IN ('queued','failed') AND next_at<=? ORDER BY rowid").all(this.now())
+        .map(row => JSON.parse(String(row.body)) as Action);
+      if (prioritize) {
+        const priority: Record<ActionType, number> = { alert: 0, wearer_checkin: 1, wearer_relay: 2, answer: 3,
+          wearer_ack: 4, handoff: 5, status: 6, wearer_status: 7, wearer_location: 8, checkin: 9 };
+        pending.sort((a, b) => priority[a.type] - priority[b.type]);
+      }
+      for (const a of pending) {
+        if (incidentId && a.incidentId !== incidentId) continue;
         if (a.type === 'checkin' || a.attempts >= 3) continue;
-        if (channel === 'wearer' && !['wearer_checkin', 'wearer_ack', 'wearer_status'].includes(a.type)) continue;
-        if (channel === 'responders' && ['wearer_checkin', 'wearer_ack', 'wearer_status'].includes(a.type)) continue;
+        if (channel === 'wearer' && !['wearer_checkin', 'wearer_ack', 'wearer_status', 'wearer_location'].includes(a.type)) continue;
+        if (channel === 'responders' && ['wearer_checkin', 'wearer_ack', 'wearer_status', 'wearer_location'].includes(a.type)) continue;
         if (!this.actionPermitted(a)) {
           a.status = 'cancelled'; a.providerResult = 'Incident authorization ended; message was not submitted.'; this.saveAction(a); continue;
         }
@@ -434,11 +698,25 @@ export class Controller {
   finishAction(id: string, status: 'provider_accepted' | 'failed' | 'unknown' | 'cancelled', detail: string, messageId?: string, conversation?: { chatId?: string; lineId?: string }): void {
     const row = this.db.prepare('SELECT body FROM actions WHERE id=?').get(id); if (!row) return;
     const a = JSON.parse(String(row.body)) as Action;
+    if (a.recipientId && this.incident(a.incidentId)?.dispatchMode === 'simulated')
+      throw new PolicyError('Simulated responder actions cannot acquire provider receipts.');
     a.status = status; a.providerResult = detail; a.providerMessageId = messageId ?? null;
     if (status === 'provider_accepted' && conversation?.chatId && conversation.lineId) {
       a.providerChatId = conversation.chatId; a.providerLineId = conversation.lineId;
     }
     a.nextAttemptAt = this.now() + Math.min(60_000, 5000 * 2 ** a.attempts); this.saveAction(a);
+  }
+  finishSimulatedAction(id: string): void {
+    const row = this.db.prepare('SELECT body FROM actions WHERE id=?').get(id);
+    if (!row) throw new PolicyError('Unknown simulated action.');
+    const a = JSON.parse(String(row.body)) as Action, i = this.latest();
+    const r = this.responders.find(r => r.id === a.recipientId);
+    if (this.dispatchMode !== 'simulated' || i?.id !== a.incidentId || i.dispatchMode !== 'simulated'
+      || !r?.simulated || r.phone !== null || a.status !== 'attempting' || !this.actionPermitted(a))
+      throw new PolicyError('Only a current permitted demo responder attempt can be delivered locally.');
+    a.status = 'simulated'; a.providerResult = 'Delivered to local simulated dispatch. No responder iMessage was sent.';
+    a.providerMessageId = null; delete a.providerChatId; delete a.providerLineId;
+    this.saveAction(a);
   }
   incidentForMessage(messageId: string, responderId: string): Incident | null {
     const row = this.db.prepare('SELECT body FROM actions WHERE provider_message_id=?').get(messageId);
@@ -451,7 +729,7 @@ export class Controller {
     if (!row) return null;
     const a = JSON.parse(String(row.body)) as Action; const i = this.active();
     return i && a.incidentId === i.id && a.recipientId === responderId
-      && ['alert', 'status', 'handoff', 'answer'].includes(a.type) ? i : null;
+      && ['alert', 'status', 'handoff', 'answer', 'wearer_relay'].includes(a.type) ? i : null;
   }
   wearerIncidentForMessage(messageId: string): Incident | null {
     const row = this.db.prepare('SELECT body FROM actions WHERE provider_message_id=?').get(messageId);
@@ -459,6 +737,13 @@ export class Controller {
     const a = JSON.parse(String(row.body)) as Action; const i = this.active();
     return i && i.phase === 'CONFIRMING' && this.now() < i.checkinDeadline
       && a.incidentId === i.id && a.recipientId === null && ['wearer_checkin', 'wearer_ack'].includes(a.type) ? i : null;
+  }
+  wearerConversationIncidentForMessage(messageId: string): Incident | null {
+    const row = this.db.prepare('SELECT body FROM actions WHERE provider_message_id=?').get(messageId);
+    if (!row) return null;
+    const a = JSON.parse(String(row.body)) as Action, i = this.active();
+    return i && a.incidentId === i.id && a.recipientId === null && a.status === 'provider_accepted'
+      && ['wearer_checkin', 'wearer_ack', 'wearer_status', 'wearer_location'].includes(a.type) ? i : null;
   }
   seenInbound(id: string): boolean { return Boolean(this.db.prepare('SELECT id FROM inbound WHERE id=?').get(id)); }
   rememberInbound(id: string): void { this.db.prepare('INSERT OR IGNORE INTO inbound VALUES(?)').run(id); }

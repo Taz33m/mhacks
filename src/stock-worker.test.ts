@@ -27,6 +27,9 @@ test('stock Python gateway controls, capture bounds and shutdown pass offline SD
   assert.equal(cancel.action, 'cancel'); assert.equal(cancel.incidentId, 'LF-TEST1234');
   assert.equal(help.action, 'help'); assert.equal(help.incidentId, null); assert.equal(help.checkinId, null);
   assert.ok(validWiliPong(packets.find(packet => packet.type === 'clock.pong')));
+  const audioStates = packets.filter(packet => packet.type === 'checkin.audio');
+  assert.deepEqual(audioStates.map(packet => packet.stage), ['prompting', 'listening']);
+  assert.ok(audioStates.every(validDevicePacket));
   const utterance = packets.find(packet => packet.type === 'stock.utterance');
   assert.equal(utterance.incidentId, 'LF-TEST1234'); assert.equal(utterance.checkinId, 'test-checkin');
   const wav = readMonoPcm16Wav(Buffer.from(utterance.audioBase64, 'base64'));

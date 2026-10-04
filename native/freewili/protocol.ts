@@ -30,18 +30,51 @@ export interface WiliSpeechReply {
   type: 'checkin.reply'; source: 'body-wili'; sessionId: string; eventId: string;
   incidentId: string; checkinId: string; transcript: string;
 }
+export interface WiliCheckinAudio {
+  type: 'checkin.audio'; source: 'body-wili'; sessionId: string; eventId: string;
+  incidentId: string; checkinId: string;
+  stage: 'prompting' | 'listening' | 'transcribing' | 'complete' | 'unavailable';
+}
 export interface WiliAudioCommand {
   type: 'audio.command'; sessionId: string; commandId: string; incidentId: string; checkinId: string;
   action: 'play' | 'stop'; asset: 'fall-checkin' | 'safe-confirmation';
 }
-export type WiliDevicePacket = WiliHello | BodyWiliSample | WiliClockPong | WiliButton | WiliAudioAck | WiliStatus | WiliSpeechReply;
-export type WiliHostPacket = WiliClockPing | WiliIncidentContext | WiliAudioCommand;
+export interface WiliConversationSpeak {
+  type: 'conversation.speak'; sessionId: string; eventId: string; incidentId: string;
+  speakerName: string; text: string;
+}
+export interface WiliVoicePlayback {
+  type: 'voice.playback'; source: 'body-wili'; sessionId: string; eventId: string; incidentId: string;
+  /** spoken means the complete clip window elapsed, not independent audibility evidence. */
+  status: 'queued' | 'playing' | 'spoken' | 'failed';
+}
+export interface WiliWellbeingContext {
+  type: 'wellbeing.context'; sessionId: string; conversationId: string; enabled: boolean; statusText: string;
+}
+export interface WiliWellbeingReply {
+  type: 'wellbeing.reply'; source: 'body-wili'; sessionId: string; eventId: string; conversationId: string; transcript: string;
+}
+export interface WiliWellbeingAudio {
+  type: 'wellbeing.audio'; source: 'body-wili'; sessionId: string; eventId: string; conversationId: string;
+  stage: 'recording' | 'transcribing' | 'complete' | 'unavailable';
+}
+export type WiliDevicePacket = WiliHello | BodyWiliSample | WiliClockPong | WiliButton | WiliAudioAck | WiliStatus | WiliSpeechReply | WiliVoicePlayback | WiliCheckinAudio | WiliWellbeingReply | WiliWellbeingAudio;
+export type WiliHostPacket = WiliClockPing | WiliIncidentContext | WiliAudioCommand | WiliConversationSpeak | WiliWellbeingContext;
 const object = (p: unknown): p is Record<string, unknown> => p !== null && typeof p === 'object' && !Array.isArray(p);
 const finite = (p: unknown): p is number => typeof p === 'number' && Number.isFinite(p) && p >= 0 && p <= Number.MAX_SAFE_INTEGER;
 const nullableId = (p: unknown) => p === null || wiliId(p);
 const keys = (p: Record<string, unknown>, allowed: string[]) => Object.keys(p).every(key => allowed.includes(key));
 const phase = (p: unknown) => p === null || (typeof p === 'string' && ['DETECTED', 'CONFIRMING', 'HELP_REQUESTED', 'ACKNOWLEDGED',
   'RESPONDER_EN_ROUTE', 'ON_SCENE', 'RESOLVED', 'CANCELLED_FALSE_ALARM'].includes(p));
+
+export function validConversationSpeak(p: unknown): p is WiliConversationSpeak {
+  return object(p) && keys(p, ['type', 'sessionId', 'eventId', 'incidentId', 'speakerName', 'text'])
+    && p.type === 'conversation.speak' && wiliId(p.sessionId) && wiliId(p.eventId) && wiliId(p.incidentId)
+    && typeof p.speakerName === 'string' && p.speakerName.trim().length > 0 && p.speakerName.length <= 100
+    && !/[\x00-\x1f\x7f]/.test(p.speakerName)
+    && typeof p.text === 'string' && p.text.trim().length > 0 && p.text.length <= 500
+    && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(p.text);
+}
 
 export function validWiliHello(p: unknown): p is WiliHello {
   if (!object(p) || !object(p.capabilities)) return false;
@@ -61,9 +94,21 @@ export function validDevicePacket(p: unknown): p is WiliDevicePacket {
   if (p.type === 'clock.pong') return validWiliPong(p)
     && keys(p, ['type', 'id', 'sessionId', 'deviceReceivedMs', 'deviceSentMs']);
   if (p.source !== 'body-wili' || !wiliId(p.sessionId)) return false;
+  if (p.type === 'wellbeing.reply') return keys(p, ['type', 'source', 'sessionId', 'eventId', 'conversationId', 'transcript'])
+    && wiliId(p.eventId) && wiliId(p.conversationId) && typeof p.transcript === 'string'
+    && p.transcript.trim().length > 0 && p.transcript.length <= 500 && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(p.transcript);
+  if (p.type === 'wellbeing.audio') return keys(p, ['type', 'source', 'sessionId', 'eventId', 'conversationId', 'stage'])
+    && wiliId(p.eventId) && wiliId(p.conversationId) && typeof p.stage === 'string'
+    && ['recording', 'transcribing', 'complete', 'unavailable'].includes(p.stage);
+  if (p.type === 'voice.playback') return keys(p, ['type', 'source', 'sessionId', 'eventId', 'incidentId', 'status'])
+    && wiliId(p.eventId) && wiliId(p.incidentId) && typeof p.status === 'string'
+    && ['queued', 'playing', 'spoken', 'failed'].includes(p.status);
   if (p.type === 'checkin.reply') return keys(p, ['type', 'source', 'sessionId', 'eventId', 'incidentId', 'checkinId', 'transcript'])
     && wiliId(p.eventId) && wiliId(p.incidentId) && wiliId(p.checkinId)
     && typeof p.transcript === 'string' && p.transcript.trim().length > 0 && p.transcript.length <= 500;
+  if (p.type === 'checkin.audio') return keys(p, ['type', 'source', 'sessionId', 'eventId', 'incidentId', 'checkinId', 'stage'])
+    && wiliId(p.eventId) && wiliId(p.incidentId) && wiliId(p.checkinId) && typeof p.stage === 'string'
+    && ['prompting', 'listening', 'transcribing', 'complete', 'unavailable'].includes(p.stage);
   if (p.type === 'button.press') {
     return keys(p, ['type', 'source', 'sessionId', 'eventId', 'action', 'incidentId', 'checkinId'])
       && wiliId(p.eventId) && typeof p.action === 'string' && ['help', 'cancel'].includes(p.action)
@@ -80,8 +125,12 @@ export function validDevicePacket(p: unknown): p is WiliDevicePacket {
 }
 export function validHostPacket(p: unknown): p is WiliHostPacket {
   if (!object(p)) return false;
+  if (p.type === 'conversation.speak') return validConversationSpeak(p);
   if (p.type === 'clock.ping') return keys(p, ['type', 'id', 'serverSentMs']) && wiliId(p.id) && finite(p.serverSentMs);
   if (!wiliId(p.sessionId)) return false;
+  if (p.type === 'wellbeing.context') return keys(p, ['type', 'sessionId', 'conversationId', 'enabled', 'statusText'])
+    && wiliId(p.conversationId) && typeof p.enabled === 'boolean' && typeof p.statusText === 'string'
+    && p.statusText.length <= 300 && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(p.statusText);
   if (p.type === 'incident.context') {
     return keys(p, ['type', 'sessionId', 'incidentId', 'checkinId', 'phase', 'checkinDeadline', 'serverTime', 'ownerName', 'statusText', 'voiceAsset'])
       && nullableId(p.incidentId) && nullableId(p.checkinId) && (p.incidentId === null) === (p.checkinId === null)
@@ -102,7 +151,7 @@ export class WiliNdjson {
   private pending = Buffer.alloc(0);
   private readonly maxLineBytes: number;
   constructor(maxLineBytes = MAX_LINE_BYTES) {
-    if (!Number.isSafeInteger(maxLineBytes) || maxLineBytes < MAX_LINE_BYTES || maxLineBytes > 150_000) throw new Error('Invalid WILi line bound.');
+    if (!Number.isSafeInteger(maxLineBytes) || maxLineBytes < MAX_LINE_BYTES || maxLineBytes > 400_000) throw new Error('Invalid WILi line bound.');
     this.maxLineBytes = maxLineBytes;
   }
   push(bytes: Buffer): unknown[] {
@@ -131,6 +180,7 @@ export class WiliDeviceProtocol {
   private sequence = -1;
   private sensorTime = -1;
   private events = new Set<string>();
+  private playback = new Map<string, { incidentId: string; status: WiliVoicePlayback['status'] }>();
   accept(p: unknown): WiliDevicePacket {
     if (!validDevicePacket(p)) throw new Error('Malformed WILi device packet.');
     if (p.type === 'device.hello') {
@@ -139,6 +189,16 @@ export class WiliDeviceProtocol {
       this.hello = { ...p, capabilities: { ...p.capabilities } }; return p;
     }
     if (!this.hello || p.sessionId !== this.hello.sessionId) throw new Error('WILi packet has no matching hello/session.');
+    if (p.type === 'voice.playback') {
+      if (!this.hello.capabilities.speaker) throw new Error('WILi speaker was not advertised.');
+      const previous = this.playback.get(p.eventId);
+      if ((!previous && p.status !== 'queued') || (previous && (previous.incidentId !== p.incidentId
+        || !((previous.status === 'queued' && ['playing', 'failed'].includes(p.status))
+          || (previous.status === 'playing' && ['spoken', 'failed'].includes(p.status))))))
+        throw new Error('WILi playback status is repeated, uncorrelated, or out of order.');
+      this.playback.set(p.eventId, { incidentId: p.incidentId, status: p.status });
+      while (this.playback.size > 128) this.playback.delete(this.playback.keys().next().value!);
+    }
     if (p.type === 'accel.sample') {
       if (p.fullScaleG !== this.hello.fullScaleG || p.sequence <= this.sequence || p.sensorTime <= this.sensorTime)
         throw new Error('WILi sample is repeated, out of order, or changed range.');
@@ -146,13 +206,15 @@ export class WiliDeviceProtocol {
         throw new Error('WILi sample clock does not match its transport.');
       this.sequence = p.sequence; this.sensorTime = p.sensorTime;
     }
-    if (p.type === 'button.press' || p.type === 'audio.ack' || p.type === 'checkin.reply') {
+    if (p.type === 'button.press' || p.type === 'audio.ack' || p.type === 'checkin.reply' || p.type === 'checkin.audio'
+      || p.type === 'wellbeing.reply' || p.type === 'wellbeing.audio') {
       if (this.events.has(p.eventId)) throw new Error('Repeated WILi event ID.');
       this.events.add(p.eventId);
       while (this.events.size > 128) this.events.delete(this.events.values().next().value!);
       if (p.type === 'button.press' && !this.hello.capabilities.buttons) throw new Error('WILi buttons were not advertised.');
       if (p.type === 'audio.ack' && !this.hello.capabilities.speaker) throw new Error('WILi speaker was not advertised.');
-      if (p.type === 'checkin.reply' && !this.hello.capabilities.microphone) throw new Error('WILi microphone was not advertised.');
+      if ((p.type === 'checkin.reply' || p.type === 'checkin.audio' || p.type === 'wellbeing.reply' || p.type === 'wellbeing.audio')
+        && !this.hello.capabilities.microphone) throw new Error('WILi microphone was not advertised.');
     }
     return p;
   }

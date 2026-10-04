@@ -75,10 +75,20 @@ enum MotionActivity {
         if let note = route.claim() { status = note }
         routeHeld = route.holding
         if running {
-            if ProcessInfo.processInfo.systemUptime - lastSampleReceived > 5 {
+            let now = ProcessInfo.processInfo.systemUptime
+            if lastTime < 0 {
+                // Availability and an open socket are not measurements. Give
+                // Core Motion the existing acquisition grace before retrying.
+                if now - streamStarted > 5 {
+                    status = "No real AirPod motion received. Retrying acquisition…"
+                    stop(keepStatus: true)
+                } else {
+                    status = "Waiting for the first real waist AirPod measurement…"
+                }
+            } else if now - lastSampleReceived > 5 {
                 status = "AirPod motion paused. Reconnecting…"
                 stop(keepStatus: true)
-            } else if ProcessInfo.processInfo.systemUptime - streamStarted > 1.5,
+            } else if now - streamStarted > 1.5, now - lastSampleReceived < 1,
                       let task = socket {
                 Task { await verifyRelay(task) }
             }
@@ -100,6 +110,7 @@ enum MotionActivity {
 
     private func verifyRelay(_ task: URLSessionWebSocketTask) async {
         guard running, socket === task, !verifying,
+              lastTime >= 0, ProcessInfo.processInfo.systemUptime - lastSampleReceived < 1,
               let url = relayURL("http", path: "health") else { return }
         verifying = true
         defer { verifying = false }
@@ -111,11 +122,18 @@ enum MotionActivity {
             let health = try JSONSerialization.jsonObject(with: data) as? [String: Any]
             let sources = health?["motionSources"] as? [String] ?? []
             guard running, socket === task else { return }
-            if sources.contains(MotionActivity.source) && samples > 0 && ProcessInfo.processInfo.systemUptime-lastSampleReceived < 1 {
+            // Motion may have gone quiet while the health request was in
+            // flight. The acquisition watchdog owns its five-second retry.
+            guard lastTime >= 0, ProcessInfo.processInfo.systemUptime - lastSampleReceived < 1 else {
+                relayConnected = false
+                status = "Waiting for fresh waist AirPod measurements…"
+                return
+            }
+            if sources.contains(MotionActivity.source) && samples > 0 {
                 relayConnected = true
                 status = "Real waist motion is reaching LIFELINE."
             }
-            else { status = "AirPod motion detected; reconnecting to LIFELINE…"; stop(keepStatus: true) }
+            else { status = "Real AirPod motion received; reconnecting to LIFELINE…"; stop(keepStatus: true) }
         } catch {
             guard running, socket === task else { return }
             status = "Motion relay unavailable. Check host and token. Retrying…"

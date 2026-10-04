@@ -75,6 +75,10 @@ export class FreeWili {
 
   constructor(now = () => performance.now()) { this.now = now; }
   connected(): void { this.online = true; }
+  /** Recording boundary: discard earlier evidence, keeping the physical boot and replay guards. */
+  resetForTrial(): void {
+    this.lastReceived = null; this.latest = null; this.points = []; this.clearClock();
+  }
   disconnected(): void {
     this.online = false;
     if (this.session) {
@@ -153,8 +157,8 @@ export class FreeWili {
   observations(): BodyWiliObservation[] {
     return this.points.map(point => ({ ...point, sample: clone(point.sample) }));
   }
-  view(): BodyWiliView {
-    const at = this.now(), latest = this.latest;
+  view(at = this.now()): BodyWiliView {
+    const latest = this.latest;
     const receivedAgeMs = this.lastReceived === null ? null : Math.max(0, at - this.lastReceived);
     const mapped = latest && this.aligned(at) ? latest.sample.sensorTime * 1000 + this.offset! : null;
     const captureAgeMs = mapped === null ? null : at - mapped;

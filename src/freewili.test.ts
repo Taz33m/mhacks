@@ -13,6 +13,20 @@ const sample = (sequence = 0, sensorTime = 101, fullScaleG: BodyWiliSample['full
 });
 const hello = () => ({ type: 'device.hello', protocolVersion: 1, source: 'body-wili', sessionId: 'synthetic-og-boot-1',
   deviceModel: 'freewili-og', fullScaleG: 8, capabilities: { accelerometer: true, speaker: true, microphone: true, buttons: true } });
+
+test('microphone status requires declared capability and matching, unreplayed device provenance', () => {
+  const audio = { type: 'checkin.audio', source: 'body-wili', sessionId: 'synthetic-og-boot-1',
+    eventId: 'listening-event', incidentId: 'LF-SYNTHETIC', checkinId: 'synthetic-checkin', stage: 'listening' };
+  const protocol = new WiliDeviceProtocol(); protocol.accept(hello());
+  assert.equal(validDevicePacket(audio), true); protocol.accept(audio);
+  assert.throws(() => protocol.accept(audio), /Repeated/);
+  assert.equal(validDevicePacket({ ...audio, stage: 'safe' }), false);
+  assert.equal(validDevicePacket({ ...audio, incidentId: null }), false);
+  assert.throws(() => protocol.accept({ ...audio, eventId: 'different-event', sessionId: 'other-boot' }), /matching/);
+  const noMic = new WiliDeviceProtocol();
+  noMic.accept({ ...hello(), capabilities: { ...hello().capabilities, microphone: false } });
+  assert.throws(() => noMic.accept(audio), /microphone/);
+});
 function fixture(fullScale: BodyWiliSample['fullScaleG'] = 8, initialTime = 101) {
   let now = 1000;
   const adapter = new FreeWili(() => now); adapter.connected();
@@ -23,6 +37,27 @@ function fixture(fullScale: BodyWiliSample['fullScaleG'] = 8, initialTime = 101)
   return { adapter, advance(ms: number) { now += ms; }, now: () => now,
     next(sequence: number, delta = 0) { return sample(sequence, (now + 100000 + delta) / 1000, fullScale); } };
 }
+
+test('trial boundary discards old measurements/alignment while retaining boot and replay/range guards', () => {
+  const f = fixture(); f.advance(20); const before = f.next(1); assert.equal(f.adapter.sample(before), true);
+  const oldPing = f.adapter.ping('old-pending-ping');
+  f.adapter.resetForTrial();
+  const view = f.adapter.view();
+  assert.equal(view.connected, true); assert.equal(view.sessionId, before.sessionId);
+  assert.equal(view.quality, 'awaiting-sample'); assert.equal(view.fresh, false);
+  assert.equal(view.receivedAgeMs, null); assert.equal(view.alignmentUncertaintyMs, null);
+  assert.deepEqual(f.adapter.observations(), []);
+  assert.equal(f.adapter.sample(before), false, 'old frames are not accepted again after a trial boundary');
+  assert.equal(f.adapter.sample({ ...f.next(2), sessionId: 'different-boot' }), false);
+  assert.equal(f.adapter.sample({ ...f.next(2), fullScaleG: 4 }), false);
+  f.advance(20); assert.equal(f.adapter.sample(f.next(2)), true);
+  assert.equal(f.adapter.view().usable, false, 'new measurements do not reuse pre-trial alignment');
+  const pong = { type: 'clock.pong', id: oldPing.id, sessionId: before.sessionId,
+    deviceReceivedMs: f.now() + 100000, deviceSentMs: f.now() + 100000 };
+  assert.equal(f.adapter.pong(pong), false);
+  const freshPing = f.adapter.ping('new-trial-ping'); assert.equal(f.adapter.pong({ ...pong, id: freshPing.id }), true);
+  f.advance(20); f.adapter.sample(f.next(3)); assert.equal(f.adapter.view().usable, true);
+});
 
 test('raw acceleration validates declared units/capabilities without fabricated fused fields', () => {
   assert.equal(validBodyWiliSample(sample()), true);

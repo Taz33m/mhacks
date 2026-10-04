@@ -9,12 +9,17 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env src/server.ts",
     "start:demo": "LIFELINE_DEMO_MODE=1 node --env-file-if-exists=.env src/server.ts",
+    "start:dispatch": "LIFELINE_DISPATCH_MODE=simulated node --env-file-if-exists=.env src/server.ts",
     "ai:local": "zsh scripts/start-local-ai.sh",
-    "test": "node --test src/*.test.ts src/providers/*.test.ts native/freewili/*.test.ts",
+    "test": "node --test src/*.test.ts src/providers/*.test.ts native/freewili/*.test.ts scripts/*.test.ts",
+    "smoke:voice": "node --env-file-if-exists=.env scripts/wili-voice-smoke.ts",
+    "smoke:incident": "node --env-file-if-exists=.env scripts/incident-flow-smoke.ts",
+    "smoke:care": "node --env-file-if-exists=.env scripts/care-flow-smoke.ts",
     "typecheck": "tsc --noEmit",
     "setup:local": "node --env-file-if-exists=.env scripts/setup-local.ts",
     "install:airpods": "zsh native/macos/install.sh --open",
     "build:airpods": "zsh native/macos/build.sh",
+    "build:eta": "zsh native/macos/build-route-eta.sh",
     "build:ios": "zsh native/ios/build.sh",
     "build:ios:device": "zsh native/ios/build-device.sh",
     "install:ios": "zsh native/ios/install-device.sh",
@@ -22,10 +27,13 @@
     "device:usb": "node scripts/connect-usb.ts",
     "setup:freewili": "zsh native/freewili/setup.sh",
     "device:freewili": "node --env-file-if-exists=.env native/freewili/stock-bridge.ts",
+    "prepare:wili:ui": "python3 scripts/prepare-wili-ui.py",
     "prepare:wili:local": "node native/freewili/prepare-stock-audio.ts --provider local",
-    "prepare:wili:elevenlabs": "node --env-file-if-exists=.env native/freewili/prepare-stock-audio.ts --provider elevenlabs"
+    "prepare:wili:elevenlabs": "node --env-file-if-exists=.env native/freewili/prepare-stock-audio.ts --provider elevenlabs",
+    "check:photon": "node scripts/photon-readiness.ts"
   },
   "dependencies": {
+    "@photon-ai/advanced-imessage": "2.2.0",
     "@spectrum-ts/core": "^12.10.1",
     "@spectrum-ts/imessage": "^12.10.1",
     "ws": "^8.22.0"
@@ -35,5 +43,7 @@
     "@types/ws": "^8.18.0",
     "typescript": "^5.9.0"
   },
-  "overrides": { "@opentelemetry/core": "2.8.0" }
+  "overrides": {
+    "@opentelemetry/core": "2.8.0"
+  }
 }

@@ -117,7 +117,7 @@ test('AI composes an incident-grounded answer with selected source fields and un
       const schema = body.response_format.json_schema.schema;
       assert.deepEqual(schema.required, ['facts', 'incidentFields', 'unavailable']);
       assert.equal(schema.additionalProperties, false);
-      assert.deepEqual(schema.properties.facts.items.properties.recordId.enum, ['med-1', 'allergy-1']);
+      assert.deepEqual(schema.properties.facts.items.properties.recordId.enum, ['allergy-1']);
       assert.equal(schema.properties.facts.items.additionalProperties, false);
       assert.ok(schema.properties.facts.items.properties.fields.items.enum.includes('reaction'));
       assert.ok(!schema.properties.facts.items.properties.fields.items.enum.includes('details'));
@@ -142,7 +142,7 @@ test('AI composes an incident-grounded answer with selected source fields and un
   assert.doesNotMatch(answer, /Example medication/);
   assert.match(answer, /AI-composed answer/);
   assert.match(answer, /severity: not returned; unknown/);
-  assert.match(answer, /Unavailable information:\nLocation not provided/);
+  assert.doesNotMatch(answer, /Unavailable information|Location not provided|Current vital signs not provided|Responder ETA/);
   assert.match(providers.providerStatus().llm.detail, /AI answer generation verified/);
   const before = requests;
   assert.match(await providers.answerQuestion(incident, health, 'Should I administer a medicine?'), /cannot recommend treatment/);
@@ -215,7 +215,7 @@ test('contextual should questions reach grounded AI answers with source IDs and 
     assert.match(answer, /AI-composed answer/);
     assert.match(answer, /Penicillin; reaction: Fixture rash; status: active \[allergy-1\]/);
     assert.match(answer, /Chest impact and waist posture change/);
-    assert.match(answer, /Location not provided/);
+    assert.equal(answer.includes('Location not provided'), question === 'What should I know before I arrive?');
     assert.doesNotMatch(answer, /cannot recommend treatment/);
   }
   assert.deepEqual(received, questions);

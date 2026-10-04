@@ -31,7 +31,7 @@ function replies(controller: Controller, incident: Incident) {
   return controller.events(incident.id).filter(event => event.type === 'CHECKIN_REPLY')
     .map(event => JSON.parse(event.detail) as { transcript: string; decision: string });
 }
-const ackText = "Glad you're okay. To close this check-in, tap 'I DON'T NEED HELP' on your phone.";
+const ackText = "Glad you're okay. To close this check-in, press the green 'I DON'T NEED HELP' button on WILi.";
 const acknowledgements = (controller: Controller, incident: Incident) =>
   controller.actions(incident.id).filter(action => action.type === 'wearer_ack');
 

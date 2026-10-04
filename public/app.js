@@ -1,21 +1,48 @@
+import { activeIncident, dashboardPresentation, retainWiliReading } from './dashboard-view.js';
+import { careHighlights } from './care-summary.js';
+
 (() => {
   'use strict';
   const $ = (selector, scope = document) => scope.querySelector(selector);
+  const workspaceLinks = [...document.querySelectorAll('.rail-link')];
+  const viewNames = { overview: 'Overview', conversation: 'Conversation', motion: 'Motion', care: 'Care context', activity: 'Audit trail', connections: 'Connections', developer: 'Developer tools' };
+  const viewIntros = { overview: 'What happened. What we know. Who is helping.', conversation: 'Private conversations, connected by one incident.',
+    motion: 'The captured signals behind a possible incident.', care: 'A short care brief, with the complete record one click away.',
+    activity: 'Recorded events, message attempts, and outcomes.', connections: 'Hardware and services, with diagnostics on demand.', developer: 'Isolated controls for setup and rehearsal.' };
+  const oldViews = { 'incident-title': 'overview', 'conversation-title': 'conversation', 'signals-heading': 'motion', 'patient-title': 'care', 'timeline-title': 'activity', 'readiness-title': 'connections', calibration: 'motion' };
+  let developerEnabled = location.hash === '#developer';
+  const updateWorkspaceNavigation = () => {
+    const requested = location.hash.slice(1);
+    const view = Object.hasOwn(viewNames, requested) ? requested : oldViews[requested] || 'overview';
+    const selectedView = view === 'developer' && !developerEnabled ? 'overview' : view;
+    const selected = workspaceLinks.find(link => link.dataset.workspaceLink === selectedView) ?? workspaceLinks[0];
+    for (const panel of document.querySelectorAll('[data-workspace-view]')) panel.hidden = panel.dataset.workspaceView !== selectedView;
+    for (const link of workspaceLinks) {
+      link.classList.toggle('rail-active', link === selected);
+      if (link === selected) link.setAttribute('aria-current', 'page');
+      else link.removeAttribute('aria-current');
+    }
+    const breadcrumb = $('.workspace-breadcrumb strong');
+    if (breadcrumb) breadcrumb.textContent = viewNames[selectedView];
+    if ($('#workspace-title')) $('#workspace-title').textContent = viewNames[selectedView];
+    if ($('#workspace-intro')) $('#workspace-intro').textContent = viewIntros[selectedView];
+    if ($('#developer-link')) $('#developer-link').hidden = !developerEnabled;
+    if ($('#developer-toggle')) { $('#developer-toggle').setAttribute('aria-pressed', String(developerEnabled)); $('#developer-toggle').textContent = developerEnabled ? 'Hide developer tools' : 'Developer tools'; }
+    document.body.dataset.activeView = selectedView;
+  };
+  window.addEventListener('hashchange', () => { updateWorkspaceNavigation(); window.scrollTo({ top: 0, behavior: 'instant' }); });
+  updateWorkspaceNavigation();
   const phases = [
+    ['DETECTED', 'Detected'],
     ['CONFIRMING', 'Check-in'], ['HELP_REQUESTED', 'Help requested'],
     ['ACKNOWLEDGED', 'Accepted'], ['RESPONDER_EN_ROUTE', 'En route'],
     ['ON_SCENE', 'On scene'], ['RESOLVED', 'Resolved'],
   ];
-  const titles = {
-    DETECTED: 'Possible incident detected', CONFIRMING: 'Checking on the wearer',
-    HELP_REQUESTED: 'Waiting for a responder', ACKNOWLEDGED: 'Responsibility accepted',
-    RESPONDER_EN_ROUTE: 'Responder on the way', ON_SCENE: 'Responder is on scene',
-    RESOLVED: 'Incident resolved', CANCELLED_FALSE_ALARM: 'Check-in cancelled',
-  };
   const actionLabels = {
     queued: ['Queued', ''], attempting: ['Sending', 'warning'],
     provider_accepted: ['Provider accepted', 'good'], failed: ['Failed', 'bad'],
     unknown: ['Outcome unknown', 'warning'], cancelled: ['Cancelled', ''],
+    simulated: ['Simulated delivery', 'warning'],
   };
   const generationLabels = {
     ai: ['AI GENERATED', 'good'], degraded: ['DEGRADED TEMPLATE', 'warning'],
@@ -35,47 +62,83 @@
   let nativeSetup = null;
   let trialBusy = false;
   let handoffSignature = null;
+  let conversationSignature = null;
+  let wellbeingSignature = null;
+  let wellbeingBusy = false;
+  let wellbeingBriefBusy = false;
+  let wiliDisplaySample = null;
+  let locationInviteBusy = false;
   let contextRequest = null;
+  let contextPreview = null;
   let patientRecord = null;
   let patientScope = 'incident';
   let patientRequest = null;
   let patientContextKey = null;
   let patientQuestionRequest = null;
   let briefBusy = false;
+  let calibrationGuide = null;
+  let calibrationTimer = null;
 
   const escaped = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
   const text = (selector, value, scope = document) => { $(selector, scope).textContent = value; };
   const finite = (value) => typeof value === 'number' && Number.isFinite(value);
   const number = (value, digits = 0) => finite(value) ? value.toFixed(digits) : '—';
   const terminal = (incident) => incident && ['RESOLVED', 'CANCELLED_FALSE_ALARM'].includes(incident.phase);
-  const time = (value) => finite(value) ? new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—';
-  const nameFor = (id) => snapshot?.responders.find((person) => person.id === id)?.name ?? id ?? 'Unassigned';
+  const simulatedIncident = (incident = snapshot?.incident) => incident?.dispatchMode === 'simulated';
+  const time = (value) => {
+    const at = finite(value) ? value : typeof value === 'string' ? Date.parse(value) : NaN;
+    return Number.isFinite(at) ? new Date(at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' }) : '—';
+  };
+  const simulatedActor = (id) => typeof id === 'string' && (id === 'simulated-dispatch' || id.startsWith('simulated-dispatch:'));
+  const nameFor = (id) => {
+    if (id === 'simulated-dispatch') return 'Simulated dispatch';
+    if (typeof id === 'string' && id.startsWith('simulated-dispatch:')) {
+      const responderId = id.slice('simulated-dispatch:'.length);
+      return `${snapshot?.responders.find(person => person.id === responderId)?.name ?? 'Demo responder'} · simulated dispatch`;
+    }
+    return snapshot?.responders.find((person) => person.id === id)?.name ?? id ?? 'Unassigned';
+  };
   const initials = (name) => String(name).split(/\s+/).map((part) => part[0]).slice(0, 2).join('').toUpperCase();
+  const observationKey = (value = snapshot) => JSON.stringify(Array.isArray(value?.conversation)
+    ? value.conversation.filter(message => message?.incidentId === value.incident?.id).map(({ id, text }) => [id, text]) : []);
 
   function setConnection(connected, detail) {
     online = connected;
     $('#connection').className = `connection ${connected ? 'online' : 'offline'}`;
-    $('#connection').innerHTML = `<i></i>${connected ? 'Live state' : 'Reconnecting'}`;
+    $('#connection').innerHTML = `<i></i>${connected ? 'System live' : 'Reconnecting'}`;
     $('#connection-error').hidden = connected || !detail;
     text('#connection-error', detail || '');
     snapshot?.sensors.forEach(renderSensor);
     renderWili();
     renderReadiness();
     renderDemoNextStep();
+    renderCheckinAudio();
+    renderWellbeing();
+    renderLocation();
+    renderDispatch();
+    if (snapshot) renderIncident();
+    syncCalibrationGuide();
     updateControls();
   }
 
   function acceptSnapshot(value) {
     if (!value || !Array.isArray(value.sensors) || !Array.isArray(value.responders) || !Array.isArray(value.actions) || !Array.isArray(value.timeline)) throw new Error('Invalid server snapshot');
     const previousIncident = snapshot?.incident;
+    const previousObservations = observationKey();
     snapshot = value;
-    syncContext(previousIncident);
+    syncContext(previousIncident, previousObservations);
     if (finite(value.serverTime)) clockOffset = value.serverTime - Date.now();
     lastStateReceived = Date.now();
+    if (calibrationGuide?.stage === 'verifying' && calibrationGuide.commandAccepted) calibrationGuide.postCommandState = true;
+    observeGuideCadence();
+    syncCalibrationGuide();
     value.sensors.forEach(renderSensor);
     renderWili();
     renderIncident();
     renderReply();
+    renderConversation();
+    renderWellbeing();
+    renderLocation();
     renderResponders();
     renderProviders();
     renderReadiness();
@@ -85,6 +148,7 @@
     renderQuestions();
     renderTrial();
     renderPolicy();
+    renderDispatch();
     ensurePatientRecord();
     updateControls();
     updateTime();
@@ -101,6 +165,18 @@
     text('#policy-detail', policy.demoMode
       ? `Demo timeout accelerated from configurable policy value: ${seconds(policy.checkinMs)} for new check-ins vs ${seconds(policy.configuredCheckinMs)} configured. Existing incident deadlines are preserved.`
       : `New check-ins use the configured ${seconds(policy.checkinMs)} timeout. Accelerated demo mode is off.`);
+  }
+
+  function renderDispatch() {
+    const dispatch = snapshot?.dispatch;
+    const available = ['live', 'simulated'].includes(dispatch?.mode);
+    $('#dispatch-banner').hidden = !available;
+    if (!available) return;
+    const simulated = dispatch.mode === 'simulated';
+    text('#dispatch-mode', simulated ? 'SIMULATED DISPATCH' : 'LIVE RESPONDER DISPATCH');
+    $('#dispatch-mode').className = `badge ${simulated ? 'warning' : ''}`;
+    text('#dispatch-detail', typeof dispatch.detail === 'string' ? dispatch.detail : 'Dispatch detail unavailable.');
+    text('#dispatch-scope', simulated ? 'Responder progression runs locally for the demo. Wearer iMessage and motion sources keep their actual connection status.' : 'Responder messages use the configured delivery connection.');
   }
 
   function renderSensor(sensor) {
@@ -122,19 +198,33 @@
 
   function renderWili() {
     const wili = snapshot?.wili;
-    const labels = { disconnected: 'Disconnected', 'awaiting-sample': 'Awaiting sample', unsynchronized: 'Unsynchronized', stale: 'Stale', 'capture-stale': 'Capture stale', 'insufficient-range': 'Insufficient range', saturated: 'Saturated', measured: 'Measured' };
-    const status = !wili?.connected ? 'Disconnected' : !online ? 'Last received' : wili.usable ? 'Acquisition ready' : Object.hasOwn(labels, wili.quality) ? labels[wili.quality] : 'Unknown quality';
-    text('#wili-status', status); $('#wili-status').className = `badge ${online && wili?.usable ? 'good' : wili?.connected ? 'warning' : ''}`;
-    text('#wili-g', number(wili?.totalG, 2));
-    ['x', 'y', 'z'].forEach((axis, index) => text(`#wili-${axis}`, finite(wili?.accelerationG?.[index]) ? `${number(wili.accelerationG[index], 3)} g` : '—'));
-    const elapsed = !online && lastStateReceived ? Date.now() - lastStateReceived : 0;
-    text('#wili-age', finite(wili?.receivedAgeMs) ? `${Math.round(wili.receivedAgeMs + elapsed)} ms` : 'No sample');
+    const at = Date.now();
+    const elapsed = lastStateReceived ? Math.max(0, at - lastStateReceived) : 0;
+    const receiptAge = finite(wili?.receivedAgeMs) && wili.receivedAgeMs >= 0 ? wili.receivedAgeMs + elapsed : null;
+    // The last reading is presentation memory; acquisition and detector gates use the server state.
+    wiliDisplaySample = retainWiliReading(wili, wiliDisplaySample, { now: at, elapsed, online });
+    const quiet = wiliDisplaySample && Math.abs(wiliDisplaySample.totalG - 1) < .15;
+    const displayAge = wiliDisplaySample ? Math.max(0, at - wiliDisplaySample.receivedAt) : null;
+    const status = !wiliDisplaySample || quiet || !online || !wili?.connected ? 'Idle' : 'Motion';
+    text('#wili-status', status); $('#wili-status').className = 'badge';
+    text('#wili-g', number(wiliDisplaySample?.totalG ?? 0, 2));
+    ['x', 'y', 'z'].forEach((axis, index) => text(`#wili-${axis}`, `${number(wiliDisplaySample?.accelerationG?.[index] ?? 0, 3)} g`));
+    text('#wili-sample-detail', displayAge !== null ? `Last measured reading · ${displayAge < 1000 ? `${Math.round(displayAge)} ms` : `${Math.floor(displayAge / 1000)} s`} ago`
+      : 'Idle display · 0 until the first motion report.');
+    text('#wili-age', receiptAge !== null ? `${Math.round(receiptAge)} ms` : 'No sample');
+    text('#wili-freshness', !wili?.connected ? 'Unavailable' : !online ? 'Last state' : receiptAge === null ? 'No sample' : wili.fresh ? 'Fresh' : 'Not fresh');
+    text('#wili-detector-inputs', detectorReadiness().ready ? 'Ready' : 'Not ready');
     const receiptTiming = wili?.captureClock === 'host-receipt';
+    const sparse = online && wili?.connected && receiptAge !== null && receiptAge < 2000 && receiptTiming
+      && finite(wili.sampleHz) && wili.sampleHz > 0 && wili.sampleHz <= 2;
+    text('#wili-report-note', sparse ? 'Idle between motion reports. The last measured reading stays visible.'
+      : 'Readings update as WILi sends motion reports.');
+    $('#wili-report-note').className = `field-note wili-report-note${sparse ? ' sparse' : ''}`;
     text('#wili-timing-label', receiptTiming ? 'Gateway receipt age' : 'Capture age');
     text('#wili-capture-age', finite(wili?.captureAgeMs) ? `${Math.round(wili.captureAgeMs + elapsed)} ms` : 'Unknown');
     text('#wili-alignment-label', receiptTiming ? 'Gateway clock ±' : 'Capture clock ±');
     text('#wili-alignment', finite(wili?.alignmentUncertaintyMs) ? `${Math.round(wili.alignmentUncertaintyMs)} ms` : 'Unknown');
-    text('#wili-hz', finite(wili?.sampleHz) && wili.sampleHz > 0 ? `${number(wili.sampleHz, 1)} Hz` : '—');
+    text('#wili-hz', `${number(finite(wili?.sampleHz) ? wili.sampleHz : 0, 1)} Hz`);
     text('#wili-range', finite(wili?.fullScaleG) ? `±${wili.fullScaleG} g` : 'Unknown');
     text('#wili-quality', wili?.quality || 'Unknown');
     text('#wili-identity', `Source: body-wili · ${wili?.sessionId ? `Session ${wili.sessionId}` : 'No session'} · ${wili?.captureClock || 'Capture clock not reported'}`);
@@ -158,22 +248,250 @@
     return { ready, detail };
   }
 
+  function guideLiveState() {
+    const waist = snapshot?.sensors.find(sensor => sensor.source === 'waist-airpod');
+    const wili = snapshot?.wili;
+    const elapsed = lastStateReceived ? Math.max(0, Date.now() - lastStateReceived) : Infinity;
+    const fresh = !!(online && waist?.connected && waist.fresh && finite(waist.ageMs) && waist.ageMs + elapsed < 500);
+    const waistReady = fresh && !!waist.sessionId && ['Left', 'Right'].includes(waist.sensorLocation) && finite(waist.sampleHz) && waist.sampleHz > 0;
+    return { waist, wili, fresh, ready: !!(token && online && wili?.connected && waistReady) };
+  }
+
+  function guideIdentityError() {
+    const guide = calibrationGuide;
+    const { waist, wili, fresh } = guideLiveState();
+    if (!online) return 'Live connection interrupted. Reconnect, then begin the standing-still step again.';
+    if (!waist?.connected) return 'The waist AirPod disconnected. Reconnect the reporting AirPod and retry.';
+    if (waist.sessionId !== guide.identity.sessionId || waist.sensorLocation !== guide.identity.sensorLocation) return 'The reporting AirPod or motion session changed. Check its waist placement and begin again.';
+    if (!fresh) return 'Waist measurements stopped being fresh. Restore the stream in the Mac bridge, then retry.';
+    if (!wili?.connected || wili.sessionId !== guide.wiliSession) return 'FREE-WILi disconnected or changed session. Reconnect and retry.';
+    return null;
+  }
+
+  function failCalibrationGuide(message) {
+    const guide = calibrationGuide;
+    if (!guide) return;
+    guide.errorStage = guide.stage;
+    guide.stage = 'error';
+    guide.error = message;
+    clearTimeout(guide.requestTimeout);
+    guide.request?.abort();
+    clearInterval(calibrationTimer); calibrationTimer = null;
+    renderCalibrationGuide();
+  }
+
+  function closeCalibrationGuide() {
+    const guide = calibrationGuide;
+    calibrationGuide = null;
+    clearInterval(calibrationTimer); calibrationTimer = null;
+    clearTimeout(guide?.requestTimeout);
+    guide?.request?.abort();
+    if ($('#calibration-guide').open) $('#calibration-guide').close();
+    if (['requesting', 'verifying'].includes(guide?.stage)) text('#calibration-message', 'Guide closed during the baseline request. Check the waist sensor’s calibration status before retrying.');
+    updateControls();
+  }
+
+  function openCalibrationGuide() {
+    if (calibrationGuide || busy) return;
+    calibrationGuide = { stage: 'placement', identity: null, error: '', results: [] };
+    $('#calibration-guide').showModal();
+    calibrationTimer = setInterval(syncCalibrationGuide, 250);
+    renderCalibrationGuide();
+    $('#calibration-close').focus();
+    updateControls();
+  }
+
+  function beginGuideStillStep() {
+    if (!calibrationGuide || busy || !guideLiveState().ready) return;
+    const { waist, wili } = guideLiveState();
+    calibrationGuide.stage = 'still';
+    calibrationGuide.identity = { sessionId: waist.sessionId, sensorLocation: waist.sensorLocation };
+    calibrationGuide.error = '';
+    calibrationGuide.wiliSession = wili.sessionId;
+    calibrationGuide.baselineVerified = false;
+    calibrationGuide.deadline = performance.now() + 3000;
+    calibrationGuide.results = [];
+    if (!calibrationTimer) calibrationTimer = setInterval(syncCalibrationGuide, 250);
+    renderCalibrationGuide();
+  }
+
+  async function submitGuideCalibration(guide) {
+    if (calibrationGuide !== guide || busy) return;
+    const identityError = guideIdentityError();
+    if (identityError) { failCalibrationGuide(identityError); return; }
+    guide.stage = 'requesting';
+    guide.request = new AbortController();
+    guide.requestTimeout = setTimeout(() => {
+      if (calibrationGuide === guide) failCalibrationGuide('The baseline request timed out. Its outcome is unconfirmed; check the waist sensor card before retrying.');
+    }, 12000);
+    busy = true; updateControls(); renderCalibrationGuide();
+    try {
+      const response = await fetch('/api/commands', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ type: 'calibrate', expectedSessionId: guide.identity.sessionId, expectedSensorLocation: guide.identity.sensorLocation }),
+        signal: guide.request.signal,
+      });
+      const result = await response.json();
+      if (calibrationGuide !== guide || guide.stage === 'error') return;
+      if (!response.ok || result.error) throw new Error(result.error || `Baseline request failed (${response.status}).`);
+      if (!Array.isArray(result.calibratedSources) || !result.calibratedSources.includes('waist-airpod')) throw new Error('The server did not confirm a new waist baseline. Keep standing still and retry; the updated calibration endpoint is required.');
+      guide.stage = 'verifying'; guide.commandAccepted = true; guide.postCommandState = false;
+      renderCalibrationGuide();
+      const stateResponse = await fetch('/api/state', { cache: 'no-store', signal: guide.request.signal });
+      if (!stateResponse.ok) throw new Error(`Could not verify the baseline (${stateResponse.status}). Check the waist sensor card before retrying.`);
+      const value = await stateResponse.json();
+      if (calibrationGuide !== guide || guide.stage === 'error') return;
+      acceptSnapshot(value);
+      if (guide.stage === 'verifying') throw new Error('The request was accepted, but a fresh waist baseline was not verified. Stand still and retry.');
+    } catch (error) {
+      if (calibrationGuide === guide && guide.stage !== 'error') failCalibrationGuide(error.message || 'Baseline request failed. Restore the waist stream and retry.');
+    } finally {
+      clearTimeout(guide.requestTimeout);
+      busy = false;
+      updateControls();
+      renderCalibrationGuide();
+    }
+  }
+
+  function observeGuideCadence() {
+    const guide = calibrationGuide;
+    if (guide?.stage !== 'movement' || guideIdentityError()) return;
+    const row = guide.results[0];
+    const { waist, wili, fresh } = guideLiveState();
+    for (const [key, value, usable] of [['waist', waist?.sampleHz, fresh], ['wili', wili?.sampleHz, online && wili?.connected && wili.fresh]]) {
+      if (!usable || !finite(value) || value <= 0) continue;
+      row[key].min = row[key].min === null ? value : Math.min(row[key].min, value);
+      row[key].max = row[key].max === null ? value : Math.max(row[key].max, value);
+    }
+    for (const point of waist.trace || []) {
+      if (!finite(point.at) || !finite(point.totalG) || point.at <= guide.motionAfterAt) continue;
+      guide.motionTimes.add(point.at);
+      if (Math.abs(point.totalG - 1) >= .15 || (finite(point.angularSpeed) && point.angularSpeed >= .35)) guide.movementTimes.add(point.at);
+    }
+    if (online && wili?.connected && wili.fresh && finite(wili.totalG)) guide.wiliObserved = true;
+  }
+
+  function beginGuideMovement() {
+    const guide = calibrationGuide;
+    if (!guide || busy) return;
+    const identityError = guideIdentityError();
+    if (identityError) { failCalibrationGuide(identityError); return; }
+    const { waist } = guideLiveState();
+    if (!guide.baselineVerified || !waist.calibrated) { failCalibrationGuide('The waist baseline is no longer available. Start calibration again.'); return; }
+    guide.stage = 'movement'; guide.deadline = performance.now() + 3000;
+    guide.error = ''; guide.errorStage = null;
+    guide.motionAfterAt = Math.max(-Infinity, ...(waist.trace || []).map(point => point.at).filter(finite));
+    guide.motionTimes = new Set();
+    guide.movementTimes = new Set(); guide.wiliObserved = false;
+    guide.results = [{ label: 'Walking step', waist: { min: null, max: null }, wili: { min: null, max: null } }];
+    renderCalibrationGuide();
+  }
+
+  function syncCalibrationGuide() {
+    const guide = calibrationGuide;
+    if (!guide) return;
+    if (['still', 'requesting', 'verifying', 'calibrated', 'movement'].includes(guide.stage)) {
+      const identityError = guideIdentityError();
+      if (identityError) { failCalibrationGuide(identityError); return; }
+      if (guide.stage === 'still' && performance.now() >= guide.deadline) { void submitGuideCalibration(guide); return; }
+      if (guide.stage === 'verifying' && guide.commandAccepted && guide.postCommandState && guideLiveState().waist.calibrated) {
+        guide.stage = 'calibrated';
+        guide.deadline = performance.now() + 800;
+        guide.baselineVerified = true;
+        text('#calibration-message', `New standing tilt baseline verified for the same ${guide.identity.sensorLocation} waist AirPod session. FREE-WILi orientation was not calibrated.`);
+        $('#calibration-message').classList.remove('error');
+      }
+      if (guide.stage === 'calibrated' && performance.now() >= guide.deadline) beginGuideMovement();
+      if (guide.stage === 'movement' && performance.now() >= guide.deadline) {
+        if (guide.movementTimes.size < 3) { failCalibrationGuide('No movement detected — try again.'); return; }
+        if (!guide.wiliObserved) { failCalibrationGuide('No fresh WILi sample during the walk — try again.'); return; }
+        guide.stage = 'movement-complete';
+      }
+    }
+    renderCalibrationGuide();
+  }
+
+  function renderCalibrationGuide() {
+    const guide = calibrationGuide;
+    if (!guide) return;
+    const text = (selector, value) => { const node = $(selector), next = String(value); if (node.textContent !== next) node.textContent = next; };
+    const { waist, wili, fresh, ready } = guideLiveState();
+    const cadence = value => finite(value) && value > 0 ? `${number(value, 1)} Hz` : 'cadence unavailable';
+    text('#guide-wili-status', !online ? 'Offline' : wili?.connected ? 'WILi connected' : 'WILi disconnected');
+    $('#guide-wili-status').className = `badge ${online && wili?.connected ? 'good' : 'warning'}`;
+    text('#guide-wili-reading', `FREE-WILi: ${cadence(wili?.sampleHz)} · ${online && wili?.connected ? wili.quality || 'quality unavailable' : 'waiting for connection'}`);
+    text('#guide-waist-status', !waist?.connected ? 'AirPod disconnected' : fresh ? `${waist.sensorLocation || 'Waist'} AirPod ready` : 'AirPod not fresh');
+    $('#guide-waist-status').className = `badge ${fresh ? 'good' : 'warning'}`;
+    text('#guide-waist-reading', `Waist: ${cadence(waist?.sampleHz)} · ${finite(waist?.ageMs) ? `last sample ${Math.round(waist.ageMs + (lastStateReceived ? Date.now() - lastStateReceived : 0))} ms ago` : 'no sample'}${waist?.calibrated ? ' · baseline present' : ''}`);
+    text('#guide-waist-identity', `Reporting ${waist?.sensorLocation || 'unknown'} bud · ${waist?.sessionId ? `session ${waist.sessionId.slice(0, 8)}` : 'no session'}`);
+    const active = ['still', 'requesting', 'verifying', 'calibrated', 'movement'].includes(guide.stage);
+    const instructions = {
+      placement: [ready ? 'READY' : 'WAITING', ready ? 'Ready to calibrate' : 'Connect both devices', ready ? `Chest WILi · ${waist.sensorLocation} AirPod at your waist.` : !token ? 'Enter the console pairing token first.' : 'Connect WILi and start AirPod motion in the Mac bridge.'],
+      still: ['WAIST BASELINE', 'Stand upright', 'Keep still.'],
+      requesting: ['WAIST BASELINE', 'Keep still', 'Recording your baseline…'],
+      verifying: ['WAIST BASELINE', 'Keep still', 'Verifying…'],
+      calibrated: ['WAIST BASELINE VERIFIED', 'Calibrated', ''],
+      movement: ['MOTION CHECK', 'Walk a few steps', 'Move gently.'],
+      error: ['INTERRUPTED', guide.error === 'No movement detected — try again.' ? 'No movement detected' : 'Try again', guide.baselineVerified ? 'Waist baseline kept. Repeat the walking step.' : 'Calibration was not verified.'],
+      'movement-complete': ['MOTION CHECK COMPLETE', 'Done', 'Standing baseline verified. Movement recorded.'],
+    };
+    const instruction = instructions[guide.stage];
+    text('#guide-stage-label', instruction[0]); text('#guide-instruction', instruction[1]); text('#guide-detail', instruction[2]);
+    $('#guide-countdown').hidden = !['still', 'movement'].includes(guide.stage);
+    text('#guide-countdown', finite(guide.deadline) ? `${Math.max(0, Math.ceil((guide.deadline - performance.now()) / 1000))}` : '—');
+    $('#guide-error').hidden = !guide.error; text('#guide-error', guide.error || '');
+    $('#guide-checkmark').hidden = !['calibrated', 'movement-complete'].includes(guide.stage);
+    $('#guide-primary').hidden = active;
+    $('#guide-primary').disabled = busy || (!ready && guide.stage !== 'movement-complete');
+    text('#guide-primary', guide.stage === 'movement-complete' ? 'Close' : guide.stage === 'error' ? 'Retry' : 'Start');
+    $('#guide-movement-results').hidden = !guide.results.length;
+    const results = $('#guide-stage-results'); results.replaceChildren();
+    for (const row of guide.results) {
+      const range = value => value.min === null ? 'not observed' : `${number(value.min, 1)}${value.max !== value.min ? `–${number(value.max, 1)}` : ''} Hz`;
+      const item = document.createElement('li'); item.textContent = `${row.label}: waist ${range(row.waist)} · FREE-WILi ${range(row.wili)}`; results.appendChild(item);
+    }
+    text('#guide-motion-count', guide.motionTimes ? `${guide.motionTimes.size} new waist samples observed; ${guide.movementTimes.size} met the movement check. Fresh WILi sample ${guide.wiliObserved ? 'observed' : 'not observed'}.` : '');
+  }
+
+  function guidePrimaryAction() {
+    if (calibrationGuide?.stage === 'movement-complete') { closeCalibrationGuide(); return; }
+    const { waist } = guideLiveState();
+    const retryMovement = calibrationGuide?.stage === 'error' && calibrationGuide.errorStage === 'movement'
+      && calibrationGuide.baselineVerified && waist?.calibrated && waist.sessionId === calibrationGuide.identity.sessionId
+      && waist.sensorLocation === calibrationGuide.identity.sensorLocation;
+    if (retryMovement) {
+      if (!calibrationTimer) calibrationTimer = setInterval(syncCalibrationGuide, 250);
+      beginGuideMovement();
+    } else beginGuideStillStep();
+  }
+
   function renderDemoNextStep() {
     const panel = $('#demo-next-step');
     panel.hidden = !snapshot || !online;
     if (panel.hidden) return;
     const next = [];
-    if (!snapshot.providers?.photon?.configured) next.push('configure Photon iMessage credentials');
+    const active = snapshot.incident && !terminal(snapshot.incident);
+    const simulated = active ? simulatedIncident() : snapshot.dispatch?.mode === 'simulated';
+    if (!snapshot.providers?.photon?.configured) next.push('configure Photon messaging credentials');
     else if (snapshot.providers.photon.detail?.includes('Target not allowed for this project')) next.push('register the approved demo phones in Photon project Users');
     if (!snapshot.wearerMessaging?.configured) next.push('configure the approved wearer phone for iMessage');
-    if (!snapshot.responders.some(person => typeof person.phone === 'string' && person.phone.trim())) next.push('add at least one approved responder phone for live alerts');
+    if (simulated ? !snapshot.responders.some(person => person.simulated === true)
+      : !snapshot.responders.some(person => typeof person.phone === 'string' && person.phone.trim() && person.simulated !== true))
+      next.push(simulated ? 'configure the demo responder for simulated dispatch' : 'add at least one approved responder phone for live alerts');
     const waist = snapshot.sensors.find(sensor => sensor.source === 'waist-airpod');
     if (!waist?.connected) next.push('connect the waist AirPod and start motion in the Mac bridge');
     else if (!waist.fresh) next.push('restore fresh waist measurements');
     else if (!finite(waist.alignmentUncertaintyMs) || waist.alignmentUncertaintyMs > 100) next.push('wait for valid waist clock alignment');
-    if (!snapshot.wili?.usable) next.push('restore usable FREE-WILi measurements');
+    const wili = snapshot.wili;
+    const sparseStockReport = wili?.connected && wili.captureClock === 'host-receipt' && wili.quality === 'stale'
+      && wili.fullScaleG === 2 && wili.saturated === false
+      && finite(wili.receivedAgeMs) && wili.receivedAgeMs >= 0 && wili.receivedAgeMs < 2000
+      && finite(wili.sampleHz) && wili.sampleHz >= 0 && wili.sampleHz <= 2;
+    if (!wili?.usable) next.push(sparseStockReport
+      ? 'WILi is connected; waiting for its next acceleration report. Stock reporting is sparse at rest'
+      : 'restore usable FREE-WILi measurements');
     panel.hidden = !next.length;
-    text('#demo-next-step', next.length ? `Next for the live demo: ${next.join('; ')}. Local record questions and labelled console simulations remain available.` : '');
+    text('#demo-next-step', next.length ? `Next for ${simulated ? 'the demo with simulated dispatch' : 'the live demo'}: ${next.join('; ')}. Local record questions and labelled console simulations remain available.` : '');
   }
 
   function drawChart(card, rawTrace) {
@@ -210,49 +528,83 @@
     text('.chart-range', `${(windowMs / 1000).toFixed(0)} s · tilt 0–180°`, card);
   }
 
+  const reportSource = source => ({ 'freewili-local-speech': 'WILi voice', 'ios-on-device-speech': 'Phone voice',
+    'photon-imessage': 'iMessage', 'simulated-dispatch': 'Simulated responder' }[source] || 'Recorded report');
+
+  function incidentMessages(incident) {
+    if (!incident) return [];
+    const human = (snapshot.conversation || []).filter(message => message.incidentId === incident.id)
+      .map(message => ({ ...message, agent: false }));
+    const messageTypes = new Set(['wearer_checkin', 'wearer_ack', 'wearer_status', 'alert', 'status', 'handoff', 'answer']);
+    const outbound = snapshot.actions.filter(action => action.incidentId === incident.id && messageTypes.has(action.type)
+      && typeof action.text === 'string' && action.text.trim()).map(action => ({
+        id: action.id, incidentId: action.incidentId, at: action.createdAt, speakerName: 'LIFELINE',
+        agent: true, recipient: action.recipientId ? nameFor(action.recipientId) : dashboardPresentation(snapshot).wearerName,
+        text: action.text, source: action.provider === 'demo' || action.status === 'simulated' ? 'simulated-dispatch' : 'photon-imessage',
+        delivery: action.status, detail: action.providerResult || '',
+      }));
+    const at = value => finite(value) ? value : Date.parse(value) || 0;
+    return [...human, ...outbound].sort((a, b) => at(a.at) - at(b.at));
+  }
+
   function renderIncident() {
-    const incident = snapshot.incident;
-    const developmentReset = incident?.resolutionActor === 'development-operator';
-    text('#incident-scope', !incident ? 'INCIDENT LOOP' : terminal(incident) ? 'SAVED INCIDENT' : 'CURRENT INCIDENT');
-    text('#incident-id', incident ? `ID ${incident.id}` : 'NO ACTIVE INCIDENT');
-    text('#incident-title', developmentReset ? 'Rehearsal ended' : incident ? titles[incident.phase] || incident.phase : 'Ready for an incident');
-    text('#incident-summary', incident ? incident.evidence.summary : 'Connect the motion sources to begin. No incident has been reported.');
-    const evidence = $('#evidence-badge');
-    evidence.hidden = !incident;
-    if (incident) {
-      const labels = { synthetic: 'SYNTHETIC TRIGGER', manual: 'MANUAL REQUEST', 'single-source': 'SINGLE-SOURCE EVIDENCE', 'cross-body': 'CROSS-BODY EVIDENCE' };
-      evidence.textContent = labels[incident.evidence.kind] || incident.evidence.kind;
-      evidence.className = `badge ${incident.evidence.kind === 'synthetic' ? 'warning' : ''}`;
+    const saved = snapshot.incident, incident = activeIncident(snapshot), view = dashboardPresentation(snapshot, online);
+    document.body.dataset.phase = incident?.phase || 'IDLE';
+    $('.workspace-spectrum').dataset.phase = incident?.phase || 'IDLE';
+    text('#overview-wearer', view.wearerName);
+    text('#incident-scope', incident ? 'CURRENT INCIDENT' : saved ? 'SAVED INCIDENT' : 'INCIDENT LOOP');
+    text('#incident-id', saved ? `ID ${saved.id}` : 'NO ACTIVE INCIDENT');
+    text('#incident-title', view.statusLabel);
+    text('#incident-summary', view.summary);
+    $('#incident-dispatch').hidden = !['live', 'simulated'].includes(saved?.dispatchMode);
+    text('#incident-dispatch', simulatedIncident(saved) ? 'SIMULATED DISPATCH' : 'LIVE RESPONDER DISPATCH');
+    $('#incident-dispatch').className = `badge ${simulatedIncident(saved) ? 'warning' : ''}`;
+    const evidence = $('#evidence-badge'); evidence.hidden = !saved;
+    if (saved) {
+      evidence.textContent = ({ synthetic: 'SYNTHETIC TRIGGER', manual: 'MANUAL REQUEST',
+        'single-source': 'SINGLE-SOURCE EVIDENCE', 'cross-body': 'CROSS-BODY EVIDENCE' })[saved.evidence.kind] || saved.evidence.kind;
+      evidence.className = `badge ${saved.evidence.kind === 'synthetic' ? 'warning' : ''}`;
     }
     renderMeasuredEvidence();
+    $('#phase-list').hidden = !incident;
+    $('.incident-facts').hidden = !incident;
     const phaseIndex = phases.findIndex(([phase]) => phase === incident?.phase);
-    const cancelled = incident?.phase === 'CANCELLED_FALSE_ALARM';
-    $('#phase-list').className = `phase-list${cancelled ? ' cancelled' : ''}`;
+    $('#phase-list').className = 'phase-list';
     $('#phase-list').innerHTML = phases.map(([phase, label], index) => `<li class="${phaseIndex > index ? 'complete' : phaseIndex === index ? 'current' : ''}"${phase === incident?.phase ? ' aria-current="step"' : ''}>${label}</li>`).join('');
-    text('#owner', incident?.ownerId ? nameFor(incident.ownerId) : 'Unassigned');
-    text('#owner-detail', incident?.ownerId ? {
-      ACKNOWLEDGED: 'Accepted responsibility; departure not confirmed.',
-      RESPONDER_EN_ROUTE: 'Departure recorded; arrival not confirmed.',
-      ON_SCENE: 'Arrival recorded; outcome pending.', RESOLVED: 'Outcome recorded.',
-      CANCELLED_FALSE_ALARM: 'Incident cancelled.',
-    }[incident.phase] || 'Owner recorded for this incident.' : developmentReset ? 'Development reset; no safety determination was made.' : incident?.phase === 'CANCELLED_FALSE_ALARM' ? 'Check-in explicitly cancelled; no responder was assigned.' : 'An alert alone does not establish ownership.');
-    const owner = incident?.ownerId ? nameFor(incident.ownerId) : 'The approved responder';
-    const code = incident?.id || '';
-    const nextSteps = {
-      DETECTED: 'The wearer check-in is opening. Incident observations do not establish a diagnosis.',
-      CONFIRMING: 'Wearer: request help by speech, iMessage or the red board button. To cancel before the deadline, use the explicit green board button or current phone control.',
-      HELP_REQUESTED: `Waiting for an approved responder to receive and accept the alert. Reply ON IT ${code}; provider acceptance alone does not assign responsibility.`,
-      ACKNOWLEDGED: `${owner}: reply DEPART ${code} when leaving, or ARRIVED ${code} if already beside the wearer.`,
-      RESPONDER_EN_ROUTE: `${owner}: reply ARRIVED ${code} when on scene.`,
-      ON_SCENE: `${owner}: reply RESOLVED ${code} followed by the concrete observed outcome.`,
-      RESOLVED: 'Outcome saved. Download the care brief to review the retained clinical snapshot and separately attributed local reports.',
-      CANCELLED_FALSE_ALARM: 'This saved check-in was explicitly cancelled. A new physical event or labelled development trigger starts a new incident.',
-    };
-    text('#incident-next-step', developmentReset ? 'The operator ended this rehearsal. Its evidence and send outcomes remain saved.' : incident && Object.hasOwn(nextSteps, incident.phase) ? nextSteps[incident.phase] : 'Start a live rehearsal after the phone contacts and motion streams are ready.');
+    text('#owner', view.ownerName || (incident ? 'Awaiting acceptance' : 'No response needed'));
+    text('#owner-detail', view.ownerDetail);
+    text('#incident-next-step', view.nextStep);
+    text('#overview-report', view.latestReport ? `“${view.latestReport.text}”` : 'No wearer report recorded.');
+    text('#overview-report-source', view.latestReport ? `${reportSource(view.latestReport.source)} · ${time(view.latestReport.at)}` : '');
+    text('#overview-response-name', view.ownerName || (incident ? 'Awaiting acceptance' : 'No active response'));
+    text('#overview-response-state', view.ownerState);
+    text('#overview-response-meta', [view.simulated ? 'Simulated dispatch' : '', view.acceptedAt ? `Accepted ${time(view.acceptedAt)}` : '',
+      incident?.ownerId ? view.ownerDetail.replace('Simulated responder. ', '') : ''].filter(Boolean).join(' · '));
+    const facts = document.createDocumentFragment();
+    const bodyConnected = snapshot.wili?.connected === true;
+    const waistConnected = snapshot.sensors.some(source => source.source === 'waist-airpod' && source.connected);
+    appendText(facts, 'p', '', !online ? 'Last received device state.'
+      : `${bodyConnected ? 'WILi connected' : 'WILi awaiting connection'} · ${waistConnected ? 'Waist AirPod connected' : 'Waist AirPod awaiting connection'}.`);
+    if (online && bodyConnected) appendText(facts, 'p', '', 'Quiet intervals between WILi reports are normal.');
+    if (incident) appendText(facts, 'p', '', ({ synthetic: 'Generated incident evidence.', manual: 'Manual request for help.',
+      'single-source': 'One motion source contributed.', 'cross-body': 'Body and waist motion contributed.' })[incident.evidence.kind] || 'Incident evidence recorded.');
+    if (!incident) appendText(facts, 'p', '', 'No active incident evidence.');
+    $('#overview-evidence').replaceChildren(facts);
+    const recent = incidentMessages(incident).filter(message => !message.agent).slice(-3);
+    const list = document.createDocumentFragment();
+    if (!recent.length) appendText(list, 'li', 'empty-list', incident ? 'No replies recorded yet.' : 'No active incident conversation.');
+    for (const message of recent) {
+      const row = appendText(list, 'li', '', '');
+      appendText(row, 'strong', '', `${message.speakerName || 'Speaker'}${message.agent ? ` → ${message.recipient}` : ''}`);
+      appendText(row, 'p', '', message.text);
+      appendText(row, 'small', '', `${time(message.at)} · ${reportSource(message.source)}${message.agent ? ` · ${actionLabels[message.delivery]?.[0] || 'Status unavailable'}` : ''}`);
+    }
+    $('#overview-conversation').replaceChildren(list);
     renderHandoff();
-    $('#outcome-panel').hidden = !incident?.outcome;
-    text('#outcome', incident?.outcome || '');
-    text('#outcome-source', incident?.outcome ? `Recorded by ${nameFor(incident.resolutionActor)} · ${time(incident.updatedAt)}` : '');
+    $('#outcome-panel').hidden = !saved?.outcome;
+    text('#outcome-label', simulatedIncident(saved) ? 'SIMULATED OUTCOME' : 'RECORDED OUTCOME');
+    text('#outcome', saved?.outcome || '');
+    text('#outcome-source', saved?.outcome ? `${simulatedIncident(saved) ? 'Demo only · ' : ''}Recorded by ${nameFor(saved.resolutionActor)} · ${time(saved.updatedAt)}` : '');
   }
 
   function appendText(parent, tag, className, value) {
@@ -298,8 +650,8 @@
   }
 
   function patientContext() {
-    const incident = snapshot?.incident;
-    return patientScope === 'incident' && incident?.healthRevision ? { key: `${incident.id}:${incident.healthRevision}`, incidentId: incident.id } : { key: 'current', incidentId: null };
+    const incident = activeIncident(snapshot);
+    return patientScope === 'incident' && incident ? { key: `${incident.id}:${incident.healthRevision || 'unbound'}`, incidentId: incident.id } : { key: 'current', incidentId: null };
   }
   function clearPatientAnswer() {
     patientQuestionRequest?.controller.abort(); patientQuestionRequest = null;
@@ -309,7 +661,7 @@
   function ensurePatientRecord() { if (token && patientContext().key !== patientContextKey) void loadPatientRecord(); }
   function updatePatientControls() {
     $('#patient-scope').value = patientContext().incidentId ? 'incident' : 'current';
-    $('#patient-scope').querySelector('[value="incident"]').disabled = !snapshot?.incident?.healthRevision;
+    $('#patient-scope').querySelector('[value="incident"]').disabled = !activeIncident(snapshot)?.healthRevision;
     $('#patient-scope').disabled = !token || !online || !!patientRequest;
     $('#patient-refresh').disabled = !token || !online || !!patientRequest;
     $('#patient-question-submit').disabled = !token || !online || !patientRecord || !!patientRequest || !!patientQuestionRequest || !$('#patient-question').value.trim() || $('#patient-question').value.trim().length > 2000;
@@ -355,7 +707,47 @@
       }
       for (const warning of record.warnings || []) appendText(container, 'p', 'patient-warning', `${warning.code}: ${warning.message}`);
     }
-    $('#patient-records').replaceChildren(container); updatePatientControls();
+    $('#patient-records').replaceChildren(container); renderCompactCareSummary(); updatePatientControls();
+  }
+  function renderCompactCareSummary() {
+    const brief = document.createDocumentFragment(), full = document.createDocumentFragment();
+    if (!patientRecord) {
+      appendText(brief, 'p', 'empty-list', token ? 'Care context has not been retrieved.' : 'Connect to read care context.');
+      appendText(full, 'p', 'empty-list', 'Care context has not been retrieved.');
+    } else {
+      const care = careHighlights(patientRecord);
+      const label = row => row.fields?.name || row.fields?.substance || row.label;
+      const entries = [
+        ...care.allergies.map(row => ({ kind: 'Allergy', label: label(row), detail: [row.fields?.reaction, row.fields?.severity].filter(Boolean).join(' · '), rows: [row] })),
+        ...care.medications.map(group => ({ kind: 'Active prescription', label: group.name,
+          detail: group.currentPrescriptions.map(row => [row.fields?.dosage, row.fields?.frequency, row.fields?.dosageInstructions].filter(Boolean).join(' · ')).filter(Boolean).join('; '), rows: group.records })),
+        ...care.conditions.map(row => ({ kind: 'Condition', label: label(row), detail: row.fields?.status === 'active' ? '' : row.fields?.status || 'Status unknown', rows: [row] })),
+      ];
+      const small = appendText(brief, 'ul', '', '');
+      for (const entry of entries.slice(0, 6)) appendText(small, 'li', '', `${entry.label}${entry.kind === 'Allergy' ? ' · allergy' : entry.kind === 'Active prescription' ? ' · prescribed' : ''}`);
+      if (entries.length > 6) appendText(brief, 'p', 'overview-card-meta', `${entries.length - 6} more in care context.`);
+      if (!entries.length) appendText(brief, 'p', 'empty-list', 'No care facts returned.');
+      const demographic = patientRecord.records.find(row => row.section === 'demographics');
+      appendText(brief, 'p', 'overview-card-meta', `Synthetic ${patientContext().incidentId ? 'incident snapshot' : 'current record'} · ${demographic?.label || 'fictional patient'}. Separate from ${dashboardPresentation(snapshot).wearerName}.`);
+      const facts = appendText(full, 'ul', '', '');
+      for (const entry of entries) {
+        const item = appendText(facts, 'li', '', '');
+        appendText(item, 'strong', '', entry.label);
+        appendText(item, 'p', 'field-note', `${entry.kind}${entry.detail ? ` · ${entry.detail}` : ''}`);
+        const source = appendText(item, 'details', 'clinical-source', '');
+        appendText(source, 'summary', '', 'View source');
+        for (const row of entry.rows) appendText(source, 'p', '', `${row.section} · ${row.sourceName || row.source || 'Source unavailable'} · [${row.id}]${row.fields?.status ? ` · ${row.fields.status}` : ''}`);
+      }
+      if (care.vitals.length) {
+        appendText(full, 'h3', '', 'Latest historical measurements');
+        const vitals = appendText(full, 'ul', '', '');
+        for (const row of care.vitals) appendText(vitals, 'li', '', `${label(row)} · ${row.fields.value}${row.fields.unit ? ` ${row.fields.unit}` : ''} · ${new Date(row.fields.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}`);
+      }
+      if (care.missingCategories.length) appendText(full, 'p', 'field-note', `Not available: ${care.missingCategories.join(', ')}.`);
+      appendText(full, 'p', 'field-note', 'Hospital context is read only. Wearer reports remain separately attributed.');
+    }
+    $('#overview-care-context').replaceChildren(brief);
+    $('#care-context-summary').replaceChildren(full);
   }
   async function loadPatientRecord(refresh = false) {
     if (!token) return;
@@ -415,48 +807,85 @@
   }
 
   function renderHandoff() {
+    text('#handoff-title', activeIncident(snapshot) ? 'Current incident handoff' : 'Saved incident handoff');
     const [generation, color] = generationFor(snapshot.incident?.handoffGeneration);
     text('#handoff-generation', generation); $('#handoff-generation').className = `badge ${color}`;
     text('#handoff-source-context', snapshot.incident?.healthRevision
       ? `Clinical source: saved Finch synthetic snapshot ${snapshot.incident.healthRevision}. LIFELINE supplies incident observations; historical vitals are not current measurements.`
       : 'Clinical source revision has not been bound. LIFELINE observations and unavailable health information remain separate.');
     const content = snapshot.incident?.handoff || 'A record-grounded handoff will appear here when it is available.';
-    const signature = JSON.stringify([snapshot.incident?.id, content]);
+    const signature = JSON.stringify([snapshot.incident?.id, content, observationKey()]);
     if (signature === handoffSignature) return;
     handoffSignature = signature;
     const fragment = document.createDocumentFragment();
-    const headings = new Set(['Known source facts:', 'Unavailable information:', 'AI-composed synthetic health handoff:', 'AI unavailable — source template fallback:']);
-    for (const line of content.split('\n')) {
-      if (headings.has(line)) { appendText(fragment, 'h3', 'handoff-heading', line); continue; }
-      const row = appendText(fragment, 'p', 'handoff-line', '');
-      const category = line.match(/^(medications|conditions|allergies):/);
-      const source = line.match(/ \[[^\]\n]+\]$/);
-      const sourceStart = source ? line.length - source[0].length : line.length;
-      if (category) {
-        appendText(row, 'strong', 'handoff-category', category[0]);
-        appendText(row, 'span', '', line.slice(category[0].length, sourceStart));
-      } else appendText(row, 'span', '', line.slice(0, sourceStart));
-      if (source) appendText(row, 'span', 'source-ref', source[0]);
+    const headings = new Set(['Known source facts:', 'Unavailable information:', 'AI-composed synthetic health handoff:', 'AI unavailable — source template fallback:',
+      'Wearer reports (local observations, not hospital records):', 'Responder reports (local observations, not hospital records):']);
+    const appendLines = (value) => {
+      for (const line of value.split('\n')) {
+        if (headings.has(line)) { appendText(fragment, 'h3', 'handoff-heading', line); continue; }
+        const row = appendText(fragment, 'p', 'handoff-line', '');
+        const category = line.match(/^(medications|conditions|allergies):/);
+        const source = line.match(/ \[[^\]\n]+\]$/);
+        const sourceStart = source ? line.length - source[0].length : line.length;
+        if (category) {
+          appendText(row, 'strong', 'handoff-category', category[0]);
+          appendText(row, 'span', '', line.slice(category[0].length, sourceStart));
+        } else appendText(row, 'span', '', line.slice(0, sourceStart));
+        if (source) appendText(row, 'span', 'source-ref', source[0]);
+      }
+    };
+    // Only structure a quote when the saved handoff exactly matches its recorded
+    // conversation source. Unknown/legacy text retains the literal line renderer.
+    const sourceNames = { 'freewili-local-speech': ['FREE-WILi microphone / local Whisper'], 'ios-on-device-speech': ['iPhone on-device speech'], 'photon-imessage': ['Photon message', 'Photon iMessage'], 'simulated-dispatch': ['Simulated dispatch'] };
+    const reports = (Array.isArray(snapshot.conversation) ? snapshot.conversation : []).flatMap(message => {
+      if (message?.incidentId !== snapshot.incident?.id || !['wearer', 'responder'].includes(message.speaker)
+        || typeof message.speakerName !== 'string' || typeof message.text !== 'string' || typeof message.id !== 'string'
+        || !finite(message.at) || !Number.isFinite(new Date(message.at).getTime()) || !Object.hasOwn(sourceNames, message.source)) return [];
+      const recorded = new Date(message.at).toISOString();
+      return sourceNames[message.source].flatMap(source => {
+        const literal = `${message.speakerName}: “${message.text}”; source: ${source}; recorded ${recorded} [conversation:${message.id}]`;
+        const start = content.indexOf(literal);
+        return start < 0 ? [] : [{ message, recorded, source, literal, start }];
+      });
+    }).sort((a, b) => a.start - b.start);
+    let cursor = 0;
+    for (const report of reports) {
+      if (report.start < cursor) continue;
+      const before = content.slice(cursor, report.start).replace(/\n$/, '');
+      if (before) appendLines(before);
+      const row = appendText(fragment, 'div', 'handoff-report', '');
+      const speaker = appendText(row, 'p', 'handoff-report-speaker', '');
+      appendText(speaker, 'strong', '', report.message.speakerName);
+      appendText(speaker, 'span', '', report.message.source === 'simulated-dispatch' ? 'Simulated responder report' : report.message.speaker === 'wearer' ? 'Wearer report' : 'Responder report');
+      appendText(row, 'p', 'handoff-report-quote', `“${report.message.text}”`);
+      const metadata = appendText(row, 'p', 'handoff-report-meta', `${report.source === 'Photon iMessage' ? 'Photon message' : report.source} · ${report.recorded} `);
+      appendText(metadata, 'span', 'source-ref', `[conversation:${report.message.id}]`);
+      cursor = report.start + report.literal.length;
     }
+    const after = content.slice(cursor).replace(/^\n/, '');
+    if (after) appendLines(after);
     $('#handoff').replaceChildren(fragment);
   }
 
-  function syncContext(previousIncident) {
+  function syncContext(previousIncident, previousObservations) {
     const incident = snapshot?.incident;
     const changedIncident = previousIncident?.id !== incident?.id;
     const changedVersion = previousIncident?.version !== incident?.version;
-    if (changedIncident) {
+    const changedObservations = previousObservations !== observationKey();
+    if (changedIncident || (contextPreview && (changedVersion || changedObservations))) {
       $('#rehearsal-preview').hidden = true;
+      contextPreview = null;
       text('#rehearsal-answer', '');
       text('#rehearsal-submitted-question', '');
       text('#rehearsal-context', '');
       text('#rehearsal-message', '');
       $('#rehearsal-message').classList.remove('error');
+      if (!changedIncident) text('#rehearsal-message', 'Incident context changed. Generate a new preview using the current reports and phase.');
     }
-    if (contextRequest && (changedIncident || changedVersion)) {
+    if (contextRequest && (changedIncident || changedVersion || changedObservations)) {
       contextRequest.controller.abort();
       contextRequest = null;
-      text('#rehearsal-message', 'Incident context changed while generating. Review the current phase and generate a new preview.');
+      text('#rehearsal-message', 'Incident context changed while generating. Review the current reports and phase, then generate a new preview.');
       $('#rehearsal-message').classList.add('error');
     }
   }
@@ -490,8 +919,8 @@
       const [generation, generationColor] = generationFor(detail?.generation);
       appendText(answerHead, 'span', `badge ${generationColor}`, generation);
       appendText(row, 'p', 'question-answer', action.text || 'No answer text recorded.');
-      appendText(row, 'p', 'question-result', action.providerResult || 'No provider result yet.');
-      const source = detail ? `Photon iMessage${typeof detail.inboundId === 'string' ? ` · Inbound ${detail.inboundId}` : ''}` : 'Original question source unavailable';
+      appendText(row, 'p', 'question-result', action.status === 'simulated' ? `Internal demo delivery; no provider send or recipient receipt.${action.providerResult ? ` ${action.providerResult}` : ''}` : action.providerResult || 'No provider result yet.');
+      const source = detail ? `Photon message${typeof detail.inboundId === 'string' ? ` · Inbound ${detail.inboundId}` : ''}` : 'Original question source unavailable';
       appendText(row, 'p', 'question-meta', `${time(action.createdAt)} · ${source} · Action ${action.id}`);
     }
     $('#responder-questions').replaceChildren(fragment);
@@ -513,9 +942,9 @@
     const incident = snapshot?.incident;
     const question = $('#rehearsal-question').value.trim();
     if (!token || !online || !incident || contextRequest || !question || question.length > 2000) return;
-    const request = { incidentId: incident.id, version: incident.version, phase: incident.phase, question, controller: new AbortController() };
+    const request = { incidentId: incident.id, version: incident.version, phase: incident.phase, observations: observationKey(), question, controller: new AbortController() };
     contextRequest = request;
-    const current = () => contextRequest === request && snapshot?.incident?.id === request.incidentId && snapshot?.incident?.version === request.version;
+    const current = () => contextRequest === request && snapshot?.incident?.id === request.incidentId && snapshot?.incident?.version === request.version && observationKey() === request.observations;
     updateRehearsalControls();
     $('#rehearsal-message').classList.remove('error');
     text('#rehearsal-message', 'Generating a local preview…');
@@ -534,6 +963,7 @@
       text('#rehearsal-context', `Preview context ${request.incidentId} · ${request.phase} · version ${request.version}`);
       text('#rehearsal-submitted-question', `Question: ${request.question}`);
       text('#rehearsal-answer', result.answer);
+      contextPreview = { incidentId: request.incidentId, version: request.version, observations: request.observations };
       $('#rehearsal-preview').hidden = false;
       text('#rehearsal-message', 'Preview generated locally. No responder message was sent.');
     } catch (error) {
@@ -549,7 +979,7 @@
     const reply = snapshot.timeline.findLast((event) => event.incidentId === snapshot.incident?.id && event.type === 'CHECKIN_REPLY');
     if (!reply) {
       text('#reply-decision', 'NO REPLY');
-      text('#reply-transcript', 'No wearer reply received for this incident.');
+      text('#reply-transcript', 'No wearer check-in reply received for this incident.');
       text('#reply-meta', 'Wearer speech and iMessage replies can request help or preserve the check-in. Cancellation requires the explicit current check-in control.');
       $('#reply-transcript').classList.remove('has-reply');
       return;
@@ -562,9 +992,318 @@
     } catch { /* Preserve the recorded detail if it is not structured. */ }
     text('#reply-decision', decision);
     text('#reply-transcript', transcript);
-    const source = reply.actor === 'freewili-local-speech' ? 'FREE-WILi microphone · local Whisper' : reply.actor === 'ios-on-device-speech' ? 'Legacy iPhone on-device speech' : reply.actor === 'photon-imessage' ? 'Wearer iMessage via Photon' : reply.actor;
+    const source = reply.actor === 'freewili-local-speech' ? 'FREE-WILi microphone · local Whisper' : reply.actor === 'ios-on-device-speech' ? 'Legacy iPhone on-device speech' : reply.actor === 'photon-imessage' ? 'Wearer Photon message' : reply.actor;
     text('#reply-meta', `${time(reply.at)} · ${source} · Cancellation requires the explicit check-in control.`);
     $('#reply-transcript').classList.add('has-reply');
+  }
+
+  function renderCheckinAudio() {
+    const incident = snapshot?.incident, audio = snapshot?.checkinAudio;
+    const matching = !!incident && !!audio && audio.incidentId === incident.id && audio.checkinId === incident.checkinId;
+    const active = incident?.phase === 'CONFIRMING';
+    const at = matching && finite(audio.at) ? audio.at : null;
+    const now = Date.now() + clockOffset;
+    const age = at === null ? null : now - at;
+    const connected = !!snapshot?.wili?.connected && typeof audio?.sessionId === 'string' && !!audio.sessionId && audio.sessionId === snapshot?.wili?.sessionId;
+    const timely = finite(age) && age >= 0 && age < 6000;
+    const beforeDeadline = finite(incident?.checkinDeadline) && now < incident.checkinDeadline;
+    let label = 'Voice status unavailable', color = '', detail = 'No matching wearable voice report for this check-in.';
+    if (!incident) {
+      label = 'No active check-in'; detail = 'Wearable voice status appears during an incident check-in.';
+    } else if (!active) {
+      label = matching && audio.stage === 'complete' ? 'Transcript received' : matching && audio.stage === 'listening' ? 'Listening window ended' : 'Check-in inactive';
+      detail = 'This check-in is no longer active.';
+    } else if (matching) {
+      if (!online || !connected) {
+        label = 'Voice unavailable'; detail = !online ? 'Live state interrupted; no current listening window is established.' : 'Wearable disconnected; no current listening window is established.';
+      } else if (audio.stage === 'listening') {
+        const remaining = timely && beforeDeadline ? Math.ceil(Math.min(6000 - age, incident.checkinDeadline - now) / 1000) : 0;
+        label = remaining > 0 ? `LISTENING — speak now (${remaining}s left)` : 'Listening window ended';
+        color = timely && beforeDeadline ? 'good' : '';
+        detail = timely && beforeDeadline ? 'FREE-WILi microphone is in its reported capture window.' : 'No fresh listening window is established for this check-in.';
+      } else {
+        const stages = { prompting: ['WILi speaking', ''], transcribing: ['Transcribing', 'warning'], complete: ['Transcript received', 'good'], unavailable: ['Voice unavailable', 'bad'] };
+        if (typeof audio.stage === 'string' && Object.hasOwn(stages, audio.stage)) {
+          [label, color] = stages[audio.stage]; detail = 'Reported by the connected wearable.';
+        }
+      }
+    }
+    text('#checkin-audio-status', label); $('#checkin-audio-status').className = color ? `voice-${color}` : '';
+    text('#checkin-audio-detail', `${detail}${at !== null ? ` Last report ${time(at)}.` : ''}`);
+    text('#checkin-audio-control', label); $('#checkin-audio-control').className = `field-note checkin-audio-control${color ? ` voice-${color}` : ''}`;
+  }
+
+  function renderConversation() {
+    const incident = snapshot?.incident;
+    const available = Array.isArray(snapshot?.conversation);
+    const messages = incidentMessages(incident);
+    const signature = JSON.stringify([incident?.id, incident?.phase, incident?.dispatchMode, available, messages]);
+    if (signature === conversationSignature) return;
+    conversationSignature = signature;
+    text('#conversation-count', incident && !available ? '—' : messages.length);
+    text('#conversation-context', incident ? `${terminal(incident) ? 'Saved' : 'Current'} incident · ${incident.id}${simulatedIncident(incident) ? ' · simulated dispatch' : ''}` : 'No incident conversation yet.');
+    const list = $('#conversation'), fragment = document.createDocumentFragment();
+    const follow = list.scrollHeight - list.clientHeight - list.scrollTop < 24, priorScroll = list.scrollTop;
+    const deliveries = { recorded: ['Recorded', ''], queued: ['Queued', ''], playing: ['Playing on wearable', ''],
+      spoken: ['Playback completed', ''], failed: ['Delivery failed', 'bad'], attempting: ['Sending', ''],
+      provider_accepted: ['Submitted · receipt unconfirmed', ''], unknown: ['Delivery unknown', ''],
+      cancelled: ['Cancelled', ''], simulated: ['Simulated message', ''] };
+    if (!messages.length) appendText(fragment, 'li', 'empty-list', !incident ? 'Conversation appears when an incident starts.'
+      : !available ? 'Conversation history is unavailable.' : 'No messages recorded for this incident.');
+    for (const message of messages) {
+      const wearer = message.speaker === 'wearer', responder = message.speaker === 'responder';
+      const row = appendText(fragment, 'li', `conversation-message${wearer ? ' conversation-wearer' : responder ? ' conversation-responder' : ' conversation-agent'}`, '');
+      const head = appendText(row, 'div', 'conversation-head', '');
+      const speaker = appendText(head, 'div', 'conversation-speaker', '');
+      appendText(speaker, 'strong', '', message.speakerName || (wearer ? 'Wearer' : responder ? 'Responder' : 'Speaker unavailable'));
+      appendText(speaker, 'span', 'conversation-role', message.agent ? `To ${message.recipient}`
+        : message.source === 'simulated-dispatch' ? 'Simulated responder' : wearer ? 'Wearer' : responder ? 'Responder' : '');
+      const [label, color] = deliveries[message.delivery] || ['Status unavailable', ''];
+      appendText(head, 'span', `badge ${color}`, label);
+      appendText(row, 'p', 'conversation-quote', message.text || 'Message text unavailable.');
+      appendText(row, 'p', 'conversation-meta', `${time(message.at)} · ${reportSource(message.source)}`);
+      if (typeof message.detail === 'string' && message.detail) {
+        const detail = appendText(row, 'details', 'conversation-detail', '');
+        appendText(detail, 'summary', '', 'Delivery details');
+        appendText(detail, 'p', '', message.detail);
+      }
+    }
+    list.replaceChildren(fragment);
+    list.scrollTop = follow ? list.scrollHeight : priorScroll;
+  }
+
+  function validLocationPoint(point) {
+    return !!point && finite(point.latitude) && point.latitude >= -90 && point.latitude <= 90
+      && finite(point.longitude) && point.longitude >= -180 && point.longitude <= 180;
+  }
+
+  function locationPointAge(point) {
+    return finite(point?.ageMs) && point.ageMs >= 0 ? point.ageMs + (lastStateReceived ? Math.max(0, Date.now() - lastStateReceived) : 0) : null;
+  }
+
+  function updateLocationControls() {
+    const location = snapshot?.location;
+    const native = location?.native?.configured === true;
+    const invite = native ? location.native.request : location?.invite;
+    const active = snapshot?.incident && !terminal(snapshot.incident);
+    const pending = ['queued', 'attempting'].includes(invite?.status);
+    $('#location-invite').disabled = !token || !online || location?.configured !== true || locationInviteBusy || pending || !!active;
+    text('#location-invite', locationInviteBusy ? 'Requesting…' : 'Request location in iMessage');
+    const labels = { queued: 'Location request queued', attempting: 'Submitting location request',
+      provider_accepted: 'Location request submitted; sharing permission is still required',
+      failed: 'Location request failed', unknown: 'Location request outcome unknown', cancelled: 'Location request cancelled' };
+    text('#location-invite-state', !location ? 'Location sharing is unavailable in this server state.'
+      : !online ? 'Last received state. Reconnect to request location.'
+      : active ? 'The incident check-in includes the wearer’s location request.'
+      : !location.configured ? 'The wearer’s location sharing connection is not configured.'
+      : !token ? 'Pairing token required to request the approved wearer’s location.'
+      : typeof invite?.status === 'string' && Object.hasOwn(labels, invite.status) ? labels[invite.status]
+      : 'Sends a location request to the approved wearer. Sharing requires their consent.');
+  }
+
+  function renderLocation() {
+    const location = snapshot?.location;
+    const shared = online && ['wearer', 'responder'].some(role => validLocationPoint(location?.[role])
+      && location[role].fresh === true && locationPointAge(location[role]) !== null && locationPointAge(location[role]) <= 60000);
+    text('#location-status', !location ? 'Unavailable' : !online ? 'Last state' : shared ? 'Location shared' : location.configured ? 'Awaiting location' : 'Not configured');
+    $('#location-status').className = 'badge';
+    const native = location?.native;
+    $('#location-native-detail').hidden = !native;
+    const nativePosition = ['wearer', 'responder'].some(role => validLocationPoint(location?.[role]) && location[role].source === 'photon-find-my');
+    text('#location-native-detail', native ? `Photon Find My · ${native.configured !== true ? 'Not configured' : nativePosition ? 'Shared position received' : 'Waiting for a shared position'}` : '');
+    for (const role of ['wearer', 'responder']) {
+      const point = location?.[role], valid = validLocationPoint(point), age = locationPointAge(point);
+      const fresh = online && valid && point.fresh === true && age !== null && age <= 60000;
+      text(`#location-${role}-name`, typeof point?.name === 'string' && point.name.trim() ? point.name : role === 'wearer' ? 'Wearer' : 'Responder');
+      text(`#location-${role}-position`, valid ? `${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)}` : 'Not shared');
+      const ageText = age !== null ? age < 1000 ? 'just received' : `${Math.floor(age / 1000)} s old` : 'age unavailable';
+      const accuracy = finite(point?.accuracy) && point.accuracy >= 0 ? `accuracy ±${Math.ceil(point.accuracy)} m` : 'accuracy unknown';
+      const sources = { 'browser-geolocation': 'Browser location', 'photon-find-my': 'Photon Find My' };
+      const source = typeof point?.source === 'string' && Object.hasOwn(sources, point.source) ? sources[point.source] : 'Location source unavailable';
+      text(`#location-${role}-meta`, valid ? `${!online ? 'Last received' : fresh ? 'Fresh' : 'Last shared'} · ${ageText} · ${accuracy} · ${source}` : 'No shared location received.');
+      const map = $(`#location-${role}-map`); map.hidden = !valid;
+      if (valid) map.href = `https://maps.apple.com/?ll=${point.latitude},${point.longitude}&q=${encodeURIComponent(role === 'wearer' ? 'Wearer location' : 'Responder location')}`;
+      else map.removeAttribute('href');
+    }
+    const eta = location?.eta;
+    const usable = online && ['wearer', 'responder'].every(role => validLocationPoint(location?.[role]) && location[role].fresh === true
+      && locationPointAge(location[role]) !== null && locationPointAge(location[role]) <= 60000
+      && finite(location[role].accuracy) && location[role].accuracy >= 0 && location[role].accuracy <= 100)
+      && finite(eta?.seconds) && eta.seconds >= 0 && finite(eta.distanceMeters) && eta.distanceMeters >= 0
+      && ['apple-maps-walking', 'straight-line-walking-estimate'].includes(eta.method);
+    const minutes = usable ? eta.seconds < 60 ? '<1 min' : `${Math.ceil(eta.seconds / 60)} min` : '';
+    const distance = usable ? eta.distanceMeters < 1000 ? `${Math.round(eta.distanceMeters)} m` : `${(eta.distanceMeters / 1000).toFixed(1)} km` : '';
+    text('#location-eta', usable ? `${eta.method === 'apple-maps-walking' ? 'Walk' : 'Approx. walk'} · ${minutes} · ${distance}` : 'Waiting for two fresh, accurate locations');
+    text('#location-eta-detail', usable ? eta.method === 'apple-maps-walking' ? `Apple Maps estimate · updated ${time(eta.updatedAt)}. Location does not confirm arrival.`
+      : 'Straight-line estimate; routes and indoor access may take longer. Location does not confirm arrival.' : !online ? 'Reconnecting. Last locations do not establish a current approach estimate.' : 'Both people must share a fresh location with accuracy within 100 m.');
+    updateLocationControls();
+  }
+
+  async function inviteLocation() {
+    updateLocationControls(); if ($('#location-invite').disabled) return;
+    const requestToken = token; locationInviteBusy = true; updateLocationControls();
+    $('#location-message').classList.remove('error'); text('#location-message', 'Requesting location in iMessage…');
+    try {
+      const response = await fetch('/api/location/invite', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${requestToken}` }, body: '{}', signal: AbortSignal.timeout(12000) });
+      const result = await response.json(); if (token !== requestToken) return;
+      if (!response.ok || result.ok !== true || typeof result.queued !== 'boolean') throw new Error(response.status === 401 ? 'Pairing token rejected. Enter a current operator token.'
+        : response.status === 409 ? 'The current incident already handles the wearer’s location request.' : response.status === 503 ? 'Location requests are unavailable. Check the wearer messaging connection.' : 'Could not request location. Check its status before trying again.');
+      text('#location-message', result.queued ? 'Location request queued. Accept LIFELINE’s location-sharing request in iMessage.' : 'A location request already exists. No duplicate was queued.');
+      await loadState().catch(() => {});
+    } catch (error) {
+      if (token !== requestToken) return;
+      $('#location-message').classList.add('error'); text('#location-message', error.name === 'TimeoutError' ? 'Request timed out. Check location request status before trying again.' : error.message || 'Location sharing is unavailable.');
+    } finally { locationInviteBusy = false; updateLocationControls(); }
+  }
+
+  function wellbeingToday(wellbeing = snapshot?.wellbeing) {
+    const zone = wellbeing?.schedule?.timeZone;
+    if (typeof zone !== 'string' || !zone) return null;
+    try {
+      const parts = new Intl.DateTimeFormat('en-US', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' })
+        .formatToParts(new Date(Date.now() + clockOffset));
+      const part = (type) => parts.find(item => item.type === type)?.value;
+      return `${part('year')}-${part('month')}-${part('day')}`;
+    } catch { return null; }
+  }
+
+  function updateWellbeingControls() {
+    const wellbeing = snapshot?.wellbeing;
+    const today = wellbeingToday(wellbeing);
+    const alreadyStarted = !!today && wellbeing?.lastCheckinDate === today;
+    const pending = Number.isInteger(wellbeing?.pendingCount) && wellbeing.pendingCount > 0;
+    const active = snapshot?.incident && !terminal(snapshot.incident);
+    $('#wellbeing-brief').disabled = !token || !online || !wellbeing || wellbeingBriefBusy;
+    text('#wellbeing-brief', wellbeingBriefBusy ? 'Preparing journal…' : 'Download care journal');
+    $('#wellbeing-checkin').disabled = !token || !online || wellbeing?.enabled !== true || !today || wellbeingBusy || alreadyStarted || !!active;
+    text('#wellbeing-checkin', wellbeingBusy ? 'Requesting…' : alreadyStarted ? 'Today’s check-in started' : 'Send today’s check-in');
+    text('#wellbeing-checkin-state', !wellbeing ? 'Daily check-ins are unavailable in this server state.'
+      : !online ? 'Last received state. Reconnect before testing.'
+      : !wellbeing.enabled ? 'Daily check-ins are not enabled.'
+      : active ? 'Daily check-ins pause during an active incident.'
+      : alreadyStarted ? `Today’s prompt already exists.${pending ? ` ${wellbeing.pendingCount} message${wellbeing.pendingCount === 1 ? '' : 's'} pending.` : ''}`
+      : pending ? `${wellbeing.pendingCount} message${wellbeing.pendingCount === 1 ? '' : 's'} pending.`
+      : !token ? 'Pairing token required for this demo control.'
+      : !today ? 'The schedule time zone is unavailable.'
+      : 'The scheduler runs autonomously. This button is for rehearsal.');
+  }
+
+  function renderWellbeing() {
+    const wellbeing = snapshot?.wellbeing;
+    const signature = JSON.stringify([online, wellbeing]);
+    if (signature === wellbeingSignature) return;
+    wellbeingSignature = signature;
+    const schedule = wellbeing?.schedule;
+    let scheduleLabel = 'Default schedule · 2:00 PM America/New_York';
+    if (typeof schedule?.label === 'string' && schedule.label.trim()) scheduleLabel = schedule.label;
+    else if (Number.isInteger(schedule?.hour) && schedule.hour >= 0 && schedule.hour <= 23 && typeof schedule.timeZone === 'string')
+      scheduleLabel = `Daily · ${schedule.hour % 12 || 12}:00 ${schedule.hour >= 12 ? 'PM' : 'AM'} ${schedule.timeZone}`;
+    text('#wellbeing-schedule', scheduleLabel);
+    text('#wellbeing-status', !wellbeing ? 'Unavailable' : !online ? 'Last state' : wellbeing.enabled ? 'Scheduled daily' : 'Not enabled');
+    $('#wellbeing-status').className = `badge${online && wellbeing?.enabled ? ' good' : ''}`;
+    const allMessages = Array.isArray(wellbeing?.messages) ? wellbeing.messages.filter(message => message && typeof message === 'object')
+      .slice().sort((a, b) => (finite(a.at) ? a.at : 0) - (finite(b.at) ? b.at : 0)).slice(-40) : [];
+    const messages = allMessages.slice(-4), earlier = allMessages.slice(0, -4);
+    const deliveries = { pending: ['Queued', ''], queued: ['Queued', ''], attempting: ['Submitting', 'warning'], provider_accepted: ['Provider accepted', ''],
+      recorded: ['Recorded', ''], failed: ['Failed', 'bad'], unknown: ['Outcome unknown', 'warning'], cancelled: ['Cancelled', ''] };
+    const sources = { 'photon-imessage': 'Text · Photon message', 'freewili-local-speech': 'Voice · WILi microphone',
+      agent: 'Text · LIFELINE', 'daily-checkin': 'Text · Daily check-in' };
+    const renderMessage = (parent, message) => {
+      const wearer = message.speaker === 'wearer';
+      const row = appendText(parent, 'li', `wellbeing-message${wearer ? ' wellbeing-wearer' : ''}`, '');
+      const head = appendText(row, 'div', 'wellbeing-message-head', '');
+      appendText(head, 'strong', '', wearer ? 'Wearer' : message.speaker === 'lifeline' ? 'LIFELINE' : 'Speaker unavailable');
+      const [label, color] = typeof message.delivery === 'string' && Object.hasOwn(deliveries, message.delivery)
+        ? deliveries[message.delivery] : ['Status unavailable', ''];
+      appendText(head, 'span', `badge ${color}`, wearer && message.delivery === 'recorded' ? 'Reply recorded' : label);
+      appendText(row, 'p', 'wellbeing-message-text', typeof message.text === 'string' ? message.text : 'Message text unavailable.');
+      const source = typeof message.source === 'string' && Object.hasOwn(sources, message.source) ? sources[message.source] : 'Source unavailable';
+      const date = finite(message.at) ? new Date(message.at) : null;
+      const recordedAt = date && finite(date.getTime()) ? date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Time unavailable';
+      appendText(row, 'p', 'wellbeing-message-meta', `${source} · ${recordedAt}`);
+      const record = message.recordContext;
+      if (message.speaker === 'lifeline' && record?.source === 'finchnode-synthetic' && record.synthetic === true) {
+        const provenance = appendText(row, 'div', 'wellbeing-record-source', '');
+        const provenanceHead = appendText(provenance, 'div', 'wellbeing-record-head', '');
+        appendText(provenanceHead, 'strong', '', 'Finch synthetic record');
+        const [generation, generationColor] = generationFor(message.generation);
+        appendText(provenanceHead, 'span', `badge ${generationColor}`, generation);
+        const subject = typeof record.subjectName === 'string' && record.subjectName.trim() ? record.subjectName : 'Unnamed fictional subject';
+        appendText(provenance, 'p', '', `${subject} · fictional subject, not the wearer’s personal record.`);
+        const revision = typeof record.revision === 'string' && record.revision.trim() ? record.revision : 'unavailable';
+        appendText(provenance, 'p', 'wellbeing-record-revision', `Saved record revision: ${revision}`);
+        const ids = Array.isArray(record.sourceRecordIds) ? record.sourceRecordIds.filter(id => typeof id === 'string' && id.trim()) : [];
+        appendText(provenance, 'p', 'wellbeing-record-citations', ids.length ? `Source citations: ${ids.map(id => `[${id}]`).join(' ')}` : 'No source record citations saved for this reply.');
+        const retrieved = finite(record.retrievedAt) ? new Date(record.retrievedAt) : null;
+        appendText(provenance, 'p', '', `Record retrieved: ${retrieved && finite(retrieved.getTime()) ? retrieved.toISOString() : 'time unavailable'}`);
+        if (record.truncated === true) appendText(provenance, 'p', 'wellbeing-record-truncated', 'Reply shortened for messaging. Its linked source snapshot is retained in the care journal.');
+      }
+    };
+    const fragment = document.createDocumentFragment(), olderFragment = document.createDocumentFragment();
+    if (!messages.length) appendText(fragment, 'li', 'empty-list', !wellbeing ? 'Daily conversation state is unavailable.' : 'No daily conversation recorded yet.');
+    messages.forEach(message => renderMessage(fragment, message));
+    earlier.forEach(message => renderMessage(olderFragment, message));
+    $('#wellbeing-messages').replaceChildren(fragment);
+    $('#wellbeing-earlier-messages').replaceChildren(olderFragment);
+    $('#wellbeing-earlier').hidden = !earlier.length;
+    text('#wellbeing-earlier-summary', `Earlier conversation · ${earlier.length} message${earlier.length === 1 ? '' : 's'}`);
+    const voice = wellbeing?.voice;
+    const voiceStages = { listening: 'Listening', recording: 'Recording', transcribing: 'Transcribing', complete: 'Transcript recorded', unavailable: 'Voice unavailable' };
+    $('#wellbeing-voice').hidden = !voice;
+    if (voice) text('#wellbeing-voice', `${online ? 'Voice' : 'Last voice report'} · ${typeof voice.stage === 'string' && Object.hasOwn(voiceStages, voice.stage) ? voiceStages[voice.stage] : 'Status unavailable'} · ${time(voice.at)}`);
+    updateWellbeingControls();
+  }
+
+  async function downloadCareJournal() {
+    updateWellbeingControls();
+    if ($('#wellbeing-brief').disabled) return;
+    const requestToken = token, conversationId = snapshot?.wellbeing?.conversationId;
+    const current = () => token === requestToken && snapshot?.wellbeing?.conversationId === conversationId;
+    wellbeingBriefBusy = true; updateWellbeingControls();
+    $('#wellbeing-brief-message').classList.remove('error'); text('#wellbeing-brief-message', 'Preparing the care journal…');
+    try {
+      const response = await fetch('/api/wellbeing/brief', { headers: { Authorization: `Bearer ${requestToken}` }, cache: 'no-store', signal: AbortSignal.timeout(20000) });
+      if (!current()) return;
+      if (!response.ok) throw new Error(response.status === 401 ? 'Pairing token rejected. Enter a current operator token.'
+        : response.status === 404 ? 'Care journal is unavailable in this server version.' : 'Care journal is unavailable. Reconnect and try again.');
+      const blob = await response.blob(); if (!current()) return;
+      const url = URL.createObjectURL(blob), link = document.createElement('a'); link.href = url;
+      link.download = `lifeline-care-journal-${String(conversationId || 'daily').replace(/[^a-zA-Z0-9_-]/g, '_')}.json`;
+      document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      text('#wellbeing-brief-message', 'Care journal download requested. Daily reports and synthetic hospital snapshots remain separate.');
+    } catch (error) {
+      if (!current()) return;
+      $('#wellbeing-brief-message').classList.add('error');
+      text('#wellbeing-brief-message', error.name === 'TimeoutError' ? 'Care journal read timed out. Reconnect and try again.' : error.message || 'Care journal unavailable. Try again.');
+    } finally {
+      wellbeingBriefBusy = false;
+      if (!current()) text('#wellbeing-brief-message', '');
+      updateWellbeingControls();
+    }
+  }
+
+  async function requestWellbeingCheckin() {
+    updateWellbeingControls();
+    if ($('#wellbeing-checkin').disabled) return;
+    const requestToken = token;
+    wellbeingBusy = true; updateWellbeingControls();
+    $('#wellbeing-message').classList.remove('error'); text('#wellbeing-message', 'Requesting today’s check-in…');
+    try {
+      const response = await fetch('/api/wellbeing/checkin', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${requestToken}` },
+        body: '{}', signal: AbortSignal.timeout(12000) });
+      const result = await response.json();
+      if (token !== requestToken) return;
+      if (!response.ok || result.error) throw new Error(response.status === 401 ? 'Pairing token rejected. Enter a current operator token.'
+        : result.error || (response.status === 409 ? 'Daily check-ins pause during an active incident.'
+          : response.status === 503 ? 'Daily check-ins are unavailable. Check the wearer messaging connection.' : `Check-in request failed (${response.status}).`));
+      if (result.ok !== true || typeof result.queued !== 'boolean') throw new Error('Check-in status was unreadable. Check the daily conversation before trying again.');
+      text('#wellbeing-message', result.queued ? 'Today’s check-in queued. Delivery status appears above.' : 'Today’s prompt already exists. No duplicate was queued.');
+      await loadState().catch(() => {});
+    } catch (error) {
+      if (token !== requestToken) return;
+      $('#wellbeing-message').classList.add('error');
+      text('#wellbeing-message', error.name === 'TimeoutError' ? 'Request timed out. Check today’s status before trying again.' : error.message || 'Could not request today’s check-in.');
+    } finally { wellbeingBusy = false; updateWellbeingControls(); }
   }
 
   function renderReadiness() {
@@ -585,12 +1324,15 @@
     const wearerMessaging = snapshot.wearerMessaging;
     const wili = snapshot.wili;
     const readiness = detectorReadiness();
+    const dispatch = snapshot.dispatch;
+    const dispatchRow = ['live', 'simulated'].includes(dispatch?.mode)
+      ? `<li><div class="readiness-head"><strong>Responder dispatch</strong><span class="badge ${dispatch.mode === 'simulated' ? 'warning' : ''}">${!online ? 'Last state' : dispatch.mode === 'simulated' ? snapshot.responders.some(person => person.simulated === true) ? 'Demo ready' : 'Waiting for demo responder' : 'Live profile'}</span></div><p>${escaped(dispatch.detail)}${dispatch.mode === 'simulated' ? ' No live responder send or recipient receipt is asserted.' : ''}</p></li>` : '';
     $('#native-readiness').innerHTML = `<li><div class="readiness-head"><strong>FREE-WILi accelerometer</strong><span class="badge">${online && wili?.usable ? 'Acquisition ready' : !online ? 'Last received' : escaped(wili?.quality || 'Unavailable')}</span></div><p>${escaped(`Source body-wili · range ${finite(wili?.fullScaleG) ? `±${wili.fullScaleG} g` : 'unknown'} · ${wili?.captureClock === 'host-receipt' ? 'gateway receipt clock' : 'device capture clock'} mapping ${finite(wili?.alignmentUncertaintyMs) ? `±${Math.round(wili.alignmentUncertaintyMs)} ms` : 'unknown'}. ${wili?.captureClock === 'host-receipt' ? 'Stock timing does not measure sensor capture latency.' : 'No primary orientation is inferred.'}`)}</p></li>` + sourceRows.join('')
       + `<li><div class="readiness-head"><strong>Provisional cross-body detector</strong><span class="badge ${readiness.ready ? 'good' : ''}">${readiness.ready ? 'Signals ready' : 'Waiting'}</span></div><p>${escaped(readiness.detail)} Telemetry readiness does not establish detection accuracy.</p></li>`
       + `<li><div class="readiness-head"><strong>Clock alignment</strong></div><p>${escaped(alignments)}</p></li>`
       + `<li><div class="readiness-head"><strong>WILi voice cache</strong><span class="badge ${wiliVoice?.configured ? 'good' : ''}">${wiliVoice?.configured ? 'Prepared' : 'Unavailable'}</span></div><p>${escaped(wiliVoice?.detail || 'No prepared board voice cache reported.')} Rehearse playback on the wearable.</p></li>`
       + `<li><div class="readiness-head"><strong>ElevenLabs API</strong><span class="badge">${audio?.configured ? 'Configured' : 'Unavailable'}</span></div><p>${escaped(audio?.detail || 'No ElevenLabs API status reported')}</p></li>`
-      + `<li><div class="readiness-head"><strong>Wearer iMessage</strong><span class="badge">${wearerMessaging?.configured ? 'Configured' : 'Unavailable'}</span></div><p>${escaped(wearerMessaging?.detail || 'No wearer messaging configuration reported')}</p></li>`;
+      + `<li><div class="readiness-head"><strong>Wearer iMessage</strong><span class="badge">${wearerMessaging?.configured ? 'Configured' : 'Unavailable'}</span></div><p>${escaped(wearerMessaging?.detail || 'No wearer messaging configuration reported')}</p></li>` + dispatchRow;
     if (nativeSetup) {
       const addresses = nativeSetup.addresses.length ? nativeSetup.addresses.map((address) => `${address}:${nativeSetup.port}`).join('\n') : 'No external IPv4 address reported';
       const binding = nativeSetup.lanEnabled === true ? 'LAN binding enabled' : nativeSetup.lanEnabled === false ? 'Local-only binding' : 'Listener binding not reported';
@@ -603,11 +1345,11 @@
   function renderResponders() {
     const responders = snapshot.responders;
     const ownerId = snapshot.incident?.ownerId;
-    $('#responders').innerHTML = responders.length ? responders.map((person) => `<li class="responder-item"><span class="avatar">${escaped(initials(person.name))}</span><div><strong>${escaped(person.name)}</strong><p>${escaped(person.phone ? 'Approved phone configured; send result in Delivery activity' : 'Approved phone needed for live alerts')}</p></div>${person.id === ownerId ? '<span class="badge good">OWNER</span>' : ''}</li>`).join('') : '<li class="empty-list">Add an approved responder with a phone for live alerts.</li>';
-    const signature = responders.map((person) => `${person.id}:${person.name}`).join('|');
+    $('#responders').innerHTML = responders.length ? responders.map((person) => `<li class="responder-item"><span class="avatar">${escaped(initials(person.name))}</span><div><strong>${escaped(person.name)}</strong><p>${escaped(person.simulated === true ? 'Demo responder · automatic local progression; no live phone alert' : person.phone ? 'Approved phone configured; send result in Delivery activity' : 'Approved phone needed for live alerts')}</p></div>${person.id === ownerId ? `<span class="badge ${simulatedIncident() ? 'warning' : 'good'}">${simulatedIncident() ? 'DEMO OWNER' : 'OWNER'}</span>` : person.simulated === true ? '<span class="badge warning">DEMO</span>' : ''}</li>`).join('') : `<li class="empty-list">${snapshot.dispatch?.mode === 'simulated' ? 'No demo responder reported.' : 'Add an approved responder with a phone for live alerts.'}</li>`;
+    const signature = JSON.stringify(responders.map((person) => [person.id, person.name, person.simulated]));
     if (signature !== responderSignature) {
       const selected = $('#responder').value;
-      $('#responder').innerHTML = responders.length ? responders.map((person) => `<option value="${escaped(person.id)}">${escaped(person.name)}</option>`).join('') : '<option value="">No approved responders</option>';
+      $('#responder').innerHTML = responders.length ? responders.map((person) => `<option value="${escaped(person.id)}">${escaped(person.name)}${person.simulated === true ? ' · demo' : ''}</option>`).join('') : '<option value="">No approved responders</option>';
       if (responders.some((person) => person.id === selected)) $('#responder').value = selected;
       responderSignature = signature;
     }
@@ -615,14 +1357,20 @@
 
   function renderProviders() {
     const providers = Object.entries(snapshot.providers || {});
-    const names = { photon: 'Photon iMessage', finchnode: 'Finch synthetic records', elevenlabs: 'ElevenLabs API', llm: 'Grounded AI', wiliVoice: 'WILi voice cache' };
+    const names = { photon: 'Photon messaging', finchnode: 'Finch synthetic records', elevenlabs: 'ElevenLabs API', llm: 'Grounded AI', wiliVoice: 'WILi voice cache' };
     $('#providers').innerHTML = providers.length ? providers.map(([name, status]) => `<li class="provider-item"><div class="provider-head"><strong>${escaped(Object.hasOwn(names, name) ? names[name] : name)}</strong><span class="badge ${status.configured ? 'good' : ''}">${status.configured ? name === 'wiliVoice' ? 'Prepared' : 'Configured' : 'Unavailable'}</span></div><p>${escaped(status.detail)}</p></li>`).join('') : '<li class="empty-list">No provider status available.</li>';
   }
 
   function renderTimeline() {
     const events = snapshot.timeline.filter((event) => event.incidentId === snapshot.incident?.id).slice().sort((a, b) => b.at - a.at);
     text('#event-count', events.length);
-    $('#timeline').innerHTML = events.length ? events.map((event) => `<li class="event-item"><div class="event-head"><strong>${escaped(event.type.replaceAll('_', ' '))}</strong><time>${escaped(time(event.at))}</time></div><p>${escaped(timelineDetail(event))}</p><span class="event-actor">${escaped(nameFor(event.actor))}</span></li>`).join('') : '<li class="empty-list">Events will appear as the incident progresses.</li>';
+    $('#timeline-dispatch-note').hidden = !simulatedIncident();
+    $('#timeline').innerHTML = events.length ? events.map((event) => {
+      const simulated = simulatedActor(event.actor) || simulatedIncident() && (snapshot.responders.some(person => person.id === event.actor && person.simulated === true)
+        || ['ACKNOWLEDGED', 'RESPONDER_EN_ROUTE', 'ON_SCENE', 'RESOLVED'].includes(event.type));
+      const actor = `${nameFor(event.actor)}${simulated && !simulatedActor(event.actor) ? ' · demo' : ''}`;
+      return `<li class="event-item"><div class="event-head"><strong>${escaped(event.type.replaceAll('_', ' '))}${simulated ? ' · DEMO' : ''}</strong><time>${escaped(time(event.at))}</time></div><p>${escaped(timelineDetail(event))}</p><span class="event-actor">${escaped(actor)}</span></li>`;
+    }).join('') : '<li class="empty-list">Events will appear as the incident progresses.</li>';
   }
 
   function timelineDetail(event) {
@@ -635,6 +1383,12 @@
         const decisions = { help_requested: 'Help requested', confirmation_required: 'Explicit cancellation still required', unresolved: 'Incident remains unresolved' };
         const decision = typeof detail.decision === 'string' && Object.hasOwn(decisions, detail.decision) ? decisions[detail.decision] : 'Reply recorded';
         return `Wearer reply: ${detail.transcript}\n${decision}.`;
+      }
+      if (event.type === 'WEARER_REPORT' && typeof detail?.transcript === 'string') {
+        return `Wearer update: ${detail.transcript}\nRecorded from the private Photon conversation. Incident responsibility is unchanged.`;
+      }
+      if (event.type === 'CONVERSATION_MESSAGE' && detail?.speaker === 'responder' && typeof detail.transcript === 'string') {
+        return `Responder message: ${detail.transcript}\nQueued for wearable speech; delivery appears in Conversation.`;
       }
       if (event.type === 'HEALTH_CONTEXT_BOUND') {
         return detail?.available ? `Clinical context saved for this incident. Revision ${detail.revision || 'unavailable'}; ${Array.isArray(detail.recordIds) ? detail.recordIds.length : 0} source records.`
@@ -656,14 +1410,18 @@
     text('#action-count', actions.length);
     $('#actions').innerHTML = actions.length ? actions.map((action) => {
       const [label, color] = actionLabels[action.status] || [action.status, ''];
-      const actionTitle = { wearer_checkin: 'Wearer iMessage', wearer_ack: 'Wearer iMessage acknowledgement', wearer_status: 'Wearer progress update', checkin: 'Device check-in request', answer: 'Responder answer' }[action.type] || action.type[0].toUpperCase() + action.type.slice(1);
+      const actionTitles = { wearer_checkin: 'Wearer iMessage', wearer_ack: 'Wearer iMessage acknowledgement', wearer_status: 'Wearer progress update', wearer_relay: 'Wearer quote to responder', checkin: 'Device check-in request', answer: 'Responder answer' };
+      const actionTitle = Object.hasOwn(actionTitles, action.type) ? actionTitles[action.type] : action.type[0].toUpperCase() + action.type.slice(1);
       const message = action.text ? `<details class="action-message" data-action-id="${escaped(action.id)}"${expanded.has(action.id) ? ' open' : ''}><summary>View message</summary><p>${escaped(action.text)}</p></details>` : '';
-      return `<li class="action-item"><div class="action-head"><strong>${escaped(actionTitle)}${action.recipientId ? ` · ${escaped(nameFor(action.recipientId))}` : ''}</strong><span class="badge ${color}">${escaped(label)}</span></div><p>${escaped(action.providerResult || 'No provider result yet.')}</p>${message}<span class="action-meta">${escaped(time(action.createdAt))} · ${action.attempts} attempt${action.attempts === 1 ? '' : 's'}${action.providerMessageId ? ` · Message ${escaped(action.providerMessageId.slice(0, 18))}` : ''}</span></li>`;
+      const result = action.status === 'simulated' ? `Internal demo delivery; no provider send or recipient receipt.${action.providerResult ? ` ${action.providerResult}` : ''}` : action.providerResult || 'No provider result yet.';
+      return `<li class="action-item"><div class="action-head"><strong>${escaped(actionTitle)}${action.recipientId ? ` · ${escaped(nameFor(action.recipientId))}` : ''}</strong><span class="badge ${color}">${escaped(label)}</span></div><p>${escaped(result)}</p>${message}<span class="action-meta">${escaped(time(action.createdAt))} · ${action.attempts} attempt${action.attempts === 1 ? '' : 's'}${action.providerMessageId ? ` · Message ${escaped(action.providerMessageId.slice(0, 18))}` : ''}</span></li>`;
     }).join('') : '<li class="empty-list">No external actions queued.</li>';
   }
 
   function updateTime() {
     renderWili();
+    renderLocation();
+    renderCheckinAudio();
     updateTrialTime();
     if (lastStateReceived) text('#last-update', `State received ${time(lastStateReceived)}${online ? '' : ' · connection interrupted'}`);
     if (!online && lastStateReceived) snapshot?.sensors.forEach((sensor) => {
@@ -680,8 +1438,8 @@
       text('#deadline-detail', terminal(incident) ? 'Incident closed' : 'No deadline scheduled');
       return;
     }
-    const seconds = Math.ceil((deadline - (Date.now() + clockOffset)) / 1000);
-    text('#deadline', seconds > 0 ? `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}` : 'Deadline reached');
+    const seconds = Math.ceil((deadline - (online ? Date.now() + clockOffset : snapshot.serverTime)) / 1000);
+    text('#deadline', `${seconds > 0 ? `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}` : 'Deadline reached'}${online ? '' : ' · last known'}`);
     text('#deadline-detail', `${incident.phase === 'CONFIRMING' ? 'Check-in' : incident.phase === 'HELP_REQUESTED' ? 'Responder acceptance' : 'Responder progress'} · ${time(deadline)}`);
   }
 
@@ -691,17 +1449,21 @@
     const active = !!incident && !terminal(incident);
     const responder = $('#responder').value;
     const isOwner = active && incident.ownerId === responder;
+    const automaticResponder = simulatedIncident(incident);
+    $('#manual-responder-controls').hidden = automaticResponder;
+    $('#simulated-responder-note').hidden = !automaticResponder;
     $('#trigger').disabled = !ready || active;
     $('#manual-help').disabled = !ready || (active && incident.phase !== 'CONFIRMING');
-    $('#manual-help').textContent = incident?.phase === 'CONFIRMING' ? 'Request help now' : 'Request help manually';
+    $('#manual-help').textContent = incident?.phase === 'CONFIRMING' ? 'Request help now' : 'Request help immediately';
     $('#cancel').disabled = !ready || incident?.phase !== 'CONFIRMING';
-    $('#responder').disabled = !snapshot?.responders.length || busy;
-    $('#accept').disabled = !ready || !responder || incident?.phase !== 'HELP_REQUESTED';
-    $('#depart').disabled = !ready || !isOwner || incident?.phase !== 'ACKNOWLEDGED';
-    $('#arrive').disabled = !ready || !isOwner || incident?.phase !== 'RESPONDER_EN_ROUTE';
-    $('#decline').disabled = !ready || !isOwner;
-    $('#resolve').disabled = !ready || !isOwner || incident?.phase !== 'ON_SCENE' || $('#outcome-input').value.trim().length < 5;
-    $('#calibrate').disabled = !ready || !snapshot.sensors.some((sensor) => sensor.connected && sensor.fresh);
+    $('#responder').disabled = automaticResponder || !snapshot?.responders.length || busy;
+    $('#accept').disabled = automaticResponder || !ready || !responder || incident?.phase !== 'HELP_REQUESTED';
+    $('#depart').disabled = automaticResponder || !ready || !isOwner || incident?.phase !== 'ACKNOWLEDGED';
+    $('#arrive').disabled = automaticResponder || !ready || !isOwner || incident?.phase !== 'RESPONDER_EN_ROUTE';
+    $('#decline').disabled = automaticResponder || !ready || !isOwner;
+    $('#resolve').disabled = automaticResponder || !ready || !isOwner || incident?.phase !== 'ON_SCENE' || $('#outcome-input').value.trim().length < 5;
+    $('#outcome-input').disabled = automaticResponder;
+    $('#calibrate').disabled = busy || !!calibrationGuide;
     $('#reset').disabled = !ready;
     const recording = ['recording', 'stopping'].includes(snapshot?.trial?.status);
     $('#trial-start').disabled = !ready || trialBusy || active || recording || !$('#trial-label').value.trim() || $('#trial-label').value.trim().length > 80;
@@ -709,8 +1471,14 @@
     $('#trial-download').disabled = !token || trialBusy || snapshot?.trial?.status !== 'stopped';
     $('#trial-label').disabled = trialBusy || recording;
     $('#trial-scenario').disabled = trialBusy || recording;
+    const markerLabel = $('#trial-marker-label').value.trim();
+    const pairedRecording = snapshot?.trial?.status === 'recording' && snapshot.trial.captureMode === 'wili-waist';
+    $('#trial-marker-label').disabled = trialBusy || !pairedRecording;
+    $('#trial-marker').disabled = !ready || trialBusy || !pairedRecording || !markerLabel || markerLabel.length > 80 || /[\u0000-\u001f]/.test(markerLabel);
     updateRehearsalControls();
     updatePatientControls();
+    updateWellbeingControls();
+    updateLocationControls();
   }
 
   function setToken(value, local = false) {
@@ -726,24 +1494,22 @@
 
   async function command(payload) {
     if (!token || busy) return;
-    const message = payload.type === 'calibrate' ? '#calibration-message' : '#command-message';
+    const message = '#command-message';
     busy = true;
     updateControls();
-    text(message, payload.type === 'calibrate' ? 'Requesting standing calibration…' : 'Applying command…');
+    text(message, 'Applying command…');
     $(message).classList.remove('error');
     try {
       const response = await fetch('/api/commands', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload), signal: AbortSignal.timeout(12000) });
       const result = await response.json();
       if (!response.ok || result.error) throw new Error(result.error || `Command failed (${response.status})`);
-      text(message, payload.type === 'calibrate'
-        ? 'Tilt calibration recorded for available AirPod/legacy motion sensors. Check their sensor cards below.'
-        : 'Command accepted by the controller.');
+      text(message, 'Command accepted by the controller.');
       if (payload.type === 'resolve' || payload.type === 'reset') $('#outcome-input').value = '';
       await loadState().catch(() => {});
     } catch (error) {
       $(message).classList.add('error');
       text(message, error.name === 'TimeoutError'
-        ? payload.type === 'calibrate' ? 'Request timed out. Check sensor calibration before retrying.' : 'Request timed out. Check incident state before repeating the command.'
+        ? 'Request timed out. Check incident state before repeating the command.'
         : error.message || 'Command failed.');
     } finally {
       busy = false;
@@ -754,12 +1520,29 @@
   function renderTrial() {
     const trial = snapshot?.trial;
     const labels = { recording: 'RECORDING', stopping: 'STOPPING', stopped: 'STOPPED', error: 'ERROR' };
-    text('#trial-status', trial ? labels[trial.status] || trial.status : 'NO RECORDING');
-    $('#trial-status').className = `badge ${trial?.status === 'recording' ? 'good' : trial?.status === 'stopping' ? 'warning' : trial?.status === 'error' ? 'bad' : ''}`;
-    const chestCount = trial?.sampleCounts?.['chest-phone'], waistCount = trial?.sampleCounts?.['waist-airpod'];
-    text('#trial-chest-count', finite(chestCount) ? chestCount.toLocaleString() : '—');
-    text('#trial-waist-count', finite(waistCount) ? waistCount.toLocaleString() : '—');
-    text('#trial-summary', trial ? `${trial.label} · ${trial.scenario} · ID ${trial.id}${trial.reason ? ` · ${trial.reason}` : ''}` : 'No trial has been recorded.');
+    const scenarios = { standing: 'Standing', 'phone-drop': 'Device drop', sit: 'Sit', bend: 'Bend', 'staged-fall': 'Staged fall', other: 'Other' };
+    const active = ['recording', 'stopping'].includes(trial?.status);
+    const status = trial ? Object.hasOwn(labels, trial.status) ? labels[trial.status] : String(trial.status) : 'NO RECORDING';
+    text('#trial-status', !online && active ? `${status} · LAST STATE` : status);
+    $('#trial-status').className = `badge ${trial?.status === 'error' ? 'bad' : active && !online ? 'warning' : trial?.status === 'recording' ? 'good' : trial?.status === 'stopping' ? 'warning' : ''}`;
+    const wiliCount = trial?.sampleCounts?.['body-wili'], waistCount = trial?.sampleCounts?.['waist-airpod'];
+    const countAvailable = value => Number.isInteger(value) && value >= 0;
+    text('#trial-wili-count', countAvailable(wiliCount) ? wiliCount.toLocaleString() : '—');
+    text('#trial-waist-count', countAvailable(waistCount) ? waistCount.toLocaleString() : '—');
+    const measured = !trial ? 'Counts appear when measurements are recorded.'
+      : trial.captureMode === 'legacy-core-motion' ? 'Legacy CoreMotion capture; FREE-WILi was not recorded.'
+        : !countAvailable(wiliCount) ? 'FREE-WILi count unavailable for this recording.'
+        : !countAvailable(waistCount) ? 'Waist AirPod count unavailable for this recording.'
+          : wiliCount > 0 && waistCount > 0 ? 'Measurements from both streams recorded.'
+            : wiliCount === 0 && waistCount === 0 ? `No measurements recorded${active ? ' yet' : ''}.`
+              : `Only ${wiliCount > 0 ? 'FREE-WILi' : 'waist AirPod'} measurements recorded${active ? `; waiting for ${wiliCount > 0 ? 'waist AirPod' : 'FREE-WILi'}` : ''}.`;
+    text('#trial-measurements', `${measured}${trial?.status === 'error' ? ' Recording is incomplete.' : ''}${!online && active ? ' Counts are the last received state.' : ''}`);
+    $('#trial-markers').hidden = !trial;
+    text('#trial-markers', trial?.captureMode === 'legacy-core-motion' ? 'Operator markers are unavailable for legacy capture.'
+      : countAvailable(trial?.markerCount) ? `${trial.markerCount.toLocaleString()} operator marker${trial.markerCount === 1 ? '' : 's'} recorded.` : 'Operator marker count unavailable.');
+    const scenario = trial && Object.hasOwn(scenarios, trial.scenario) ? scenarios[trial.scenario] : trial?.scenario;
+    const mode = trial?.captureMode === 'wili-waist' ? ' · WILi + waist capture' : trial?.captureMode === 'legacy-core-motion' ? ' · Legacy CoreMotion capture' : '';
+    text('#trial-summary', trial ? `${trial.label} · ${scenario}${mode} · ID ${trial.id}${trial.reason ? ` · ${trial.reason}` : ''}` : 'No trial has been recorded.');
     updateTrialTime();
   }
 
@@ -773,20 +1556,25 @@
 
   async function trialRequest(operation) {
     if (!token || trialBusy) return;
-    const label = $('#trial-label').value.trim();
-    if (operation === 'start' && (!label || label.length > 80)) return;
+    const label = $(operation === 'marker' ? '#trial-marker-label' : '#trial-label').value.trim();
+    if (['start', 'marker'].includes(operation) && (!label || label.length > 80 || /[\u0000-\u001f]/.test(label))) return;
+    if (operation === 'marker' && (!online || busy || snapshot?.trial?.status !== 'recording' || snapshot.trial.captureMode !== 'wili-waist')) return;
     trialBusy = true;
     updateControls();
     $('#trial-message').classList.remove('error');
-    text('#trial-message', operation === 'start' ? 'Starting recording…' : 'Stopping recording…');
+    text('#trial-message', operation === 'start' ? 'Starting recording…' : operation === 'marker' ? 'Recording operator marker…' : 'Stopping recording…');
     try {
-      const body = operation === 'start' ? { label, scenario: $('#trial-scenario').value } : {};
+      const body = operation === 'start' ? { label, scenario: $('#trial-scenario').value } : operation === 'marker' ? { label } : {};
       const response = await fetch(`/api/trials/${operation}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(body), signal: AbortSignal.timeout(12000) });
       const result = await response.json();
       if (!response.ok || result.error) throw new Error(result.error || `Recording request failed (${response.status})`);
       if (snapshot) snapshot.trial = result;
       renderTrial();
-      text('#trial-message', operation === 'start' ? 'Waist/legacy recording started. FREE-WILi capture is separate.' : 'Stop requested. Monitoring and incident response remain active.');
+      text('#trial-message', operation === 'start'
+        ? result.status === 'recording' ? 'Recording started. Counts increase only for recorded measurements.' : 'Recording request accepted. Check its current status.'
+        : operation === 'marker' ? 'Operator marker accepted. Check the recording status before continuing.'
+        : result.status === 'stopped' ? 'Recording stopped. Monitoring and incident response remain active.' : 'Stop requested. Monitoring and incident response remain active.');
+      if (operation === 'marker') $('#trial-marker-label').value = '';
       await loadState().catch(() => {});
     } catch (error) {
       $('#trial-message').classList.add('error');
@@ -852,6 +1640,11 @@
     current.addEventListener('error', () => current.close());
   }
 
+  $('#developer-toggle').addEventListener('click', () => {
+    developerEnabled = !developerEnabled;
+    if (!developerEnabled && location.hash === '#developer') location.hash = '#overview';
+    updateWorkspaceNavigation();
+  });
   $('#token-form').addEventListener('submit', (event) => { event.preventDefault(); setToken($('#token').value); });
   $('#copy-token').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(token); $('#copy-token').textContent = 'Pairing token copied'; }
@@ -860,6 +1653,7 @@
   $('#responder').addEventListener('change', updateControls);
   $('#outcome-input').addEventListener('input', updateControls);
   $('#trial-label').addEventListener('input', updateControls);
+  $('#trial-marker-label').addEventListener('input', updateControls);
   $('#patient-refresh').addEventListener('click', () => loadPatientRecord(true));
   $('#patient-scope').addEventListener('change', (event) => { patientScope = event.target.value; void loadPatientRecord(); });
   $('#patient-question').addEventListener('input', updatePatientControls);
@@ -869,18 +1663,28 @@
   $('#rehearsal-form').addEventListener('submit', (event) => { event.preventDefault(); rehearseQuestion(); });
   $('#trial-start').addEventListener('click', () => trialRequest('start'));
   $('#trial-stop').addEventListener('click', () => trialRequest('stop'));
+  $('#trial-marker').addEventListener('click', () => trialRequest('marker'));
   $('#trial-download').addEventListener('click', downloadTrial);
+  $('#wellbeing-checkin').addEventListener('click', requestWellbeingCheckin);
+  $('#wellbeing-brief').addEventListener('click', downloadCareJournal);
+  $('#location-invite').addEventListener('click', inviteLocation);
   $('#trigger').addEventListener('click', () => command({ type: 'trigger', kind: 'synthetic', summary: 'Operator-triggered development simulation. No physical fall evidence asserted.' }));
   $('#manual-help').addEventListener('click', () => command({ type: 'trigger', kind: 'manual', summary: 'Operator-simulated manual request for help.' }));
   $('#cancel').addEventListener('click', () => { const incident = snapshot?.incident; if (incident) command({ type: 'cancel', incidentId: incident.id, checkinId: incident.checkinId }); });
   for (const type of ['accept', 'depart', 'arrive', 'decline']) $(`#${type}`).addEventListener('click', () => { const incident = snapshot?.incident; if (incident) command({ type, incidentId: incident.id, responderId: $('#responder').value }); });
   $('#resolve').addEventListener('click', () => { const incident = snapshot?.incident; if (incident) command({ type: 'resolve', incidentId: incident.id, responderId: $('#responder').value, outcome: $('#outcome-input').value.trim() }); });
-  $('#calibrate').addEventListener('click', () => command({ type: 'calibrate' }));
+  $('#calibrate').addEventListener('click', openCalibrationGuide);
+  $('#calibration-close').addEventListener('click', closeCalibrationGuide);
+  $('#calibration-guide').addEventListener('cancel', (event) => { event.preventDefault(); closeCalibrationGuide(); });
+  $('#calibration-guide').addEventListener('close', () => { if (calibrationGuide) closeCalibrationGuide(); });
+  $('#guide-primary').addEventListener('click', guidePrimaryAction);
+  document.addEventListener('visibilitychange', () => { if (document.hidden && ['still', 'requesting', 'verifying', 'calibrated', 'movement'].includes(calibrationGuide?.stage)) failCalibrationGuide('Keep this screen visible during calibration. Retry when ready.'); });
   $('#reset').addEventListener('click', () => command({ type: 'reset' }));
-  window.addEventListener('pagehide', () => { clearTimeout(reconnectTimer); socket = null; contextRequest?.controller.abort(); contextRequest = null; patientRequest?.controller.abort(); patientRequest = null; patientQuestionRequest?.controller.abort(); patientQuestionRequest = null; });
+  window.addEventListener('pagehide', () => { closeCalibrationGuide(); clearTimeout(reconnectTimer); socket = null; contextRequest?.controller.abort(); contextRequest = null; patientRequest?.controller.abort(); patientRequest = null; patientQuestionRequest?.controller.abort(); patientQuestionRequest = null; });
 
   $('#phase-list').innerHTML = phases.map(([, label]) => `<li>${label}</li>`).join('');
   updateControls();
+  if (location.hash === '#calibration' || location.pathname === '/calibration') openCalibrationGuide();
   fetch('/api/setup', { cache: 'no-store', signal: AbortSignal.timeout(8000) }).then(async (response) => {
     if (!response.ok) { $('#auth-details').open = true; return; }
     const setup = await response.json();

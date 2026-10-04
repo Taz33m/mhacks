@@ -167,11 +167,11 @@ test('a restored incident uses its immutable clinical snapshot after a different
   assert.doesNotMatch(handoff.text, /Different current fixture regimen/);
 });
 
-test('Q&A still receives full selectable records and preserves selected provenance and clinical dates', async () => {
+test('Q&A scopes records to the requested category while preserving selected provenance and clinical dates', async () => {
   const plan: Selection = { facts: [{ recordId: 'allergy-1', fields: ['substance', 'sourceName', 'recordedDate'] }], incidentFields: [], unavailable: [] };
   const provider = providerFor(patientFixture, plan, body => {
     const schema = body.response_format.json_schema.schema;
-    assert.ok(schema.properties.facts.items.properties.recordId.enum.includes('demo-1'));
+    assert.deepEqual(schema.properties.facts.items.properties.recordId.enum, ['allergy-1']);
     assert.ok(schema.properties.facts.items.properties.fields.items.enum.includes('sourceUpdatedAt'));
     assert.equal(JSON.parse(body.messages[1].content).incident, null);
   });

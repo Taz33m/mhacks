@@ -12,6 +12,8 @@ export interface OgTranscriptionOptions {
   modelPath?: string;
   signal?: AbortSignal;
   cliPath?: string;
+  /** Wellbeing capture opts into 15s; incident recognition remains bounded to 6s. */
+  maxDurationMs?: 6000 | 15000;
   /** Offline process injection; production uses the bounded local CLI below. */
   run?: (cli: string, args: string[], signal?: AbortSignal) => Promise<void>;
 }
@@ -25,18 +27,23 @@ export async function transcribeOgUtterance(wav: Buffer, options: OgTranscriptio
   if (options.signal?.aborted) return unavailable('Microphone recognition was cancelled.');
   let input: Buffer;
   try {
-    input = ogWavForWhisper(wav);
-    if (readMonoPcm16Wav(input).pcm.every(byte => byte === 0)) return unavailable('The microphone utterance contained only zero samples.');
+    input = ogWavForWhisper(wav, options.maxDurationMs);
+    if (readMonoPcm16Wav(input).pcm.every(byte => byte === 0)) {
+      input.fill(0); return unavailable('The microphone utterance contained only zero samples.');
+    }
   } catch { return unavailable('Expected a valid bounded OG microphone WAV.'); }
+  const beforeProcessUnavailable = (detail: string): OgTranscription => { input.fill(0); return unavailable(detail); };
   const model = options.modelPath ?? process.env.LIFELINE_WHISPER_MODEL;
   const cli = options.cliPath ?? process.env.WHISPER_CLI ?? '/opt/homebrew/bin/whisper-cli';
-  if (!model || !isAbsolute(model) || !isAbsolute(cli)) return unavailable('Configure an absolute local Whisper model and CLI path.');
+  if (!model || !isAbsolute(model) || !isAbsolute(cli)) return beforeProcessUnavailable('Configure an absolute local Whisper model and CLI path.');
   try {
     const modelStat = await stat(model);
     if (!modelStat.isFile() || modelStat.size < 1_000_000 || modelStat.size > 512_000_000)
-      return unavailable('A trained local speech model is unavailable.');
-  } catch { return unavailable('A trained local speech model is unavailable.'); }
-  const directory = await mkdtemp(join(tmpdir(), 'lifeline-og-utterance-'));
+      return beforeProcessUnavailable('A trained local speech model is unavailable.');
+  } catch { return beforeProcessUnavailable('A trained local speech model is unavailable.'); }
+  let directory: string;
+  try { directory = await mkdtemp(join(tmpdir(), 'lifeline-og-utterance-')); }
+  catch { return beforeProcessUnavailable('Private microphone recognition files could not be prepared.'); }
   try {
     const audio = join(directory, 'utterance.wav'), output = join(directory, 'transcript');
     await writeFile(audio, input, { mode: 0o600 });

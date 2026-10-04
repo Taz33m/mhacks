@@ -132,9 +132,10 @@ export class OgUtterance {
 }
 
 /** Whisper CLI expects 16kHz. Upsampling preserves duration, not new acoustic evidence. */
-export function ogWavForWhisper(wav: Buffer): Buffer {
+export function ogWavForWhisper(wav: Buffer, maxDurationMs = MAX_UTTERANCE_MS): Buffer {
   const { sampleRate, pcm } = readMonoPcm16Wav(wav);
-  if (sampleRate !== OG_AUDIO_SAMPLE_RATE || pcm.length > OG_AUDIO_SAMPLE_RATE * 2 * MAX_UTTERANCE_MS / 1000)
+  if (!Number.isInteger(maxDurationMs) || maxDurationMs < 1 || maxDurationMs > MAX_ASSET_MS
+    || sampleRate !== OG_AUDIO_SAMPLE_RATE || pcm.length > OG_AUDIO_SAMPLE_RATE * 2 * maxDurationMs / 1000)
     throw new Error('Expected a bounded OG microphone utterance.');
   const result = Buffer.alloc(pcm.length * 2), count = pcm.length / 2;
   for (let i = 0; i < count; i++) {

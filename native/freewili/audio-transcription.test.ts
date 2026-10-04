@@ -46,6 +46,23 @@ test('positive speech is returned as recognized text without a cancellation deci
   });
 });
 
+test('wellbeing 15s uses the local CLI with exact duration while default incident rejects it', async () => {
+  await fixture(async modelPath => {
+    const wav = pcm16Wav(Buffer.alloc(8000 * 2 * 15, 1), 8000); let calls = 0, directory = '';
+    const run = async (_cli: string, args: string[]) => {
+      calls++; const audio = args[args.indexOf('-f') + 1]!; directory = dirname(audio);
+      const parsed = readMonoPcm16Wav(await readFile(audio));
+      assert.equal(parsed.sampleRate, 16000); assert.equal(parsed.durationMs, 15000);
+      await writeFile(args[args.indexOf('-of') + 1]! + '.txt', 'I had breakfast and feel better today.');
+    };
+    assert.equal((await transcribeOgUtterance(wav, { modelPath, run })).status, 'unavailable');
+    assert.equal(calls, 0);
+    const result = await transcribeOgUtterance(wav, { modelPath, run, maxDurationMs: 15000 });
+    assert.equal(result.status, 'transcribed'); assert.equal(calls, 1);
+    await assert.rejects(access(directory));
+  });
+});
+
 test('invalid/zero microphone data and missing model do not start a recognition process', async () => {
   let calls = 0; const run = async () => { calls++; };
   for (const input of [Buffer.from('not wav'), pcm16Wav(Buffer.alloc(16), 8000)])

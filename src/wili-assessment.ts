@@ -110,10 +110,11 @@ export class WiliAssessment {
     // Already emitted impact identities remain consumed even if the same history is passed again.
   }
 
-  candidate(wili: Pick<FreeWili, 'view' | 'observations'>, motion: Pick<Motion, 'views' | 'observations'>): WiliAssessmentEvidence | null {
-    const now = this.now(), t = this.thresholds;
+  candidate(wili: Pick<FreeWili, 'view' | 'observations'>, motion: Pick<Motion, 'views' | 'observations'>,
+    assessedAtMs = this.now()): WiliAssessmentEvidence | null {
+    const now = assessedAtMs, t = this.thresholds;
     if (!finite(now) || now < 0 || now - this.lastCandidateAt < t.cooldownMs) return null;
-    const body = wili.view(), waist = motion.views().find(view => view.source === 'waist-airpod');
+    const body = wili.view(now), waist = motion.views(now).find(view => view.source === 'waist-airpod');
     if (!body.connected || !body.fresh || !body.usable || body.quality !== 'measured' || body.saturated !== false
       || !body.sessionId || body.fullScaleG === null || !usableRange(body.captureClock, body.fullScaleG)
       || body.alignmentUncertaintyMs === null || body.alignmentUncertaintyMs > t.maxAlignmentUncertaintyMs

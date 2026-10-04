@@ -99,6 +99,15 @@ test('Whisper conversion doubles sample rate and count while preserving utteranc
   assert.throws(() => ogWavForWhisper(pcm16Wav(Buffer.alloc(8000 * 2 * 7), 8000)));
 });
 
+test('wellbeing explicitly allows 15s without widening the default incident bound', () => {
+  const source = pcm16Wav(Buffer.alloc(8000 * 2 * 15, 1), 8000);
+  assert.throws(() => ogWavForWhisper(source));
+  const converted = readMonoPcm16Wav(ogWavForWhisper(source, 15000));
+  assert.equal(converted.sampleRate, 16000); assert.equal(converted.durationMs, 15000);
+  assert.equal(converted.pcm.length, 16000 * 2 * 15);
+  for (const bound of [0, 15001, NaN, Infinity, 1.1]) assert.throws(() => ogWavForWhisper(source, bound));
+});
+
 test('installed Core Audio conversion prepares 8kHz mono WAV without playback', { skip: process.platform !== 'darwin' }, async () => {
   const samples = Buffer.alloc(16000 * 2 / 10);
   for (let i = 0; i < samples.length / 2; i++) samples.writeInt16LE(Math.round(Math.sin(i / 16000 * 440 * 2 * Math.PI) * 1000), i * 2);

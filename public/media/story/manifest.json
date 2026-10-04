@@ -1,0 +1,95 @@
+{
+  "revision": 6,
+  "totalFrames": 260,
+  "holdStart": 0.88,
+  "reframeEnd": 1,
+  "renditions": {
+    "desktop": {
+      "width": 1280,
+      "height": 720
+    },
+    "mobile": {
+      "width": 648,
+      "height": 1152
+    }
+  },
+  "scenes": [
+    {
+      "id": "ordinary",
+      "name": "Ordinary life",
+      "first": 0,
+      "count": 40,
+      "start": 0,
+      "end": 0.14,
+      "clip": "standing",
+      "offset": 0,
+      "duration": 4
+    },
+    {
+      "id": "imbalance",
+      "name": "Failed recovery",
+      "first": 40,
+      "count": 30,
+      "start": 0.14,
+      "end": 0.28,
+      "clip": "imbalance-v4",
+      "offset": 5.1,
+      "duration": 0.9
+    },
+    {
+      "id": "impact",
+      "name": "Braced landing",
+      "first": 70,
+      "count": 10,
+      "start": 0.28,
+      "end": 0.35,
+      "clip": "impact-v4",
+      "offset": 0,
+      "duration": 2.5
+    },
+    {
+      "id": "checkin",
+      "name": "The check-in",
+      "first": 80,
+      "count": 40,
+      "start": 0.35,
+      "end": 0.49,
+      "clip": "seated",
+      "offset": 1.65,
+      "duration": 1.35
+    },
+    {
+      "id": "words",
+      "name": "Their own words",
+      "first": 120,
+      "count": 40,
+      "start": 0.49,
+      "end": 0.57,
+      "clip": "seated",
+      "offset": 3,
+      "duration": 3
+    },
+    {
+      "id": "responder",
+      "name": "A person responds",
+      "first": 160,
+      "count": 60,
+      "start": 0.57,
+      "end": 0.77,
+      "clip": "responder-v4",
+      "offset": 0,
+      "duration": 8
+    },
+    {
+      "id": "waiting",
+      "name": "Waiting, connected",
+      "first": 220,
+      "count": 40,
+      "start": 0.77,
+      "end": 0.88,
+      "clip": "seated",
+      "offset": 6,
+      "duration": 4
+    }
+  ]
+}

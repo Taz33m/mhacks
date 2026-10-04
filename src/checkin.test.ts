@@ -53,3 +53,39 @@ test('invalid or stale replies and late cancellation cannot alter state', () => 
     c.tick(); assert.equal(c.active()?.phase, 'HELP_REQUESTED');
   } finally { c.close(); }
 });
+
+test('first-person inability to stand or get up requests help without turning pain alone into a clinical judgment', () => {
+  for (const reply of ['I fell pretty hard. My ankle hurts and I can’t stand up.',
+    'I cannot get up right now.', 'I can’t stand.', 'My legs hurt. I cannot stand up.'])
+    assert.equal(classifyCheckinReply(reply), 'help_requested', reply);
+  for (const reply of ['My ankle hurts.', 'My friend cannot stand up.', 'He said I cannot get up.',
+    'The TV says “I can’t stand up.”', "'I cannot get up'", 'Can you help if I cannot get up?',
+    'I cannot stand up?', 'If I cannot get up I will call someone.',
+    "I can't stand this music.", "I can't get up but I don't need help.", "I don't think I can't stand up."])
+    assert.equal(classifyCheckinReply(reply), 'unresolved', reply);
+  assert.equal(classifyCheckinReply("I'm okay."), 'confirmation_required');
+});
+
+test('the supplied physical distress statement promptly escalates a current FREE-WILi check-in', () => {
+  const c = new Controller(':memory:', [{ id: 'maya', name: 'Maya', phone: null }], () => 1000);
+  try {
+    const i = c.trigger({ kind: 'synthetic', summary: 'Offline board speech fixture.' });
+    const transcript = 'I fell pretty hard. My ankle hurts and I can’t stand up.';
+    assert.equal(c.recordCheckinReply({ incidentId: i.id, checkinId: i.checkinId,
+      transcript, source: 'freewili-local-speech' }), 'help_requested');
+    assert.equal(c.active()?.phase, 'HELP_REQUESTED');
+    assert.equal(c.active()?.ownerId, null);
+    assert.equal(c.actions(i.id).filter(a => a.type === 'alert').length, 1);
+    const firstAlert = c.actions(i.id).find(a => a.type === 'alert')!;
+    assert.ok(firstAlert.text.includes(`“${transcript}”`),
+      'the urgent alert carries exact distress before clinical inference finishes');
+    const report = c.conversation(i.id).find(message => message.speaker === 'wearer')!;
+    c.setHandoff(i.id, `Wearer report: “${transcript}” [conversation:${report.id}]\nSynthetic record context.`);
+    const updatedAlert = c.actions(i.id).find(a => a.type === 'alert')!;
+    assert.equal(updatedAlert.text.split(transcript).length - 1, 1,
+      'a refreshed, cited handoff includes the report once in the alert');
+    const event = c.events(i.id).findLast(e => e.type === 'CHECKIN_REPLY')!;
+    assert.equal(event.actor, 'freewili-local-speech');
+    assert.deepEqual(JSON.parse(event.detail), { transcript, decision: 'help_requested' });
+  } finally { c.close(); }
+});
