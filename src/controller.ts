@@ -153,6 +153,14 @@ export class Controller {
     // Care-team status only. The patient hears and reads short, separate lines.
     for (const id of i.contacted) this.enqueue(i, 'status', id, text);
   }
+  private notifyOkay(i: StoredIncident, how: string): void {
+    // Every fall reaches the care team, even when the wearer is fine: informational only, no action requested.
+    if (this.dispatchMode !== 'live') return;
+    const at = new Date(i.createdAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' });
+    for (const r of this.responders) this.enqueue(i, 'status', r.id,
+      `LIFELINE FYI: ${this.patientFirstName} had a possible fall at ${at} and said they're okay (${how}). No action needed; consider checking in later.`,
+      `${i.id}:${i.version}:status:fyi-okay:${r.id}`);
+  }
   private get patientFirstName(): string { return this.wearerName.trim().split(/\s+/)[0] || 'the patient'; }
   private report(i: Incident, event?: ProviderInbound): void {
     if (!event) return;
@@ -253,6 +261,7 @@ export class Controller {
         throw new PolicyError('Cancellation must target the current unresolved check-in. After escalation, responder outcome is required.');
       i.progressDeadline = null; this.phase(i, 'CANCELLED_FALSE_ALARM', 'subject-control', 'Subject explicitly cancelled the current check-in.'); this.stopPending(i);
       this.enqueue(i, 'wearer_status', null, 'Okay, check-in closed. I’m here if you need me.');
+      this.notifyOkay(i, 'cancelled the check-in');
     });
   }
   recordCheckinReply(reply: CheckinReply): CheckinDecision {
@@ -640,6 +649,7 @@ export class Controller {
       this.phase(active, 'CANCELLED_FALSE_ALARM', 'freewili-button', 'Patient cancelled the check-in with the green button.');
       this.stopPending(active); this.rememberInbound(inboundId);
       this.enqueue(active, 'wearer_status', null, 'Okay, check-in closed. I’m here if you need me.');
+      this.notifyOkay(active, 'pressed the green button');
       return active;
     });
   }
@@ -855,6 +865,10 @@ export class Controller {
       if (this.latest()?.id !== i.id) return false;
       const row = this.db.prepare('SELECT dedupe_key FROM actions WHERE id=?').get(a.id);
       return row !== undefined && Number(String(row.dedupe_key).split(':')[1]) === i.version;
+    }
+    if (a.type === 'status' && i.phase === 'CANCELLED_FALSE_ALARM' && this.responders.some(r => r.id === a.recipientId)) {
+      const fyi = this.db.prepare('SELECT dedupe_key FROM actions WHERE id=?').get(a.id);
+      if (fyi !== undefined && String(fyi.dedupe_key).includes(':fyi-okay:')) return true;
     }
     if (!a.recipientId || !this.responders.some(r => r.id === a.recipientId) || !i.contacted.includes(a.recipientId)) return false;
     if (a.type === 'alert') return i.phase === 'HELP_REQUESTED' && !i.ownerId && !i.declined.includes(a.recipientId);

@@ -33,6 +33,7 @@ test('new check-in has one wearer outbox action while native speech stays phone-
   assert.equal(claimed.attempts, 1); c.finishAction(claimed.id, 'provider_accepted', 'Protocol fixture accepted.', 'wearer-message');
   assert.equal(c.claimAction(), null); assert.equal(c.actions(i.id).find(a => a.type === 'checkin')?.status, 'queued');
   c.cancel(i.id, i.checkinId);
+  for (let fyi = c.claimAction('responders'), k = 0; fyi; fyi = c.claimAction('responders'), k++) { assert.match(fyi.text, /LIFELINE FYI/); c.finishAction(fyi.id, 'provider_accepted', 'FYI fixture accepted.', `fyi-message-${k}`); }
   const next = c.trigger({ kind: 'synthetic', summary: 'Next distinct check-in.' });
   assert.notEqual(next.id, i.id); assert.notEqual(next.checkinId, i.checkinId);
   assert.equal(checkins(c, next.id).length, 2); assert.equal(c.claimAction()?.type, 'wearer_checkin');
@@ -147,7 +148,8 @@ test('message lookup matches only the current wearer check-in and never native/r
   const native = c.actions(i.id).find(a => a.type === 'checkin')!;
   c.finishAction(native.id, 'provider_accepted', 'Association fixture only.', 'native-message');
   assert.equal(c.wearerIncidentForMessage('native-message'), null);
-  c.cancel(i.id, i.checkinId); const next = c.trigger({ kind: 'manual', summary: 'New manual incident.' });
+  c.cancel(i.id, i.checkinId); for (let fyi = c.claimAction('responders'), k = 0; fyi; fyi = c.claimAction('responders'), k++) { assert.match(fyi.text, /LIFELINE FYI/); c.finishAction(fyi.id, 'provider_accepted', 'FYI fixture accepted.', `fyi-message-${k}`); }
+  const next = c.trigger({ kind: 'manual', summary: 'New manual incident.' });
   const alert = c.claimAction()!; assert.equal(alert.type, 'alert');
   c.finishAction(alert.id, 'provider_accepted', 'Protocol fixture accepted.', 'responder-message');
   assert.notEqual(next.id, i.id); assert.equal(c.wearerIncidentForMessage('wearer-message'), null);

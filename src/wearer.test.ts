@@ -102,6 +102,7 @@ test('untargeted text, partial codes, wrong case and extra suffix content cannot
 test('a current code cannot rescue an explicit stale, unknown or empty target', t => {
   const { controller, incident: old, target: oldTarget } = setup(t);
   controller.cancel(old.id, old.checkinId);
+  for (let fyi = controller.claimAction('responders'), k = 0; fyi; fyi = controller.claimAction('responders'), k++) { assert.match(fyi.text, /LIFELINE FYI/); controller.finishAction(fyi.id, 'provider_accepted', 'FYI fixture accepted.', `fyi-message-${k}`); }
   const current = controller.trigger({ kind: 'synthetic', summary: 'Next offline incident.' });
   const currentTarget = persistCheckin(controller, 'provider-current-wearer-checkin');
   for (const [index, target] of [oldTarget!, 'unknown-provider-message', ''].entries()) {

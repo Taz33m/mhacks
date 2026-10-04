@@ -25,6 +25,7 @@
     "build:ios:device": "zsh native/ios/build-device.sh",
     "install:ios": "zsh native/ios/install-device.sh",
     "replay:motion": "node scripts/replay-motion.ts",
+    "summary:detection": "node scripts/detection-summary.ts",
     "device:usb": "node scripts/connect-usb.ts",
     "setup:freewili": "zsh native/freewili/setup.sh",
     "device:freewili": "node --env-file-if-exists=.env native/freewili/stock-bridge.ts",

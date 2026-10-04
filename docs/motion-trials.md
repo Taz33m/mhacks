@@ -52,6 +52,17 @@ Raw WILi acceleration includes gravity. It is never re-labelled as Core Motion f
 
 The current provisional combined rule requires primary impact, correlated waist movement and continuous subsequent waist quiet with current clock alignment. The stock 2 g host-receipt profile uses its recorded 1.65 g prototype threshold; other supported ranges use the 2.5 g threshold. Supporting waist movement is at least 0.4 g linear acceleration or 1.2 rad/s measured rotation within 750 ms. The quiet window is 2.4 seconds with at most 0.15 g linear acceleration and 0.35 rad/s rotation; it cannot bridge a waist gap over 200 ms. Sparse primary events are retained as sparse events, without inventing primary quiet or interpolated samples. Applied settings are also frozen in each candidate's features.
 
+## Detection counts for the pitch
+
+Record one paired trial per scenario (`staged-fall` onto the mat, then `sit`, `bend`, `standing`/`other` for everyday movements). Press **Add marker** right before each repetition. Then:
+
+```sh
+npm run --silent replay:motion -- data/trials/trial-<falls>.jsonl data/trials/trial-<everyday>.jsonl > /tmp/replay.json
+npm run summary:detection -- /tmp/replay.json
+```
+
+Each marker counts as one event; it is a hit if the replayed detector produced a candidate within 10 s of the marker (or before the next marker). The output reads like "Staged falls detected: 9/10" and "False check-ins in everyday movements: 1/20". Quote those exact counts as staged team trials, not real-world accuracy.
+
 ## Ordered capture format
 
 Each non-empty JSONL line is an ordered event; equal host times are permitted, decreasing times are rejected:
