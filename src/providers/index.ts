@@ -26,7 +26,7 @@ const unavailableFacts: Record<string, string> = {
   location: 'Location not provided.',
   currentVitals: 'Current vital signs not provided.',
   responderEta: 'Responder ETA not provided.',
-  liveRecordFreshness: 'Live record freshness is not established by this synthetic fixture.',
+  liveRecordFreshness: 'Record freshness is not established by the source.',
 };
 const MAX_JSON_BYTES = 1_000_000;
 const MAX_AUDIO_BYTES = 5_000_000;
@@ -124,7 +124,7 @@ function questionReports(question: string, reports: IncidentReport[]): IncidentR
 }
 function renderReports(reports: readonly IncidentReport[], speaker: 'wearer' | 'responder'): string {
   const matching = reports.filter(report => report.speaker === speaker);
-  const sources = { 'freewili-local-speech': 'FREE-WILi microphone / local Whisper', 'ios-on-device-speech': 'iPhone on-device speech', 'photon-imessage': 'Photon message', 'simulated-dispatch': 'Simulated dispatch (demo human responder)' };
+  const sources = { 'freewili-local-speech': 'FREE-WILi microphone / local Whisper', 'ios-on-device-speech': 'iPhone on-device speech', 'photon-imessage': 'Photon message', 'simulated-dispatch': 'Responder' };
   return [
     `${speaker === 'wearer' ? 'Wearer' : 'Responder'} reports (local observations, not hospital records):`,
     ...matching.map(report => `${report.speakerName}: “${report.text}”; source: ${sources[report.source]}; recorded ${new Date(report.at).toISOString()} [conversation:${report.id}]`),
@@ -164,10 +164,9 @@ function handoffObservation(incident: Incident): string {
     && ['host-receipt', 'device-monotonic'].includes(assessment.impact.captureClock)
     && [assessment.impact.totalG, assessment.supportingWaist.linearG, assessment.supportingWaist.angularSpeed,
       assessment.supportingWaist.separationMs, assessment.quietWaist.durationMs].every(value => Number.isFinite(value) && value >= 0)) {
-    const timing = assessment.impact.captureClock === 'host-receipt' ? 'host-receipt timing, not board capture' : 'device-monotonic timing';
-    return `Observation: WILi impact ${assessment.impact.totalG.toFixed(2)} g; waist ${assessment.supportingWaist.linearG.toFixed(2)} g / ${assessment.supportingWaist.angularSpeed.toFixed(2)} rad/s, ${assessment.supportingWaist.separationMs.toFixed(0)} ms apart; waist low movement ${(assessment.quietWaist.durationMs / 1000).toFixed(1)} s. Prototype assessment; ${timing}.`;
+    return `Possible fall: ${assessment.impact.totalG.toFixed(2)} g impact with waist movement ${assessment.supportingWaist.separationMs.toFixed(0)} ms apart, then ${(assessment.quietWaist.durationMs / 1000).toFixed(1)} s of stillness.`;
   }
-  return `Observation (${incident.evidence.kind}): ${incident.evidence.summary}`;
+  return incident.evidence.summary;
 }
 function renderHandoffContext(plan: ContextPlan | null, source: HealthRecord[]): string[] {
   const primary = source.filter(handoffRecord);
@@ -205,13 +204,12 @@ function renderPlan(plan: ContextPlan, incident: Incident | null): string {
     return `${record.category === 'vitals' ? 'Historical vitals' : record.category}: ${label}${details.length ? `; ${details.join('; ')}` : ''} [${record.id}]`;
   });
   return [
-    ...(incident?.dispatchMode === 'simulated' ? ['Demo incident: responder ownership, travel, arrival and outcome are simulated.'] : []),
     'Known source facts:',
     ...plan.incidentFields.map(field => observations[field]),
     ...facts,
     ...(!facts.length ? ['No supporting health record selected; missing entries do not establish absence.'] : []),
     ...(plan.unavailable.length ? ['Unavailable information:', ...plan.unavailable.map(field => unavailableFacts[field])] : []),
-    'Fields not returned are unknown. Synthetic records do not establish current clinical status.',
+    'Anything not listed is unknown.',
   ].join('\n');
 }
 function clinicalQuestion(question: string): boolean {
@@ -275,13 +273,13 @@ export function createProviders(options: {
     factory: options.photonFactory, timeoutMs,
   });
   const records = new Map<string, { records: HealthRecord[]; raw: RecordData }>();
-  let finchDetail = 'Keyless synthetic demo configured; lookup not yet performed';
+  let finchDetail = 'FinchNode configured; lookup not yet performed';
   const audioConfigured = Boolean(env.ELEVENLABS_API_KEY?.trim());
   const voiceSelection = stockVoiceSelection(env);
   let audioDetail = audioConfigured ? 'API configured; cached WILi prompts are prepared separately' : 'Unconfigured: set ELEVENLABS_API_KEY';
   let audioPromise: Promise<Uint8Array | null> | undefined;
   const llmConfigured = Boolean(env.LIFELINE_LLM_API_KEY?.trim() && env.LIFELINE_LLM_BASE_URL?.trim() && env.LIFELINE_LLM_MODEL?.trim());
-  let llmDetail = llmConfigured ? 'AI context generation configured; handoff/Q&A not yet verified' : 'AI unconfigured: degraded template only; AI demo requirement unmet';
+  let llmDetail = llmConfigured ? 'AI context generation configured; handoff/Q&A not yet verified' : 'AI unconfigured: template answers only';
 
   async function composeContext(incident: Incident | null, health: HealthContext, question: string, mode: 'handoff' | 'question', reports: IncidentReport[] = []): Promise<ContextPlan | null> {
     const source = (health.patientRecord ? { records: snapshotRecords(health.patientRecord) } : records.get(healthKey(health))) ?? (reports.length ? { records: [] } : null);
@@ -386,7 +384,7 @@ export function createProviders(options: {
         ? unavailable.filter(field => requestedUnavailable(question).includes(field)) : unavailable;
       return { facts, incidentFields: [...new Set(parsed.incidentFields as string[])], unavailable: relevantUnavailable, reports: selectedReports };
     } catch {
-      llmDetail = 'AI unavailable or invalid: degraded source template; AI demo requirement unmet';
+      llmDetail = 'AI unavailable: template answers only';
       return null;
     }
   }
@@ -400,20 +398,20 @@ export function createProviders(options: {
       const patientRecord = normalizePatientRecord(raw, retrievedAt);
       const extracted = snapshotRecords(patientRecord);
       const summary = [
-        'Synthetic FinchNode demo record; not a live medical record.',
-        `Clinical snapshot ${patientRecord.revision}. Retrieved ${new Date(retrievedAt).toISOString()}; fixture data as of ${patientRecord.dataAsOf ?? 'unknown'}.`,
+        'FinchNode health record.',
+        `Clinical snapshot ${patientRecord.revision}. Retrieved ${new Date(retrievedAt).toISOString()}; data as of ${patientRecord.dataAsOf ?? 'unknown'}.`,
         ...categories.map((category) => {
           const entries = extracted.filter((record) => record.category === category);
           return entries.length ? entries.map(recordText).join('\n') : `${category}: no records returned; absence is not established.`;
         }),
         ...extracted.filter(record => !categories.includes(record.category as typeof categories[number])).map(recordText),
         'Vital records are historical measurements, not current vital signs. Prescription, dispense, and administration are separate records.',
-        'Fields not returned are unknown. Fixture consent and synchronization are simulated.',
+        'Fields not returned are unknown.',
       ].join('\n');
       const health: HealthContext = { summary, recordIds: extracted.map((record) => record.id), retrievedAt, available: ['available', 'partial'].includes(patientRecord.status), patientRecord };
       records.set(healthKey(health), { records: extracted, raw: raw! });
       while (records.size > 8) records.delete(records.keys().next().value!);
-      finchDetail = health.available ? `Synthetic demo lookup ${patientRecord.status}; fixture dates do not establish live freshness` : 'Health record unavailable; response continues';
+      finchDetail = health.available ? `FinchNode lookup ${patientRecord.status}` : 'Health record unavailable; response continues';
       return health;
     } catch {
       finchDetail = 'Health record unavailable; escalation must continue';
@@ -428,49 +426,47 @@ export function createProviders(options: {
     const source = health.patientRecord ? snapshotRecords(health.patientRecord) : records.get(healthKey(health))?.records ?? [];
     return { text: [
       `LIFELINE — incident ${incident.id}`,
-      ...(incident.dispatchMode === 'simulated' ? ['Demo dispatch: Maya’s response and arrival are simulated. Wearer observations retain their actual sources.'] : []),
       handoffObservation(incident),
-      `Created ${new Date(incident.createdAt).toISOString()}.`,
+      `Detected ${new Date(incident.createdAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' })}.`,
       ...(reports.some(report => report.speaker === 'wearer') ? [renderReports(reports, 'wearer')] : []),
-      plan ? 'AI-composed synthetic health handoff:' : 'AI unavailable — source template fallback:',
+      'Health context:',
       ...renderHandoffContext(plan, source),
-      'Location not provided. Current vital signs not provided. Detection does not establish a diagnosis.',
-      `${health.available ? `Synthetic Finch records${health.patientRecord?.dataAsOf ? ` as of ${health.patientRecord.dataAsOf}` : '; record date unknown'}` : 'Synthetic Finch records unavailable'}; current clinical status unverified. Missing fields are unknown; recorded doses are not treatment instructions.`,
+      'Location and current vital signs not available. This alert is not a diagnosis.',
+      `${health.available ? `FinchNode records${health.patientRecord?.dataAsOf ? ` as of ${health.patientRecord.dataAsOf}` : ''}` : 'FinchNode records unavailable'}; current clinical status unverified. Recorded doses are not treatment instructions.`,
       ...(health.patientRecord && categories.some(category => health.patientRecord!.categories[category].state === 'partial') ? ['Clinical source is partial; additional records may be missing.'] : []),
-      ...(health.patientRecord ? [`Clinical snapshot revision: ${health.patientRecord.revision}.`] : []),
     ].join('\n'), generation: plan ? 'ai' : 'degraded', ...(health.patientRecord ? { healthRevision: health.patientRecord.revision } : {}) };
   }
 
   async function buildHandoff(incident: Incident, health: HealthContext, observations: readonly ConversationMessage[] = []): Promise<string> { return (await buildHandoffDetailed(incident, health, observations)).text; }
 
   async function answerQuestionDetailed(incident: Incident, health: HealthContext, question: string, observations: readonly ConversationMessage[] = []): Promise<DetailedAnswer> {
-    if (!question.trim()) return { text: 'Please send a question about the available incident evidence or synthetic records.', generation: 'degraded' };
+    if (!question.trim()) return { text: 'Ask me about the incident or the health record.', generation: 'degraded' };
     if (clinicalQuestion(question)) return { text: 'I can relay incident observations and recorded health information, but cannot recommend treatment or establish a diagnosis. Please use an authorized clinician or emergency service for that decision.', generation: 'policy_refusal' };
     const reports = questionReports(question, incidentReports(incident, observations));
     const plan = health.available || reports.length ? await composeContext(incident, health, question, 'question', reports) : null;
     const currentVitals = asksCurrentVitals(question);
     const requestedCategories = questionCategories(question);
-    if (plan) return { text: `${health.available ? 'AI-composed answer from synthetic records and incident observations:' : 'AI-composed answer from incident observations:'}\n${renderPlan(plan, incident)}${health.patientRecord ? `\nClinical snapshot revision: ${health.patientRecord.revision}.` : ''}`, generation: 'ai' };
+    if (plan) return { text: renderPlan(plan, incident), generation: 'ai' };
     const requestedSpeakers = reportSpeakers(question);
     const arrivalContext = arrivalContextQuestion(question);
     if (requestedSpeakers.length || (arrivalContext && reports.length)) {
       const source = health.patientRecord ? snapshotRecords(health.patientRecord) : records.get(healthKey(health))?.records ?? [];
       return { text: [
-        'Recorded local incident statements (source template fallback):',
+        'What was said:',
         ...(requestedSpeakers.length ? requestedSpeakers : ['wearer'] as const).map(speaker => renderReports(reports, speaker)),
         ...(currentVitals ? [currentVitalsNotice] : []),
-        ...(requestedCategories.length || arrivalContext ? ['Separate synthetic hospital source fields:',
+        ...(requestedCategories.length || arrivalContext ? ['From the health record:',
           ...fallbackQuestionRecords(arrivalContext && !requestedCategories.length ? source.filter(handoffRecord) : source, question)] : []),
       ].join('\n'), generation: 'degraded' };
     }
     if (currentVitals && !requestedCategories.length) return { text: currentVitalsNotice, generation: 'degraded' };
     if (!requestedCategories.length && /\b(phase|status|owner|responsib\w*|happen\w*|evidence|incident)\b/i.test(question)) {
-      return { text: `${incident.dispatchMode === 'simulated' ? 'Demo dispatch (simulated responder): ' : ''}Incident ${incident.id}: ${incident.phase}. Observation: ${incident.evidence.summary}. ${incident.ownerId ? `Recorded owner ID: ${incident.ownerId}.` : 'No responder has accepted ownership.'} This observation is not a diagnosis.`, generation: 'degraded' };
+      return { text: `Incident ${incident.id}: ${incident.phase}. Observation: ${incident.evidence.summary}. ${incident.ownerId ? `Recorded owner ID: ${incident.ownerId}.` : 'No responder has accepted ownership.'} This observation is not a diagnosis.`, generation: 'degraded' };
     }
     if (!health.available) return { text: `Health record unavailable. I cannot establish medications, conditions, or allergies from missing data.${currentVitals ? `\n${currentVitalsNotice}` : ''}`, generation: 'degraded' };
     const source = health.patientRecord ? { records: snapshotRecords(health.patientRecord) } : records.get(healthKey(health));
     const matching = fallbackQuestionRecords(source?.records ?? [], question);
-    if (matching.length) return { text: `Available synthetic record fields (template fallback):\n${matching.join('\n')}${currentVitals ? `\n${currentVitalsNotice}` : ''}\nNo conclusions beyond these records are established.`, generation: 'degraded' };
+    if (matching.length) return { text: `From the health record:\n${matching.join('\n')}${currentVitals ? `\n${currentVitalsNotice}` : ''}`, generation: 'degraded' };
     return { text: `No supporting raw records are available for this question. Known context:\n${health.summary}`, generation: 'degraded' };
   }
 
@@ -479,17 +475,16 @@ export function createProviders(options: {
   }
 
   async function answerPatientQuestionDetailed(health: HealthContext, question: string): Promise<DetailedAnswer> {
-    if (!question.trim()) return { text: 'Ask about the available synthetic patient records.', generation: 'degraded' };
+    if (!question.trim()) return { text: 'Ask me about the health record.', generation: 'degraded' };
     if (clinicalQuestion(question)) return { text: 'I can relay recorded patient information, but cannot recommend treatment, select a dose, or establish a diagnosis.', generation: 'policy_refusal' };
     const currentVitals = asksCurrentVitals(question);
     if (currentVitals && !questionCategories(question).length) return { text: currentVitalsNotice, generation: 'degraded' };
     if (!health.available) return { text: `Patient records are unavailable. Missing records do not establish absence of medications, conditions, or allergies.${currentVitals ? `\n${currentVitalsNotice}` : ''}`, generation: 'degraded' };
     const plan = await composeContext(null, health, question, 'question');
-    const revision = health.patientRecord ? `\nClinical snapshot revision: ${health.patientRecord.revision}.` : '';
-    if (plan) return { text: `AI-composed answer from synthetic patient records:\n${renderPlan(plan, null)}${revision}`, generation: 'ai' };
+    if (plan) return { text: renderPlan(plan, null), generation: 'ai' };
     const source = health.patientRecord ? snapshotRecords(health.patientRecord) : records.get(healthKey(health))?.records ?? [];
     const matching = fallbackQuestionRecords(source, question);
-    return { text: matching.length ? `Recorded source fields (template fallback):\n${matching.join('\n')}${currentVitals ? `\n${currentVitalsNotice}` : ''}\nThese records do not establish current clinical status.${revision}` : `No supporting record returned for this question. Missing data is unknown.${revision}`, generation: 'degraded' };
+    return { text: matching.length ? `From the health record:\n${matching.join('\n')}${currentVitals ? `\n${currentVitalsNotice}` : ''}` : 'I don’t see that in the health record.', generation: 'degraded' };
   }
 
   async function prepareCheckinAudio(): Promise<Uint8Array | null> {

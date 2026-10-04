@@ -28,9 +28,12 @@
     "setup:freewili": "zsh native/freewili/setup.sh",
     "device:freewili": "node --env-file-if-exists=.env native/freewili/stock-bridge.ts",
     "prepare:wili:ui": "python3 scripts/prepare-wili-ui.py",
+    "build:location": "node scripts/build-location-view.mjs",
     "prepare:wili:local": "node native/freewili/prepare-stock-audio.ts --provider local",
     "prepare:wili:elevenlabs": "node --env-file-if-exists=.env native/freewili/prepare-stock-audio.ts --provider elevenlabs",
-    "check:photon": "node scripts/photon-readiness.ts"
+    "check:photon": "node scripts/photon-readiness.ts",
+    "twin:export": "node scripts/digital-twin/export-traces.mjs --offline-only",
+    "prepare:wili:movement": "node --env-file-if-exists=.env native/freewili/prepare-movement-audio.ts"
   },
   "dependencies": {
     "@photon-ai/advanced-imessage": "2.2.0",
@@ -41,6 +44,8 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/ws": "^8.18.0",
+    "esbuild": "0.28.2",
+    "three": "0.186.0",
     "typescript": "^5.9.0"
   },
   "overrides": {

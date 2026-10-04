@@ -173,7 +173,7 @@ export class WiliAssessment {
         alignmentAtAssessment: { bodyClock: impact.sample.captureClock, bodyUncertaintyMs: body.alignmentUncertaintyMs, waistUncertaintyMs: waist.alignmentUncertaintyMs },
       };
       return freeze({ kind: 'cross-body',
-        summary: `FREE-WILi primary acceleration impact (${impact.totalG.toFixed(2)} g; threshold ${selectedImpactG.toFixed(2)} g), using ${hostReceipt(impact.sample.captureClock) ? 'host-receipt timing (bridge receipt, not board acquisition time)' : 'device-monotonic timing'}, with aligned waist movement/rotation (${support.linearG.toFixed(2)} g, ${support.angularSpeed.toFixed(2)} rad/s; ${assessment.supportingWaist.separationMs.toFixed(0)} ms apart), followed by ${assessment.quietWaist.durationMs.toFixed(0)} ms continuous waist low movement. Provisional demo thresholds; possible incident, not a diagnosis. Prototype assessment.`,
+        summary: `Possible fall: ${impact.totalG.toFixed(2)} g impact with waist movement ${assessment.supportingWaist.separationMs.toFixed(0)} ms apart, then ${(assessment.quietWaist.durationMs / 1000).toFixed(1)} s of stillness.`,
         sourceSessions: { 'body-wili': impact.sample.sessionId, 'waist-airpod': waist.sessionId }, assessment });
     }
     return null;

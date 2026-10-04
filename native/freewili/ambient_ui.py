@@ -4,6 +4,7 @@ import json
 import math
 import pathlib
 import struct
+import tempfile
 import time
 import wave
 from PIL import Image, ImageDraw, ImageFont
@@ -11,10 +12,11 @@ from PIL import Image, ImageDraw, ImageFont
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SIZE = (320, 240)
 BG, BLUE, WHITE, MUTED = '#0b1018', '#1683ff', '#f4f7fc', '#8b99ad'
-FRAMES = {'ready': 1, 'checking': 4, 'reaching': 4, 'listening': 4,
+FRAMES = {'ready': 4, 'checking': 4, 'reaching': 4, 'listening': 4,
           'processing': 3, 'heard': 3, 'accepted': 3, 'on_way': 1,
           'on_scene': 1, 'speaking': 4, 'resolved': 1, 'cancelled': 1, 'unavailable': 1}
-FRAMES.update(ready_talk=1, recording=4, recording_limit=1)
+FRAMES.update(ready_talk=4, recording=4, recording_limit=1)
+DEMO_STATES = set(FRAMES) - {'ready', 'ready_talk', 'recording', 'recording_limit'}
 LABELS = {'ready': 'Here with you', 'checking': 'Do you need help?', 'reaching': 'Reaching out',
           'listening': "I'm listening", 'processing': 'One moment', 'heard': 'I heard you',
           'accepted': 'Responded', 'on_way': 'On the way', 'on_scene': 'Here with you',
@@ -28,8 +30,9 @@ def clean_name(value):
 def font(size):
     return ImageFont.truetype(str(ROOT / 'public/fonts/dm-sans-regular.ttf'), size * 3)
 
-def render(state, frame=0, owner='', wellbeing=False):
+def render(state, frame=0, owner='', wellbeing=False, demo=False):
     if state not in FRAMES: raise ValueError('Unknown ambient state')
+    demo = demo and state in DEMO_STATES and not wellbeing
     if state=='ready_talk':state='ready';wellbeing=True
     if state=='recording':state='listening';wellbeing=True
     owner = clean_name(owner)
@@ -51,6 +54,8 @@ def render(state, frame=0, owner='', wellbeing=False):
             h=4+level*34*envelope*(.55+.45*abs(math.sin(i*1.8)))
             d.rounded_rectangle(((x-2)*3,(y-h/2)*3,(x+2)*3,(y+h/2)*3),radius=6,fill=BLUE)
     text('L I F E L I N E',24,10,MUTED)
+    # Dispatch provenance stays in the incident metadata. The physical product
+    # uses the same uncluttered screen vocabulary in either dispatch mode.
     if state in ('ready','checking','reaching'):
         if state != 'ready':
             t=(frame%FRAMES[state])/FRAMES[state]
@@ -58,7 +63,12 @@ def render(state, frame=0, owner='', wellbeing=False):
                 strength=max(.08,1-r/100)
                 color=tuple(int(a+(b-a)*strength) for a,b in zip((11,16,24),(22,131,255)))
                 ellipse((160-r,105-r,160+r,105+r),outline=color,width=2)
-        ellipse((138,83,182,127),fill=BLUE)
+        if state == 'ready':
+            radius=(22,24,26,24)[frame%4]
+            ellipse((160-radius-12,105-radius-12,160+radius+12,105+radius+12),outline='#143455',width=1)
+            ellipse((160-radius,105-radius,160+radius,105+radius),fill=BLUE)
+        else:
+            ellipse((138,83,182,127),fill=BLUE)
         if state=='checking': text('!',107,28)
         elif state=='ready': line([(148,105),(157,105),(160,94),(164,115),(168,105),(173,105)],WHITE,2)
         else: ellipse((155,100,165,110),fill=WHITE)
@@ -120,37 +130,45 @@ def fwi_bytes(image):
         pixels.extend(struct.pack('>H',(int(r/255*31)<<11)|(int(g/255*63)<<5)|int(b/255*31)))
     return header+pixels
 
-def build_assets(destination, owners=()):
+def build_assets(destination, owners=(), compact=False, dispatch_mode='live'):
+    if dispatch_mode not in ('live', 'simulated'):raise ValueError('Invalid ambient dispatch mode')
     destination=pathlib.Path(destination);destination.mkdir(parents=True,exist_ok=True)
     entries={}
     for state,count in FRAMES.items():
         for owner in (['']+list(dict.fromkeys(clean_name(n) for n in owners if clean_name(n)))) if state in ('accepted','on_way','on_scene','speaking') else ['']:
             for frame in range(count):
                 key=f'{state}:{owner}:{frame}'
-                image=render(state,frame,owner)
+                # Retain every state and the real audio meter. Reuse a few
+                # decorative transition frames to fit OG flash with voice.
+                art_frame=({'checking':{3:1},'reaching':{3:1},'processing':{2:0},
+                            'heard':{0:1},'accepted':{0:1}}.get(state,{}).get(frame,frame)
+                           if compact else frame)
+                image=render(state,art_frame,owner,demo=dispatch_mode=='simulated')
                 content=fwi_bytes(image)
                 filename='L'+hashlib.sha256(content).hexdigest()[:7].upper()+'.FWI'
                 (destination/filename).write_bytes(content)
                 image.save(destination/(filename+'.png'))
                 entries[key]={'file':filename,'sha256':hashlib.sha256(content).hexdigest(),'bytes':len(content)}
-    manifest={'version':1,'width':320,'height':240,'owners':list(owners),'frames':FRAMES,'assets':entries}
+    manifest={'version':1,'width':320,'height':240,'dispatchMode':dispatch_mode,
+              'owners':list(owners),'frames':FRAMES,'assets':entries}
     (destination/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     return manifest
 
 class AmbientState:
     """Presentation only: named human states require an actual matching backend phase."""
     def __init__(self):
-        self.phase=None; self.owner=''; self.stage='ready'; self.wellbeing=False
+        self.phase=None; self.owner=''; self.stage='ready'; self.wellbeing=False; self.dispatch_mode='live'
         self.processing=False; self.speaker=''; self.level=0; self.level_at=-1
         self.playing=False; self.heard_until=0
         self.voice_levels=[];self.voice_start=0
         self.phase_at=0
-    def context(self, phase, owner='', now=0):
-        if phase != self.phase or clean_name(owner) != self.owner:
+    def context(self, phase, owner='', now=0, dispatch_mode='live'):
+        if dispatch_mode not in ('live','simulated'):raise ValueError('Invalid ambient context mode')
+        if phase != self.phase or clean_name(owner) != self.owner or dispatch_mode != self.dispatch_mode:
             self.phase_at=now
             self.processing=False; self.playing=False; self.speaker=''; self.heard_until=0
             self.stage='ready'
-        self.phase=phase;self.owner=clean_name(owner)
+        self.phase=phase;self.owner=clean_name(owner);self.dispatch_mode=dispatch_mode
     def pcm(self,samples,now):
         if not samples:return
         mean=sum(samples)/len(samples)
@@ -172,17 +190,21 @@ class AmbientState:
         if state=='accepted':return state,self.owner,min(count-1,max(0,int((now-self.phase_at)*5)))
         if state in ('resolved','cancelled') and now-self.phase_at>=3:state='ready'
         if state=='ready' and self.wellbeing:state='ready_talk'
-        return state,self.owner if state in ('accepted','on_way','on_scene') else '',int(now*4)%count
+        count=FRAMES[state]
+        rate=1.2 if state in ('ready','ready_talk') else 4
+        return state,self.owner if state in ('accepted','on_way','on_scene') else '',int(now*rate)%count
 
 class AmbientDisplay:
     """A bounded image client, used only on the gateway's serial-owning thread."""
     def __init__(self, serial, directory, require, status, now=time.monotonic):
         self.serial=serial;self.directory=pathlib.Path(directory);self.require=require
         self.status=status;self.now=now;self.model=AmbientState();self.enabled=False
-        self.last_file=None;self.next_at=0;self.interval=.2;self.slow=False
+        self.last_file=None;self.next_at=0;self.refresh_at=0;self.interval=.2;self.slow=False
         self.manifest=json.loads((self.directory/'manifest.json').read_text())
+        self.dispatch_mode=self.manifest.get('dispatchMode','live')
         if (self.manifest.get('version')!=1 or self.manifest.get('width')!=320
-                or self.manifest.get('height')!=240 or not 1<=len(self.manifest.get('assets',{}))<=64):
+                or self.manifest.get('height')!=240 or self.dispatch_mode not in ('live','simulated')
+                or not 1<=len(self.manifest.get('assets',{}))<=64):
             raise ValueError('Invalid ambient display manifest')
         self.files={}
         for key,entry in self.manifest['assets'].items():
@@ -195,16 +217,53 @@ class AmbientDisplay:
                     or name!='L'+entry['sha256'][:7].upper()+'.FWI'):
                 raise ValueError('Invalid ambient asset')
             self.files[name]=path
+        # OG DISPLAY has about 8 MB for images AND audio. Reserve space for
+        # prompts/live speech, including FAT allocation overhead.
+        if len(self.files)>44:
+            raise ValueError('Ambient images exceed the OG display storage budget (44 unique images).')
+
+    def verify_image(self, name, watchdog):
+        with tempfile.TemporaryDirectory(prefix='lifeline-ui-readback-') as directory:
+            path=pathlib.Path(directory)/name
+            path.touch(mode=0o600)
+            with watchdog(12):
+                self.require(self.serial.get_file('\\images\\'+name,path,None))
+            if hashlib.sha256(path.read_bytes()).hexdigest()!=hashlib.sha256(self.files[name].read_bytes()).hexdigest():
+                raise RuntimeError('Native image readback failed; refusing to display an incomplete asset.')
 
     def install(self, watchdog):
         self.require(self.serial.change_directory('/images'))
         listing=self.require(self.serial.list_current_directory())
         if listing.cwd.replace('\\','/').rstrip('/').lower()!='/images':raise ValueError('Wrong image directory')
         existing={item.name.upper():item.size for item in listing.contents if item.file_type.name=='File'}
+        # Content-addressed revisions otherwise fill the small display flash.
+        # Remove only our obsolete cache; never touch other apps' files.
+        removed=0
+        for name in list(existing):
+            if (len(name)==12 and name[0]=='L' and name[8:]=='.FWI'
+                    and all(c in '0123456789ABCDEF' for c in name[1:8]) and name not in self.files):
+                self.require(self.serial.remove_directory_or_file('\\images\\'+name))
+                del existing[name];removed+=1
+        if removed:self.status('ui-cache-cleaned',f'Removed {removed} obsolete native images.')
+        # Show idle immediately instead of waiting behind all audio/image setup.
+        ready=self.manifest['assets'][f'ready::{self.model.view(self.now())[2]}']['file']
+        if existing.get(ready)!=153624:
+            with watchdog(12):self.require(self.serial.send_file(self.files[ready],'/images/'+ready,None))
+            existing[ready]=153624
+        self.verify_image(ready,watchdog)
+        self.enabled=True
+        # Upload can cross an animation frame boundary. Paint the exact file
+        # just installed, rather than selecting another not-yet-uploaded frame.
+        self.require(self.serial.show_gui_image(ready))
+        self.last_file=ready
+        self.next_at=self.now()+self.interval
+        self.refresh_at=self.now()+2
+        self.status('ui-initial-idle', 'Native idle image command accepted before audio setup.')
         # Content-addressed names make visual revisions distinct from old cached images.
         for index,(name,path) in enumerate(self.files.items(),1):
             if existing.get(name)!=153624:
                 with watchdog(12):self.require(self.serial.send_file(path,'/images/'+name,None))
+                self.verify_image(name,watchdog)
             if index%8==0:self.status('ui-loading',f'Prepared {index} of {len(self.files)} native images.')
         self.require(self.serial.change_directory('/sounds'))
         self.enabled=True
@@ -223,23 +282,40 @@ class AmbientDisplay:
         self.model.speaker=clean_name(speaker);self.model.voice_levels=values
         self.model.voice_start=self.now();self.model.playing=True
 
+    def supports_context(self, capturing=False, wellbeing_capture=False):
+        state,_,_=self.model.view(self.now(),capturing,wellbeing_capture)
+        if state not in DEMO_STATES:return True
+        # A simulated bundle has one badged incident vocabulary, not a second
+        # full set. Wellbeing processing uses text when that art would imply a
+        # simulated incident. Idle remains identical and silent in both modes.
+        incident = self.model.phase is not None and not wellbeing_capture
+        if self.model.phase in ('RESOLVED','CANCELLED_FALSE_ALARM') and self.model.wellbeing and state in ('processing','heard'):
+            incident=False
+        wanted_demo=incident and self.model.dispatch_mode=='simulated'
+        return wanted_demo == (self.dispatch_mode=='simulated')
+
     def tick(self,capturing=False,blocked=False,remaining=None,wellbeing_capture=False):
+        if not self.supports_context(capturing,wellbeing_capture):
+            self.last_file=None;self.next_at=0;self.refresh_at=0
+            return
         if not self.enabled or blocked or self.now()<self.next_at or remaining is not None and remaining<.35:return
         state,owner,frame=self.model.view(self.now(),capturing,wellbeing_capture)
         entry=self.manifest['assets'].get(f'{state}:{owner}:{frame}') or self.manifest['assets'].get(f'{state}::{frame}')
         if not entry:return
-        if entry['file']==self.last_file:return
+        # Reassert a held frame after stock firmware redraws its own screen.
+        # Deduplication must not suppress the ready screen indefinitely.
+        if entry['file']==self.last_file and self.now()<self.refresh_at:return
         started=time.monotonic()
         try:
-            # OG v54's GUI loader accepts Windows-style paths. Its filesystem
-            # upload API accepts forward slashes, but the image loader rejects them.
-            result=self.serial.show_gui_image('\\images\\'+entry['file'])
+            # The official SDK hardware test passes the filename only. The
+            # GUI loader resolves it inside /images, independently of cwd.
+            result=self.serial.show_gui_image(entry['file'])
         except (OSError, RuntimeError):
             result=None
         elapsed=time.monotonic()-started
         if result is None or result.is_err():
             self.enabled=False;self.status('ui-unavailable','Display image command failed; text presentation resumes.');return
-        self.last_file=entry['file'];self.next_at=self.now()+self.interval
+        self.last_file=entry['file'];self.next_at=self.now()+self.interval;self.refresh_at=self.now()+2
         if not getattr(self,'reported_frame',False):
             self.reported_frame=True
             self.status('ui-visible',f'Native image command accepted in {round(elapsed*1000)} ms; physical appearance is not camera-verified.')

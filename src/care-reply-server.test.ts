@@ -94,7 +94,7 @@ test('everyday WILi questions retain exact fictional clinical context privately 
 
     const allergy = await speak('What allergies are recorded?');
     assert.equal(allergy.state.incident, null); assert.equal(allergy.reply.generation, 'ai');
-    assert.match(allergy.reply.text, /Finch demo record.*Fictional Patient.*fictional; not your personal record/);
+    assert.match(allergy.reply.text, /From your health record:/);
     assert.match(allergy.reply.text, /Fictional substance.*\[allergy-1\]/);
     assert.equal(allergy.wearer.source, 'freewili-local-speech');
     assert.deepEqual(allergy.reply.recordContext, {
@@ -138,7 +138,7 @@ test('everyday WILi questions retain exact fictional clinical context privately 
     const latest = await state(), exported = await journal();
     assert.equal(exported.lifelineObservations.messages.length, 40);
     assert.deepEqual(exported.lifelineObservations.messages, latest.wellbeing!.messages, 'export preserves exact message attribution, text, IDs, times and source');
-    assert.match(exported.hospitalRecords.source, /synthetic demo.*not the wearer/);
+    assert.match(exported.hospitalRecords.source, /FinchNode \(read-only\)/);
     assert.match(exported.lifelineObservations.source, /not hospital EHR entries/);
     assert.equal(exported.lifelineObservations.messages.some(message => message.text === socialText && message.source === 'freewili-local-speech'), true);
     assert.deepEqual(exported.hospitalRecords.snapshots.find(entry => entry.replyMessageId === allergy.reply.id)!.snapshot, previousSnapshot);

@@ -17,11 +17,11 @@ export function validSample(p: unknown, source: Source): p is MotionSample {
     && vec(s.gravity, 3) && norm(s.gravity) > .5 && norm(s.gravity) < 1.5
     && vec(s.userAcceleration, 3) && norm(s.userAcceleration) < 100;
 }
-interface Point { at: number; alignedAt: number | null; sensorTime: number; sequence: number; captureFresh: boolean; totalG: number; tiltDegrees: number | null; angularSpeed: number; linearG: number }
+interface Point { at: number; alignedAt: number | null; sensorTime: number; sequence: number; captureFresh: boolean; totalG: number; tiltDegrees: number | null; angularSpeed: number; linearG: number; rotationRate: Vec3 }
 export interface MotionObservation {
   source: Source; sessionId: string; sensorLocation: string;
   hostReceivedMs: number; alignedAtMs: number | null; sensorTime: number; sequence: number;
-  captureFresh: boolean; totalG: number; tiltDegrees: number | null; angularSpeed: number; linearG: number;
+  captureFresh: boolean; totalG: number; tiltDegrees: number | null; angularSpeed: number; linearG: number; rotationRate: Vec3;
 }
 interface Stream {
   source: Source; connected: boolean; session: string | null; location: string | null;
@@ -29,6 +29,7 @@ interface Stream {
   points: Point[]; samples: { at: number; gravity: Vec3; angularSpeed: number; linearG: number; captureFresh: boolean }[];
   offset: number | null; uncertainty: number | null; syncAt: number | null;
   pending: Map<string, number>;
+  quaternion: MotionSample['quaternion'] | null;
 }
 export class Motion {
   private streams = new Map<Source, Stream>();
@@ -40,13 +41,14 @@ export class Motion {
     this.mode = options.mode ?? 'combined';
     for (const source of sources) this.streams.set(source, {
       source, connected: false, session: null, location: null, sequence: -1, sensorTime: -1,
-      lastAt: null, lastCaptureAt: null, baseline: null, points: [], samples: [], offset: null, uncertainty: null, syncAt: null, pending: new Map()
+      lastAt: null, lastCaptureAt: null, baseline: null, points: [], samples: [], offset: null, uncertainty: null, syncAt: null, pending: new Map(), quaternion: null
     });
   }
   connected(source: Source): void { this.streams.get(source)!.connected = true; }
   disconnected(source: Source): void {
     const s = this.streams.get(source)!;
     s.connected = false; s.baseline = null; s.points = []; s.samples = []; s.lastAt = null; s.lastCaptureAt = null;
+    s.quaternion = null;
     s.offset = null; s.uncertainty = null; s.syncAt = null; s.pending.clear();
   }
   ping(source: Source, id: string = randomUUID()): ClockPing {
@@ -82,6 +84,7 @@ export class Motion {
       s.offset = null; s.uncertainty = null; s.syncAt = null;
     }
     s.sequence = p.sequence; s.sensorTime = p.sensorTime; s.lastAt = t; s.connected = true;
+    s.quaternion = [...p.quaternion];
     const tilt = s.baseline ? Math.acos(Math.min(1, Math.max(-1,
       p.gravity.reduce((sum, v, i) => sum + v * s.baseline![i], 0) / (norm(p.gravity) * norm(s.baseline))))) * 180 / Math.PI : null;
     const alignedAt = s.offset !== null && s.syncAt !== null && t - s.syncAt < 15_000 && s.uncertainty !== null && s.uncertainty <= 100
@@ -89,7 +92,7 @@ export class Motion {
     s.lastCaptureAt = alignedAt;
     const captureFresh = alignedAt === null || (t - alignedAt >= -100 && t - alignedAt < 500);
     s.points.push({ at: t, alignedAt, sensorTime: p.sensorTime, sequence: p.sequence, captureFresh, totalG: norm(p.gravity.map((v, i) => v + p.userAcceleration[i])),
-      tiltDegrees: tilt, angularSpeed: norm(p.rotationRate), linearG: norm(p.userAcceleration) });
+      tiltDegrees: tilt, angularSpeed: norm(p.rotationRate), linearG: norm(p.userAcceleration), rotationRate: [...p.rotationRate] });
     s.samples.push({ at: t, gravity: p.gravity, angularSpeed: norm(p.rotationRate), linearG: norm(p.userAcceleration), captureFresh });
     s.points = s.points.filter(p => t - p.at < 15_000).slice(-1600);
     s.samples = s.samples.filter(p => t - p.at < 2000).slice(-220);
@@ -127,7 +130,7 @@ export class Motion {
     return s.points.map(p => ({ source, sessionId: s.session!, sensorLocation: s.location!,
       hostReceivedMs: p.at, alignedAtMs: p.alignedAt, sensorTime: p.sensorTime, sequence: p.sequence,
       captureFresh: p.captureFresh, totalG: p.totalG, tiltDegrees: p.tiltDegrees,
-      angularSpeed: p.angularSpeed, linearG: p.linearG }));
+      angularSpeed: p.angularSpeed, linearG: p.linearG, rotationRate: [...p.rotationRate] }));
   }
   views(t = this.now()): SensorView[] {
     return sources.map(source => {
@@ -141,6 +144,7 @@ export class Motion {
         sampleHz: first && end && end.at > first.at ? Math.round((recent.length - 1) * 1000 / (end.at - first.at)) : 0,
         alignmentUncertaintyMs: s.syncAt !== null && t - s.syncAt < 15_000 ? s.uncertainty : null,
         totalG: fresh ? last?.totalG ?? null : null, tiltDegrees: fresh ? last?.tiltDegrees ?? null : null,
+        quaternion: fresh && s.quaternion ? [...s.quaternion] as MotionSample['quaternion'] : null,
         trace: s.points.filter((_, index) => index % Math.max(1, Math.floor(s.points.length / 250)) === 0)
           .map(p => ({ at: p.at, totalG: p.totalG, tiltDegrees: p.tiltDegrees, angularSpeed: p.angularSpeed })) };
     });
@@ -168,7 +172,7 @@ export class Motion {
     const description = kind === 'cross-body' ? 'Aligned chest impact and waist tilt'
       : this.mode === 'combined' ? 'Chest-only impact and tilt; waist unavailable'
         : `${this.mode === 'waist-only' ? 'Waist' : 'Chest'}-only impact and tilt (diagnostic assessment)`;
-    return { kind, summary: `${description}, followed by continuous low motion. Prototype thresholds, suspected incident.`,
+    return { kind, summary: `${description}, followed by stillness. Possible fall.`,
       sourceSessions: kind === 'cross-body' ? { 'chest-phone': chest.session!, 'waist-airpod': waist.session! } : { [primary.source]: primary.session! } };
   }
   private fresh(s: Stream, t: number): boolean {

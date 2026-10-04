@@ -1,3 +1,4 @@
+import { setTimeout as pause } from 'node:timers/promises';
 import type { ProviderInbound, ProviderResult } from '../contracts.ts';
 import { phoneIdentity } from '../identity.ts';
 
@@ -16,10 +17,15 @@ export interface PhotonMessage {
   space?: PhotonChannel;
   timestamp?: Date;
   reply?(text: string): Promise<PhotonSentMessage | undefined>;
+  /** Spectrum read receipt; iMessage marks the whole chat read. Best-effort. */
+  read?(): Promise<void>;
 }
 export interface PhotonSpace extends PhotonChannel {
   send(text: string): Promise<PhotonSentMessage | undefined>;
   getMessage?(id: string): Promise<PhotonMessage | undefined>;
+  /** Spectrum typing indicator; providers without one no-op. Best-effort. */
+  startTyping?(): Promise<void>;
+  stopTyping?(): Promise<void>;
 }
 export interface PhotonClient {
   messages: AsyncIterable<readonly [unknown, PhotonMessage]>;
@@ -197,9 +203,13 @@ async function listenerDelay(ms: number, signal: AbortSignal): Promise<void> {
 export function createPhotonAdapter(options: {
   projectId?: string; projectSecret?: string; factory?: PhotonFactory; timeoutMs?: number;
   listenerRetryBaseMs?: number; listenerRetryMaxMs?: number;
+  /** Read receipt + typing shown before conversational replies; 0 disables both. */
+  typingMs?: number;
 }) {
   const configured = Boolean(options.projectId?.trim() && options.projectSecret?.trim());
   const timeoutMs = options.timeoutMs ?? 15_000;
+  const typingSetting = options.typingMs ?? Number(process.env.LIFELINE_PHOTON_TYPING_MS ?? 900);
+  const typingMs = Number.isFinite(typingSetting) ? Math.max(0, Math.min(3_000, typingSetting)) : 900;
   let detail = configured ? 'Cloud credentials configured; outbound sends not yet verified' : 'Unconfigured: set SPECTRUM_PROJECT_ID and SPECTRUM_PROJECT_SECRET';
   let clientPromise: Promise<PhotonClient> | undefined;
   let listening = false;
@@ -286,8 +296,26 @@ export function createPhotonAdapter(options: {
       if (shutdown || (canSubmit && !canSubmit())) {
         return { status: 'cancelled', detail: 'Incident authorization ended before submission; no message sent.' };
       }
+      // Conversational replies only (alerts and check-ins never wait): mark the
+      // person's message read, show typing briefly, then answer. Best-effort; a
+      // presence failure never blocks the send, and authorization is rechecked.
+      const typingSpace = space;
+      let typing = false;
+      const stopTyping = () => { if (typing) void Promise.resolve().then(() => typingSpace.stopTyping?.()).catch(() => {}); };
+      if (replyTarget && typingMs > 0 && typingSpace.startTyping) {
+        const target = replyTarget;
+        void Promise.resolve().then(() => target.read?.()).catch(() => {});
+        typing = await withDeadline(Promise.resolve().then(() => typingSpace.startTyping!()), Math.min(timeoutMs, 1_500))
+          .then(() => true, () => false);
+        if (typing) await pause(typingMs);
+        if (shutdown || (canSubmit && !canSubmit())) {
+          stopTyping();
+          return { status: 'cancelled', detail: 'Incident authorization ended before submission; no message sent.' };
+        }
+      }
       try {
         const sent = await withDeadline(replyTarget ? replyTarget.reply!(text) : space.send(text), timeoutMs);
+        stopTyping();
         if (!sent?.id) {
           detail = 'Send returned no message ID; delivery outcome unknown';
           return { status: 'unknown', detail };
@@ -300,6 +328,7 @@ export function createPhotonAdapter(options: {
         detail = 'Cloud accepted a message; recipient delivery is not established';
         return { status: 'provider_accepted', messageId: sent.id, ...identities, detail };
       } catch (error) {
+        stopTyping();
         const warmup = contactWarmupCounters(error);
         detail = warmup
           ? `Photon reported a contact warm-up restriction after submission; outcome unknown. Contact messages ${warmup.sent}/${warmup.required}; reply allowance ${warmup.replies}. A new inbound reply is required; reconcile this attempt before retry`
@@ -365,6 +394,11 @@ export function createPhotonAdapter(options: {
                 if (!event) continue;
                 failures = 0;
                 if (seen.has(event.messageId)) continue;
+                // Read receipt on arrival (texts only); best-effort, never awaited.
+                if (typingMs > 0 && event.kind === 'text') {
+                  const received = next.value[1];
+                  void Promise.resolve().then(() => received.read?.()).catch(() => {});
+                }
                 try {
                   await listenerWait(Promise.resolve().then(() => {
                     if (abort.signal.aborted) throw new ListenerStopped();

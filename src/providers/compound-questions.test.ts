@@ -106,7 +106,7 @@ test('mixed wearer report, medications, allergies and current-vitals fallback ke
   assert.ok(answer.text.includes(`“${wearer.text}”`));
   assert.match(answer.text, /\[conversation:wearer-report\]/);
   assert.match(answer.text, /local observations, not hospital records/);
-  assert.match(answer.text, /Separate synthetic hospital source fields/);
+  assert.match(answer.text, /From the health record/);
 });
 
 test('historical and current vital requests remain distinct, including explicit mixed requests', async () => {
@@ -141,7 +141,7 @@ test('focused record answers discard unrequested missing-data padding and preser
     { question: 'Which allergies are recorded?', facts: [mixedPlan().facts[1]], expected: [] },
     { question: mixedQuestion, facts: mixedPlan().facts, expected: ['Current vital signs not provided.'] },
     { question: 'What allergies are recorded, where is the wearer, when will the responder arrive, and how recent are the records?',
-      facts: [mixedPlan().facts[1]], expected: ['Location not provided.', 'Responder ETA not provided.', 'Live record freshness is not established'] },
+      facts: [mixedPlan().facts[1]], expected: ['Location not provided.', 'Responder ETA not provided.', 'Record freshness is not established'] },
   ];
   for (const entry of cases) {
     const fixture = setup({ plan: { facts: entry.facts, incidentFields: [], unavailable: unknowns } });
@@ -150,7 +150,7 @@ test('focused record answers discard unrequested missing-data padding and preser
       await fixture.provider.answerPatientQuestionDetailed(health, entry.question)]) {
       assert.equal(answer.generation, 'ai');
       assert.match(answer.text, /\[allergy-1\]/);
-      for (const notice of ['Location not provided.', 'Current vital signs not provided.', 'Responder ETA not provided.', 'Live record freshness is not established']) {
+      for (const notice of ['Location not provided.', 'Current vital signs not provided.', 'Responder ETA not provided.', 'Record freshness is not established']) {
         assert.equal(answer.text.includes(notice), entry.expected.includes(notice), entry.question);
       }
       assert.equal(answer.text.includes('Unavailable information:'), entry.expected.length > 0);

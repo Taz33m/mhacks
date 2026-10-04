@@ -70,10 +70,12 @@ test('daily conversation records attributed voice without an incident, dedupes p
     assert.equal(message.text, "I'm feeling lonely today.");
     assert.equal(message.source, 'freewili-local-speech');
     await waitFor(s => Boolean(s.wellbeing?.messages.some(m => m.source === 'agent')));
-    sendVoice('generated-explicit-help', 'I need help');
+    sendVoice('generated-explicit-help', "I'm having a seizure");
     const help = await waitFor(s => s.incident?.phase === 'HELP_REQUESTED');
     assert.equal(help.incident!.evidence.kind, 'manual');
-    assert.match(help.incident!.evidence.summary, /explicitly requested help.*wellbeing/);
+    assert.equal(help.incident!.evidence.eventType, 'reported-seizure');
+    assert.match(help.incident!.evidence.summary, /explicitly reports a current seizure/);
+    assert.ok(help.conversation?.some(m => m.text === "I'm having a seizure" && m.source === 'freewili-local-speech'));
     await waitFor(() => packets.some(p => p.type === 'wellbeing.context' && p.enabled === false));
     assert.equal((await post()).status, 409);
   } finally {

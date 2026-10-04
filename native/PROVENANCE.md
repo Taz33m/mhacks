@@ -17,8 +17,9 @@ health verification, and reporting-bud checks, adds gravity/user acceleration
 and a clock-ping receiver, and removes game/player routing. `build.sh` retains
 the original non-mutating CLT duplicate SwiftBridging module-map workaround.
 
-`ios/` is a new minimal foreground chest-phone producer and check-in client.
-Neither client uses dominant-motion fusion or substitutes simulated readings.
+`ios/` is the communication/check-in companion. Its earlier chest-motion and
+speech acquisition were removed after the WILi migration. The retained Mac
+waist client does not use dominant-motion fusion or substitute simulated readings.
 
 Before a public hackathon submission, disclose this prior implementation and
 confirm reuse eligibility with the organizers. This document is provenance,

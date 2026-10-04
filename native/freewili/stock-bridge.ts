@@ -21,8 +21,11 @@ export function matchingStockCheckin(context: WiliIncidentContext | null, packet
 
 /** Asset setup can outlast an incident. Deliver the latest context only once
  * the worker is ready, without replaying a check-in whose deadline has passed. */
-export function stockContextToDeliver(context: WiliIncidentContext | null, ready: boolean, now = Date.now()): WiliIncidentContext | null {
+export function stockContextToDeliver(context: WiliIncidentContext | null, ready: boolean, now = Date.now(), restoring = false): WiliIncidentContext | null {
   if (!ready || !context || context.phase === 'CONFIRMING' && !matchingStockCheckin(context, context, now)) return null;
+  if (restoring && ['RESOLVED', 'CANCELLED_FALSE_ALARM'].includes(context.phase ?? '')) return { ...context,
+    incidentId: null, checkinId: null, phase: null, checkinDeadline: null, ownerName: null,
+    statusText: 'LIFELINE\nREADY', voiceAsset: null };
   return context;
 }
 
@@ -178,10 +181,11 @@ export async function runStockBridge(options: { port: string; python: string; to
         const p = value as Record<string, unknown>;
         if (p.type === 'stock.status') {
           if (typeof p.status === 'string' && /^[a-z-]{1,40}$/.test(p.status)) console.log(`Stock WILi: ${p.status}.`);
-          if (typeof p.status === 'string' && p.status.startsWith('ui-') && typeof p.detail === 'string') console.log(p.detail.slice(0,160));
+          if (typeof p.status === 'string' && (p.status.startsWith('ui-') || p.status === 'speaker-volume') && typeof p.detail === 'string') console.log(p.detail.slice(0,160));
           if (p.status === 'ready' && !workerReady) {
             workerReady = true;
-            const current = stockContextToDeliver(context, workerReady);
+            const current = stockContextToDeliver(context, workerReady, Date.now(), true);
+            // Reconnection restores the current display, without replaying an old closing announcement.
             if (current) sendChild(current);
             if (wellbeingContext) sendChild(wellbeingContext);
           }
@@ -219,6 +223,9 @@ export async function runStockBridge(options: { port: string; python: string; to
               const hostPacket: unknown = JSON.parse(raw.toString());
               if (!validHostPacket(hostPacket)) throw new Error();
               if (hostPacket.type === 'clock.ping') {
+                // Initial image installation can take minutes. No microphone or
+                // sensor is ready yet; stale setup pings must not fill stdin.
+                if (!workerReady) return;
                 while (pendingClocks.size >= 8) pendingClocks.delete(pendingClocks.values().next().value!);
                 pendingClocks.add(hostPacket.id);
               }

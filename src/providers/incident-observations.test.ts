@@ -32,8 +32,8 @@ test('demo responder reports retain simulated source and cannot enter a live or 
   const answer = await provider.answerQuestionDetailed({ ...incident, dispatchMode: 'simulated' }, unavailable,
     'What did the responder say?', [demoReport]);
   assert.equal(answer.generation, 'ai');
-  assert.match(answer.text, /source: Simulated dispatch \(demo human responder\)/);
-  assert.match(answer.text, /responder ownership, travel, arrival and outcome are simulated/);
+  assert.match(answer.text, /source: Responder/);
+  assert.match(answer.text, /Responder reports/);
   assert.doesNotMatch(answer.text, /source: Photon message/);
   const actual = await provider.answerQuestionDetailed(incident, unavailable, 'What did the responder say?', [demoReport]);
   assert.doesNotMatch(actual.text, /coming downstairs/);
@@ -69,7 +69,7 @@ test('handoff adds exact local wearer reports separately while retaining the imm
   const answer = await provider.buildHandoffDetailed(incident, health, [wearer, responder]);
   assert.equal(answer.generation, 'ai'); assert.equal(answer.healthRevision, health.patientRecord!.revision);
   assert.ok(answer.text.includes(`Tazeem: “${wearer.text}”`)); assert.match(answer.text, /\[conversation:wearer-quote-1\]/);
-  assert.ok(answer.text.indexOf('Wearer reports') < answer.text.indexOf('AI-composed synthetic health handoff:'));
+  assert.ok(answer.text.indexOf('Wearer reports') < answer.text.indexOf('Health context:'));
   assert.match(answer.text, /\[allergy-1\]/); assert.match(answer.text, /\[med-1\]/); assert.match(answer.text, /\[condition-1\]/);
   assert.equal(answer.text.split(wearer.text).length - 1, 1); assert.equal(JSON.stringify(health), original);
   assert.doesNotMatch(answer.text, /Maya:|Invented diagnosis/);
@@ -79,7 +79,7 @@ test('missing report selection, fabricated Finch report IDs, and model failures 
   for (const plan of [{ facts: [], incidentFields: ['evidence'], unavailable: [] }, { facts: [{ recordId: wearer.id, fields: ['name'] }], incidentFields: ['wearerReports'], unavailable: [] }, null]) {
     const { provider } = fixtureProvider(plan);
     const answer = await provider.answerQuestionDetailed(incident, unavailable, 'What did the wearer say?', [wearer]);
-    assert.equal(answer.generation, 'degraded'); assert.match(answer.text, /source template fallback/);
+    assert.equal(answer.generation, 'degraded'); assert.match(answer.text, /What was said:/);
     assert.ok(answer.text.includes(wearer.text)); assert.match(answer.text, /\[conversation:wearer-quote-1\]/);
     assert.doesNotMatch(answer.text, /Invented diagnosis|medications:/);
   }

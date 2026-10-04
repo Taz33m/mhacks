@@ -11,6 +11,7 @@ import tempfile
 import time
 import types
 import unittest
+from unittest.mock import patch
 import wave
 
 
@@ -24,6 +25,8 @@ class ButtonColor(enum.Enum):
     Green = 1
     Red = 2
     Blue = 3
+    Yellow = 4
+    White = 5
 
 
 class Processor(enum.Enum):
@@ -65,12 +68,15 @@ class SerialDouble:
         self.calls.append(("open",)); self.opened = True; return Result()
     def is_open(self):
         return self.opened
-    def close(self):
+    def close(self, restore_menu=True):
+        self.restore_menu_on_close = restore_menu
         self.calls.append(("close",)); self.opened = False
     def get_app_info(self):
         return Result(types.SimpleNamespace(processor_type=self.processor))
     def enable_audio_events(self, enable):
         self.calls.append(("audio", enable)); return Result(fail=(self.fail_disable and not enable) or (self.fail_enable and enable))
+    def set_system_sounds(self, enable):
+        self.calls.append(('system-sounds', enable)); return Result()
     def enable_accel_events(self, enable, interval):
         self.calls.append(("accel", enable, interval)); return Result(fail=self.fail_accel_resume and enable)
     def enable_button_events(self, enable, interval):
@@ -131,12 +137,66 @@ def context(phase="CONFIRMING", asset="CHECKIN"):
 
 
 class StockTests(unittest.TestCase):
-    def setup_gateway(self):
+    def test_movement_prompt_uses_same_guarded_microphone_capture_as_fall(self):
+        gateway, serial, now, packets = self.setup_gateway()
+        gateway.assets["MOVEMENT"] = .1
+        gateway.command(context(asset="MOVEMENT"))
+        self.assertIn(("play", "MOVEMENT.WAV"), serial.calls)
+        self.assertNotIn(("play", "CHECKIN.WAV"), serial.calls)
+        self.assertIsNotNone(gateway.pending_capture)
+        now[0] = .31
+        gateway.audio_tick()
+        self.assertIsNotNone(gateway.capture)
+        self.assertTrue(any(p.get("stage") == "listening" for p in packets))
+
+    def setup_gateway(self, muted=False):
+        # This SDK double cannot enter a firmware menu. Protocol/readback and
+        # failures are exercised separately in stock_volume_test.py.
+        volume_patch = patch('stock_volume.set_speaker_volume', return_value=5)
+        volume_patch.start()
+        self.addCleanup(volume_patch.stop)
         now, packets, serial = [0.0], [], SerialDouble()
-        gateway = worker.StockGateway(serial, None, packets.append, lambda: now[0])
+        gateway = worker.StockGateway(serial, None, packets.append, lambda: now[0], muted=muted)
         serial.gateway = gateway
         serial.opened = True
         return gateway, serial, now, packets
+
+    def test_volume_readback_failure_stops_startup_before_assets_or_playback(self):
+        gateway, serial, _now, packets = self.setup_gateway()
+        with patch('stock_volume.set_speaker_volume', side_effect=RuntimeError('Readback failed.')):
+            with self.assertRaises(RuntimeError):
+                gateway.run()
+        self.assertEqual(serial.calls[-1], ('close',))
+        self.assertFalse(any(call[0] in ('upload', 'play') for call in serial.calls))
+        self.assertNotIn(('accel', True, 33), serial.calls)
+        self.assertFalse(any(p.get('status') == 'ready' for p in packets))
+
+    def test_muted_prompt_keeps_phase_and_acceleration_without_playback_or_hidden_capture(self):
+        gateway, serial, now, packets = self.setup_gateway(muted=True)
+        gateway.assets["CHECKIN"] = .1
+        gateway.command(context())
+        gateway.audio_tick()
+        self.assertEqual(gateway.context["phase"], "CONFIRMING")
+        self.assertIsNone(gateway.pending_capture)
+        self.assertIsNone(gateway.capture)
+        self.assertFalse(gateway.accel_paused)
+        self.assertFalse(any(call[0] == "play" for call in serial.calls))
+        gateway.on_event(EventType.Accel, frame(1), types.SimpleNamespace(g=2, x=0, y=0, z=16000))
+        self.assertTrue(any(packet["type"] == "accel.sample" for packet in packets))
+        self.assertTrue(any(packet.get("status") == "audio-muted" for packet in packets))
+
+    def test_muted_dynamic_reply_never_uploads_or_claims_spoken(self):
+        gateway, serial, now, packets = self.setup_gateway(muted=True)
+        gateway.command(context("HELP_REQUESTED", None))
+        command = self.dynamic_packet(gateway)
+        gateway.command(command)
+        gateway.command(command)
+        gateway.audio_tick()
+        self.assertIsNone(gateway.conversation)
+        self.assertFalse(any(call[0] in ("upload", "play") for call in serial.calls))
+        statuses = [packet["status"] for packet in packets if packet["type"] == "voice.playback"]
+        self.assertEqual(statuses, ["failed"])
+        self.assertEqual(gateway.context["phase"], "HELP_REQUESTED")
 
     def wellbeing_context(self, gateway, enabled=True, conversation="wellbeing-1"):
         return {"type": "wellbeing.context", "sessionId": gateway.session, "conversationId": conversation,
@@ -363,6 +423,72 @@ class StockTests(unittest.TestCase):
         self.assertIn("RESOLVED", gateway.displayed)
         self.assertIn(("buttons", True, 50), serial.calls)
 
+    def test_new_red_hold_during_upload_is_recovered_once_before_playback(self):
+        gateway,serial,_now,packets=self.setup_gateway()
+        gateway.command(context('HELP_REQUESTED',None))
+        readings=iter([{ButtonColor.Red:False},{ButtonColor.Red:True}])
+        serial.read_all_buttons=lambda:Result(next(readings))
+        with tempfile.TemporaryDirectory(prefix='lifeline-offline-held-help-') as directory:
+            self.dynamic_file(gateway,directory)
+            gateway.command(self.dynamic_packet(gateway));gateway.audio_tick()
+        help_packets=[p for p in packets if p['type']=='button.press']
+        self.assertEqual(len(help_packets),1)
+        self.assertEqual(help_packets[0]['action'],'help')
+        self.assertEqual(help_packets[0]['incidentId'],gateway.context['incidentId'])
+        self.assertLess(packets.index(help_packets[0]),next(i for i,p in enumerate(packets) if p['type']=='voice.playback' and p['status']=='playing'))
+        gateway.on_event(EventType.Button,frame(1),types.SimpleNamespace(green=False,red=True,blue=False))
+        self.assertEqual(len([p for p in packets if p['type']=='button.press']),1)
+        self.assertTrue(any(c[0]=='display' and 'HOLD RED FOR HELP' in c[1] for c in serial.calls))
+
+    def test_preheld_red_does_not_generate_upload_help_or_start_blue_recording(self):
+        gateway,serial,_now,packets=self.setup_gateway()
+        gateway.command(context('HELP_REQUESTED',None))
+        held={ButtonColor.Red:True,ButtonColor.Blue:True}
+        gateway.sync_buttons(held)
+        serial.read_all_buttons=lambda:Result(held)
+        with tempfile.TemporaryDirectory(prefix='lifeline-offline-preheld-') as directory:
+            self.dynamic_file(gateway,directory)
+            gateway.command(self.dynamic_packet(gateway));gateway.audio_tick()
+        self.assertFalse(any(p['type']=='button.press' for p in packets))
+        self.assertFalse(gateway.blue_armed)
+        self.assertIsNone(gateway.capture)
+
+    def test_released_tap_inside_upload_is_not_fabricated_and_limit_is_reported(self):
+        gateway,serial,_now,packets=self.setup_gateway()
+        gateway.command(context('HELP_REQUESTED',None))
+        # The SDK exposes only false before/after. It has no latched history to
+        # distinguish no press from a tap completed during its binary transfer.
+        with tempfile.TemporaryDirectory(prefix='lifeline-offline-no-latch-') as directory:
+            self.dynamic_file(gateway,directory)
+            gateway.command(self.dynamic_packet(gateway));gateway.audio_tick()
+        self.assertFalse(any(p['type']=='button.press' for p in packets))
+        self.assertTrue(any(p.get('status')=='buttons-resumed' and 'Released taps' in p['detail'] for p in packets))
+
+    def test_recovered_hold_uses_context_received_during_upload_and_no_replay(self):
+        gateway,serial,_now,packets=self.setup_gateway()
+        gateway.command(context('HELP_REQUESTED',None))
+        readings=iter([{ButtonColor.Red:False},{ButtonColor.Red:True}])
+        serial.read_all_buttons=lambda:Result(next(readings))
+        def upload(path,target,callback):
+            gateway.inputs.put_nowait({**context('CONFIRMING',None),'incidentId':'LF-NEW','checkinId':'new-checkin'})
+            return Result()
+        serial.send_file=upload
+        with tempfile.TemporaryDirectory(prefix='lifeline-offline-current-hold-') as directory:
+            self.dynamic_file(gateway,directory)
+            gateway.command(self.dynamic_packet(gateway));gateway.audio_tick()
+        help_packet=next(p for p in packets if p['type']=='button.press')
+        self.assertEqual((help_packet['incidentId'],help_packet['checkinId']),('LF-NEW','new-checkin'))
+        self.assertNotIn(('play','1234ABCD.WAV'),serial.calls)
+
+    def test_simulated_transfer_screen_has_no_demo_prefix(self):
+        gateway,serial,_now,packets=self.setup_gateway()
+        gateway.command({**context('HELP_REQUESTED',None),'dispatchMode':'simulated'})
+        with tempfile.TemporaryDirectory(prefix='lifeline-offline-demo-upload-') as directory:
+            self.dynamic_file(gateway,directory)
+            gateway.command(self.dynamic_packet(gateway));gateway.audio_tick()
+        self.assertIn(('display','PREPARING MESSAGE | HOLD RED FOR HELP'),serial.calls)
+        self.assertTrue(gateway.displayed.startswith('Maya says:'))
+
     def test_dynamic_speech_waits_for_prompt_and_cancels_microphone_echo_window(self):
         gateway, serial, now, _packets = self.setup_gateway()
         gateway.assets["CHECKIN"] = .1
@@ -492,6 +618,114 @@ class StockTests(unittest.TestCase):
         self.assertIsNone(packets[-1]["incidentId"])
         self.assertIsNone(packets[-1]["checkinId"])
         protocol_packets.append(packets[-1])
+
+    def yellow_event(self, gateway, sequence, pressed=True, red=False, green=False):
+        gateway.on_event(EventType.Button,frame(sequence),types.SimpleNamespace(
+            yellow=pressed,red=red,green=green,blue=False))
+
+    def simulated_idle(self, gateway):
+        gateway.command({'type':'incident.context','sessionId':gateway.session,'incidentId':None,
+            'checkinId':None,'phase':None,'dispatchMode':'simulated','voiceAsset':None,
+            'ownerName':None,'statusText':'No active incident'})
+
+    def test_yellow_before_context_and_in_live_mode_does_nothing_and_idle_stays_silent(self):
+        gateway,serial,_now,packets=self.setup_gateway()
+        self.yellow_event(gateway,1)
+        self.yellow_event(gateway,2,False)
+        gateway.command({**context('RESOLVED',None),'dispatchMode':'live'})
+        self.yellow_event(gateway,3)
+        self.assertFalse(any(p['type']=='button.press' for p in packets))
+        self.assertFalse(any(c[0] in ('play','audio') for c in serial.calls))
+        self.assertIsNone(gateway.capture)
+
+    def test_simulated_yellow_rising_edge_uses_fresh_null_identity_and_unique_event(self):
+        gateway,serial,_now,packets=self.setup_gateway()
+        self.simulated_idle(gateway)
+        self.yellow_event(gateway,1)
+        self.yellow_event(gateway,1)  # Duplicate frame is rejected too.
+        self.yellow_event(gateway,2)
+        controls=[p for p in packets if p['type']=='button.press']
+        self.assertEqual(len(controls),1)
+        self.assertEqual(controls[0]['action'],'rehearse')
+        self.assertEqual(controls[0]['sessionId'],gateway.session)
+        self.assertIsNone(controls[0]['incidentId']);self.assertIsNone(controls[0]['checkinId'])
+        self.yellow_event(gateway,3,False);self.yellow_event(gateway,4)
+        controls=[p for p in packets if p['type']=='button.press']
+        self.assertEqual(len(controls),2)
+        self.assertNotEqual(controls[0]['eventId'],controls[1]['eventId'])
+        self.assertFalse(any(c[0] in ('play','audio') for c in serial.calls))
+        protocol_packets.append(controls[0])
+
+    def test_yellow_terminal_context_never_reuses_previous_incident(self):
+        for phase in ('RESOLVED','CANCELLED_FALSE_ALARM'):
+            with self.subTest(phase=phase):
+                gateway,_serial,_now,packets=self.setup_gateway()
+                gateway.command({**context(phase,None),'dispatchMode':'simulated'})
+                self.yellow_event(gateway,1)
+                control=next(p for p in packets if p['type']=='button.press')
+                self.assertEqual(control['action'],'rehearse')
+                self.assertIsNone(control['incidentId']);self.assertIsNone(control['checkinId'])
+
+    def test_yellow_is_blocked_for_every_active_phase(self):
+        for phase in worker.PHASES-worker.TERMINAL_PHASES:
+            with self.subTest(phase=phase):
+                gateway,_serial,_now,packets=self.setup_gateway()
+                gateway.command({**context(phase,None),'dispatchMode':'simulated'})
+                self.yellow_event(gateway,1)
+                self.assertFalse(any(p['type']=='button.press' for p in packets))
+
+    def test_startup_held_yellow_and_mode_change_require_release_before_rehearsal(self):
+        gateway,_serial,_now,packets=self.setup_gateway()
+        gateway.sync_buttons({ButtonColor.Yellow:True})
+        self.simulated_idle(gateway)
+        self.yellow_event(gateway,1)
+        self.assertFalse(any(p['type']=='button.press' for p in packets))
+        self.yellow_event(gateway,2,False);self.yellow_event(gateway,3)
+        self.assertEqual(len([p for p in packets if p['type']=='button.press']),1)
+        # A live-mode press cannot become a simulated press simply by a
+        # context update while the physical button remains held.
+        gateway,_serial,_now,packets=self.setup_gateway()
+        self.yellow_event(gateway,1);self.simulated_idle(gateway);self.yellow_event(gateway,2)
+        self.assertFalse(any(p['type']=='button.press' for p in packets))
+
+    def test_yellow_held_during_upload_is_suppressed_even_after_terminal_context(self):
+        gateway,serial,_now,packets=self.setup_gateway()
+        gateway.command({**context('HELP_REQUESTED',None),'dispatchMode':'simulated'})
+        readings=iter([{ButtonColor.Yellow:False},{ButtonColor.Yellow:True}])
+        serial.read_all_buttons=lambda:Result(next(readings))
+        def upload(path,target,callback):
+            gateway.inputs.put_nowait({**context('RESOLVED',None),'dispatchMode':'simulated'})
+            return Result()
+        serial.send_file=upload
+        with tempfile.TemporaryDirectory(prefix='lifeline-offline-yellow-upload-') as directory:
+            self.dynamic_file(gateway,directory)
+            gateway.command(self.dynamic_packet(gateway));gateway.audio_tick()
+        self.yellow_event(gateway,1)
+        self.assertFalse(any(p['type']=='button.press' for p in packets))
+        self.yellow_event(gateway,2,False);self.yellow_event(gateway,3)
+        self.assertEqual([p['action'] for p in packets if p['type']=='button.press'],['rehearse'])
+
+    def test_red_and_green_safety_controls_take_precedence_over_yellow(self):
+        gateway,_serial,_now,packets=self.setup_gateway()
+        self.simulated_idle(gateway);self.yellow_event(gateway,1,red=True)
+        self.assertEqual([p['action'] for p in packets if p['type']=='button.press'],['help'])
+        gateway,_serial,_now,packets=self.setup_gateway()
+        gateway.command({**context(asset=None),'dispatchMode':'simulated'})
+        self.yellow_event(gateway,1,green=True)
+        self.assertEqual([p['action'] for p in packets if p['type']=='button.press'],['cancel'])
+
+    def test_rehearsal_control_does_not_bypass_server_checkin_or_duplicate_prompt(self):
+        gateway,serial,now,packets=self.setup_gateway()
+        self.simulated_idle(gateway);gateway.assets['CHECKIN']=.1
+        self.yellow_event(gateway,1)
+        self.assertFalse(any(c[0] in ('play','audio') for c in serial.calls))
+        checkin={**context(),'dispatchMode':'simulated'}
+        gateway.command(checkin);gateway.command(checkin)
+        self.assertEqual(serial.calls.count(('play','CHECKIN.WAV')),1)
+        self.assertFalse(gateway.audio_enabled)
+        now[0]=.31;gateway.audio_tick()
+        self.assertTrue(gateway.audio_enabled)
+        self.assertEqual([p['stage'] for p in packets if p['type']=='checkin.audio'],['prompting','listening'])
 
     def test_microphone_starts_after_prompt_then_stops_with_correlated_wav(self):
         gateway, serial, now, packets = self.setup_gateway()
@@ -782,6 +1016,9 @@ class StockTests(unittest.TestCase):
         self.assertEqual(hello["fullScaleG"], 2)
         protocol_packets.append(hello)
         self.assertEqual(serial.calls[-1], ("close",))
+        self.assertFalse(serial.restore_menu_on_close, 'shutdown must not restore the GPIO/menu screen')
+        self.assertIn(('system-sounds', False), serial.calls)
+        self.assertFalse(any(call[0] == 'play' for call in serial.calls), 'ordinary startup is silent')
         self.assertIn(("audio", False), serial.calls)
         self.assertIn(("accel", False, 33), serial.calls)
         self.assertIn(("buttons", False, 50), serial.calls)

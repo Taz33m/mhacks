@@ -111,7 +111,7 @@ test('isolated stock WILi acquisition, speech and buttons preserve policy and re
     };
     press('help', 'synthetic-help-1', null, null);
     const help = (await waitFor(state, value => value.incident?.phase === 'HELP_REQUESTED')).incident!;
-    assert.equal(help.evidence.kind, 'manual'); assert.match(help.evidence.summary, /explicitly pressed.*help button/);
+    assert.equal(help.evidence.kind, 'manual'); assert.match(help.evidence.summary, /Help requested from the wearable/);
     assert.equal((await state()).timeline.some(event => event.actor === 'freewili-button'), true);
     press('cancel', 'synthetic-cancel-escalated', help.id, help.checkinId);
     await pause(30); assert.equal((await state()).incident?.phase, 'HELP_REQUESTED', 'board cannot cancel after escalation');

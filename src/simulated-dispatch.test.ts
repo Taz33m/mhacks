@@ -50,12 +50,12 @@ test('fake clock drives the whole incident loop autonomously, with simulated act
     f.advance(11_999); f.s.tick(); assert.equal(f.c.active()!.phase, 'ON_SCENE');
     f.advance(1); f.s.tick(); assert.equal(f.c.active(), null); assert.equal(f.c.latest()!.phase, 'RESOLVED');
     assert.equal(f.c.latest()!.resolutionActor, `simulated-dispatch:${maya.id}`);
-    assert.match(f.c.latest()!.outcome!, /Simulated dispatch outcome/);
-    assert.match(f.c.latest()!.outcome!, /No real arrival or patient assessment/);
+    assert.match(f.c.latest()!.outcome!, /reached the wearer/);
+    assert.match(f.c.latest()!.outcome!, /arranging further assistance\./);
     f.s.tick();
     const responderActions = f.c.actions(i.id).filter(a => a.recipientId);
     assert.ok(responderActions.every(a => ['simulated', 'cancelled'].includes(a.status)));
-    assert.ok(responderActions.filter(a => a.status === 'simulated').every(a => a.providerResult?.includes('No responder iMessage was sent')));
+    assert.ok(responderActions.filter(a => a.status === 'simulated').every(a => a.providerResult?.includes('No responder message was sent')));
     assert.ok(f.c.actions(i.id).every(a => a.providerMessageId === null && a.providerChatId === undefined && a.providerLineId === undefined));
     assert.ok(f.c.conversation(i.id).every(message => message.source === 'simulated-dispatch'));
     assert.deepEqual(f.c.events(i.id).filter(e => ['ACKNOWLEDGED', 'RESPONDER_EN_ROUTE', 'ON_SCENE', 'RESOLVED'].includes(e.type))
@@ -223,5 +223,66 @@ test('invalid timing settings are rejected without starting timers or changing i
     assert.throws(() => s.tick(), /clock/); assert.equal(f.c.active()!.phase, 'HELP_REQUESTED');
     assert.equal(JSON.stringify(f.c.actions(i.id)), before);
     assert.equal(f.c.events(i.id).filter(e => e.type === 'ACKNOWLEDGED').length, 0);
+  } finally { f.close(); }
+});
+
+test('generated wearer voice stays literal while simulated Maya replies enter attributed notices and the real speech queue', () => {
+  const f = fixture({ acceptMs: 0 });
+  const quote = 'I fell pretty hard. My ankle hurts and I can’t stand up.';
+  try {
+    const i = f.c.trigger({ kind: 'synthetic', summary: 'Offline generated physical-event rehearsal input.' });
+    assert.equal(f.c.recordCheckinReply({ incidentId: i.id, checkinId: i.checkinId,
+      transcript: quote, source: 'freewili-local-speech' }), 'help_requested');
+    const wearer = f.c.conversation(i.id).find(message => message.speaker === 'wearer')!;
+    assert.equal(wearer.text, quote); assert.equal(wearer.source, 'freewili-local-speech');
+    const alert = f.c.actions(i.id).find(action => action.type === 'alert')!;
+    assert.ok(alert.text.includes(quote), 'The exact quote reaches the local responder before an AI handoff is prepared');
+    f.s.tick(); assert.equal(f.c.active()!.ownerId, maya.id);
+    const acceptance = f.c.conversation(i.id).find(message => message.speaker === 'responder')!;
+    assert.equal(acceptance.source, 'simulated-dispatch'); assert.equal(acceptance.delivery, 'queued');
+    const acceptedNotice = f.c.actions(i.id).findLast(action => action.type === 'wearer_status')!;
+    assert.ok(!acceptedNotice.text.includes('DEMO'));
+    assert.ok(acceptedNotice.text.includes(`Maya: “${acceptance.text}”`));
+    const spoken = f.c.claimResponderSpeech('offline-attributed-voice-test')!;
+    assert.equal(spoken.id, acceptance.id); assert.equal(spoken.source, 'simulated-dispatch');
+    assert.equal(spoken.speakerName, 'Maya'); assert.equal(spoken.text, acceptance.text);
+    assert.equal(f.c.recordResponderPlayback(spoken.id, i.id, 'offline-attributed-voice-test', 'playing'), true);
+    assert.equal(f.c.recordResponderPlayback(spoken.id, i.id, 'offline-attributed-voice-test', 'spoken'), true);
+    f.advance(8000); f.s.tick();
+    const departing = f.c.conversation(i.id).findLast(message => message.speaker === 'responder')!;
+    assert.equal(departing.text, 'I’m coming downstairs now. Don’t try to stand.');
+    assert.equal(departing.source, 'simulated-dispatch');
+    assert.ok(f.c.actions(i.id).findLast(action => action.type === 'wearer_status')!.text
+      .includes(`Maya: “${departing.text}”`));
+    speechCompleted(f.c, i.id); f.advance(16_000); f.s.tick(); speechCompleted(f.c, i.id);
+    const arrival = f.c.conversation(i.id).findLast(message => message.speaker === 'responder')!;
+    assert.ok(f.c.actions(i.id).findLast(action => action.type === 'wearer_status')!.text
+      .includes(`Maya: “${arrival.text}”`));
+    f.advance(12_000); f.s.tick();
+    assert.equal(f.c.latest()!.phase, 'RESOLVED');
+    assert.ok(f.c.actions(i.id).findLast(action => action.type === 'wearer_status')!.text.includes('arranging further assistance'));
+    assert.deepEqual(f.c.conversation(i.id).find(message => message.id === wearer.id), wearer);
+    assert.ok(f.c.actions(i.id).filter(action => action.recipientId).every(action => action.recipientId === maya.id));
+    assert.equal(f.c.responders[0].phone, null);
+    assert.ok(f.c.actions(i.id).every(action => action.providerMessageId === null
+      && action.providerChatId === undefined && action.providerLineId === undefined));
+  } finally { f.close(); }
+});
+
+test('accelerated phases do not pretend stale wearer notices were sent through a five-second paced lane', () => {
+  const f = fixture({ acceptMs: 1000, departMs: 1000, arriveMs: 1000, resolveMs: 1000 });
+  try {
+    const i = f.c.trigger({ kind: 'manual', summary: 'Offline one-second phase pacing fixture; no messages sent.' });
+    f.s.tick();
+    for (let step = 0; step < 4; step++) {
+      f.advance(1000); f.s.tick(); if (f.c.active()) speechCompleted(f.c, i.id);
+    }
+    assert.equal(f.c.latest()!.phase, 'RESOLVED');
+    f.advance(1000); // A wearer lane next available five seconds after the initial phase.
+    const current = f.c.claimAction('wearer', true, i.id)!;
+    assert.ok(current.text.includes('reached the wearer'));
+    const oldNotices = f.c.actions(i.id).filter(action => action.type === 'wearer_status' && action.id !== current.id);
+    assert.ok(oldNotices.length >= 3); assert.ok(oldNotices.every(action => action.status === 'cancelled'));
+    assert.ok(f.c.actions(i.id).every(action => action.status !== 'provider_accepted'));
   } finally { f.close(); }
 });

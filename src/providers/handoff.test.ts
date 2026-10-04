@@ -53,11 +53,11 @@ test('phone handoff includes primary clinical facts once and leaves full metadat
   assert.match(handoff.text, /medications: Fictional regimen; dosage: Synthetic recorded regimen; frequency: Daily; status: active \[med-1\]/);
   assert.match(handoff.text, /conditions: Fictional condition; status: active \[condition-1\]/);
   assert.equal(handoff.text.split(incident.evidence.summary).length - 1, 1);
-  assert.equal(handoff.text.split('Created 1970-01-01T00:00:01.000Z.').length - 1, 1);
+  assert.equal((handoff.text.match(/Detected 7:00\sPM\./g) ?? []).length, 1);
   assert.match(handoff.text, /Historical\/non-active records not selected: medications 1/);
-  assert.match(handoff.text, /Location not provided\. Current vital signs not provided/);
-  assert.match(handoff.text, /Synthetic Finch records as of 2026-08-25/);
-  assert.match(handoff.text, /Detection does not establish a diagnosis/);
+  assert.match(handoff.text, /Location and current vital signs not available/);
+  assert.match(handoff.text, /FinchNode records as of 2026-08-25/);
+  assert.match(handoff.text, /This alert is not a diagnosis/);
   assert.doesNotMatch(handoff.text, /sourceUpdatedAt|syncedAt|recordedDate|onsetDate|1988-04-17|Historical fictional weight|Previous synthetic regimen|Fictional dose|Fictional dispensing|Untrusted model prose/);
   assert.ok(handoff.text.length < 1400, `ordinary fixture handoff was ${handoff.text.length} characters`);
   assert.match(health.summary, /sourceUpdatedAt|Historical vitals/);
@@ -105,7 +105,7 @@ test('metadata or non-clinical source IDs in a handoff plan degrade without poll
     const plan = selection(); plan.facts.push(extra);
     const provider = providerFor(patientFixture, plan), handoff = await provider.buildHandoffDetailed(incident, await provider.loadHealth());
     assert.equal(handoff.generation, 'degraded', JSON.stringify(extra));
-    assert.match(handoff.text, /source template fallback/);
+    assert.match(handoff.text, /Health context:/);
     for (const fact of facts) assert.ok(handoff.text.includes(`[${fact.recordId}]`));
     assert.doesNotMatch(handoff.text, /sourceUpdatedAt|Fictional Patient|Historical fictional weight|Fictional dose|Previous synthetic regimen/);
   }
@@ -195,11 +195,11 @@ test('structured WILi observation renders frozen measurements once with honest p
   const observed = { ...incident, evidence: { kind: 'cross-body' as const, summary: 'Full detailed detector audit is retained separately', assessment } };
   const original = JSON.stringify(observed), provider = providerFor(patientFixture);
   const handoff = await provider.buildHandoffDetailed(observed, await provider.loadHealth());
-  assert.match(handoff.text, /WILi impact 1\.75 g; waist 0\.70 g \/ 1\.50 rad\/s, 50 ms apart; waist low movement 2\.4 s/);
-  assert.match(handoff.text, /Prototype assessment; host-receipt timing, not board capture/);
+  assert.match(handoff.text, /Possible fall: 1\.75 g impact with waist movement 50 ms apart, then 2\.4 s of stillness\./);
+  assert.match(handoff.text, /of stillness\./);
   assert.doesNotMatch(handoff.text, /Full detailed detector audit|body-session|thresholds|accelerationG/);
-  assert.equal(handoff.text.split('WILi impact').length - 1, 1);
+  assert.equal(handoff.text.split('Possible fall').length - 1, 1);
   assert.equal(JSON.stringify(observed), original);
   const deviceTimed = { ...observed, evidence: { ...observed.evidence, assessment: { ...assessment, impact: { ...assessment.impact, captureClock: 'device-monotonic' as const } } } };
-  assert.match((await provider.buildHandoffDetailed(deviceTimed, await provider.loadHealth())).text, /device-monotonic timing/);
+  assert.match((await provider.buildHandoffDetailed(deviceTimed, await provider.loadHealth())).text, /Possible fall: /);
 });

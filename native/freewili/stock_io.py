@@ -26,10 +26,9 @@ import time
 import uuid
 import wave
 
-from freewili.fw_serial import FreeWiliSerial
 from freewili.types import ButtonColor, EventType, FileType, FreeWiliProcessorType
 
-ASSETS = {"CHECKIN", "HELP", "ACCEPTED", "ENROUTE", "ARRIVED", "RESOLVED", "OKAY"}
+ASSETS = {"CHECKIN", "MOVEMENT", "HELP", "ACCEPTED", "ENROUTE", "ARRIVED", "RESOLVED", "OKAY"}
 PHASES = {"DETECTED", "CONFIRMING", "HELP_REQUESTED", "ACKNOWLEDGED", "RESPONDER_EN_ROUTE",
           "ON_SCENE", "RESOLVED", "CANCELLED_FALSE_ALARM"}
 ID = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
@@ -76,14 +75,18 @@ def display_text(value, limit):
 
 
 class StockGateway:
-    def __init__(self, serial, audio_dir, emit=None, now=time.monotonic, pause_accel_for_audio=True, conversation_dir=None, ui_dir=None):
+    def __init__(self, serial, audio_dir, emit=None, now=time.monotonic, pause_accel_for_audio=True, conversation_dir=None, ui_dir=None, muted=False, volume=5):
         self.serial, self.audio_dir, self.now = serial, audio_dir, now
+        self.muted = muted
+        if isinstance(volume, bool) or not isinstance(volume, int) or not 0 <= volume <= 10:
+            raise ValueError('Speaker volume must be 0–10.')
+        self.volume = volume
         self.emit = emit or self.write_packet
         self.session = str(uuid.uuid4())
         self.running = True
-        self.context = {"incidentId": None, "checkinId": None, "phase": None}
+        self.context = {"incidentId": None, "checkinId": None, "phase": None, "dispatchMode": "live"}
         self.inputs = queue.Queue(maxsize=64)
-        self.buttons = {"green": False, "red": False, "blue": False}
+        self.buttons = {"gray": False, "green": False, "red": False, "blue": False, "yellow": False}
         self.blue_armed = False
         self.blue_held_at = None
         self.wellbeing = {"enabled": False, "conversationId": None, "statusText": ""}
@@ -92,6 +95,9 @@ class StockGateway:
         self.assets = {}
         self.played = set()
         self.displayed = None
+        self.status_text = None
+        self.text_fallback = False
+        self.display_restore_pending = False
         self.phase_display = "No active incident"
         self.pending_capture = None
         self.capture = None
@@ -131,20 +137,52 @@ class StockGateway:
             raise RuntimeError("Stock SDK command failed.")
         return result.unwrap()
 
-    def show_status(self, text):
-        if text != self.displayed:
-            if self.ui is None or not self.ui.enabled:
+    def show_status(self, text, force_text=False):
+        self.status_text = text
+        capturing = self.capture is not None and self.audio_enabled
+        wellbeing_capture = capturing and self.capture.get('kind') == 'wellbeing'
+        fallback = (force_text or self.ui is None or not self.ui.enabled
+                    or not self.ui.supports_context(capturing, wellbeing_capture))
+        if text != self.displayed or fallback and not self.text_fallback:
+            if fallback:
                 self.require(self.serial.show_text_display(text[:450]))
+                if self.ui is not None:
+                    self.ui.last_file = None
+                    self.ui.next_at = 0
             self.displayed = text
+        self.text_fallback = fallback
 
     def ui_tick(self):
+        capturing = self.capture is not None and self.audio_enabled
+        remaining = self.capture["deadline"] - self.now() if capturing else None
+        if self.display_restore_pending:
+            if self.upload_in_progress or remaining is not None and remaining < .35:
+                return
+            # Button callbacks only mark the presentation dirty. Restore it on
+            # the serial-owning loop, after firmware navigation, without audio
+            # or changing the current incident/recording state.
+            invalidate = getattr(self.serial, 'invalidate_display', None)
+            if callable(invalidate):
+                invalidate()
+            self.displayed = None
+            self.text_fallback = False
+            if self.ui is not None:
+                self.ui.last_file = None
+                self.ui.next_at = 0
+                self.ui.refresh_at = 0
+            self.show_status(self.status_text or self.idle_display())
+            self.display_restore_pending = False
         if self.ui is None:
             return
         enabled = self.ui.enabled
-        capturing = self.capture is not None and self.audio_enabled
-        remaining = self.capture["deadline"] - self.now() if capturing else None
+        wellbeing_capture = capturing and self.capture.get('kind') == 'wellbeing'
+        if (enabled and not self.upload_in_progress and (remaining is None or remaining >= .35)
+                and not self.ui.supports_context(capturing, wellbeing_capture)):
+            self.show_status(self.status_text or self.idle_display())
         self.ui.tick(capturing=capturing, blocked=self.upload_in_progress, remaining=remaining,
-                     wellbeing_capture=capturing and self.capture.get("kind") == "wellbeing")
+                     wellbeing_capture=wellbeing_capture)
+        if self.ui.enabled and self.ui.supports_context(capturing, wellbeing_capture) and self.ui.last_file is not None:
+            self.text_fallback = False
         if enabled and not self.ui.enabled:
             self.displayed = None
             self.show_status(self.idle_display())
@@ -153,15 +191,36 @@ class StockGateway:
         return self.context["phase"] is not None and self.context["phase"] not in TERMINAL_PHASES
 
     def idle_display(self):
+        if self.context['phase'] in TERMINAL_PHASES and (self.ui is None
+                or self.ui.model.view(self.now())[0] in ('resolved', 'cancelled')):
+            return self.phase_display
         if self.wellbeing["enabled"] and not self.active_incident():
             return "LIFELINE | HOLD BLUE TO TALK | RELEASE TO SEND | " + self.wellbeing["statusText"]
         return self.phase_display
 
     def sync_buttons(self, current):
-        self.buttons = {"green": bool(current.get(ButtonColor.Green)), "red": bool(current.get(ButtonColor.Red)),
-                        "blue": bool(current.get(ButtonColor.Blue))}
+        self.buttons = {"gray": bool(current.get(ButtonColor.White)),
+                        "green": bool(current.get(ButtonColor.Green)), "red": bool(current.get(ButtonColor.Red)),
+                        "blue": bool(current.get(ButtonColor.Blue)), "yellow": bool(current.get(ButtonColor.Yellow))}
         self.blue_armed = not self.buttons["blue"]
         self.blue_held_at = None
+
+    def safety_button(self, name):
+        incident, checkin = self.context['incidentId'], self.context['checkinId']
+        if name == 'green' and (self.context['phase'] != 'CONFIRMING' or not incident or not checkin):
+            return
+        if name == 'red' and self.context['phase'] in TERMINAL_PHASES:
+            incident, checkin = None, None
+        self.emit({'type': 'button.press', 'source': 'body-wili', 'sessionId': self.session,
+                   'eventId': str(uuid.uuid4()), 'incidentId': incident, 'checkinId': checkin,
+                   'action': 'cancel' if name == 'green' else 'help'})
+        self.cancel_wellbeing()
+
+    def recover_held_red(self, before, current):
+        # The SDK exposes levels, not latched edges. Recover only a measured
+        # new held press; an already-held button or a released tap is unknown.
+        if self.running and not before.get(ButtonColor.Red) and current.get(ButtonColor.Red):
+            self.safety_button('red')
 
     def wellbeing_audio(self, stage, target=None):
         target = target or self.wellbeing
@@ -290,22 +349,19 @@ class StockGateway:
             if not self.accel_paused:
                 self.acceleration(frame, data)
         elif event_type == EventType.Button:
+            if any(bool(getattr(data, name, False)) != pressed for name, pressed in self.buttons.items()):
+                # Both press and release may redraw the stock screen. Repeated
+                # held levels are not new navigation and must not reset frames.
+                self.display_restore_pending = True
+            self.buttons['gray'] = bool(getattr(data, 'gray', False))
             for name in ("green", "red"):
                 pressed = bool(getattr(data, name))
                 previous = self.buttons[name]
                 self.buttons[name] = pressed
                 if not pressed or previous:
                     continue
-                incident, checkin = self.context["incidentId"], self.context["checkinId"]
-                if name == "green" and (self.context["phase"] != "CONFIRMING" or not incident or not checkin):
-                    continue
-                if name == "red" and self.context["phase"] in ("RESOLVED", "CANCELLED_FALSE_ALARM"):
-                    incident, checkin = None, None
-                self.emit({"type": "button.press", "source": "body-wili", "sessionId": self.session,
-                           "eventId": str(uuid.uuid4()), "incidentId": incident, "checkinId": checkin,
-                           "action": "cancel" if name == "green" else "help"})
                 # Publish the safety control before synchronous microphone cleanup.
-                self.cancel_wellbeing()
+                self.safety_button(name)
             blue = bool(getattr(data, "blue", False))
             previous = self.buttons["blue"]
             self.buttons["blue"] = blue
@@ -316,6 +372,17 @@ class StockGateway:
                     self.stop_capture(deliver=True)
             elif not previous and self.blue_armed:
                 self.blue_held_at = self.now()
+            yellow = bool(getattr(data, 'yellow', False))
+            previous = self.buttons['yellow']
+            self.buttons['yellow'] = yellow
+            if (yellow and not previous and not self.buttons['red']
+                    and self.context.get('dispatchMode', 'live') == 'simulated' and not self.active_incident()):
+                # An operator-triggered rehearsal starts at CHECKIN on the
+                # server. Old terminal identifiers are not a new incident.
+                self.emit({'type': 'button.press', 'source': 'body-wili', 'sessionId': self.session,
+                           'eventId': str(uuid.uuid4()), 'incidentId': None, 'checkinId': None,
+                           'action': 'rehearse'})
+                self.cancel_wellbeing()
         elif event_type == EventType.Audio and self.capture is not None:
             if not self.audio_enabled or self.now() >= self.capture["deadline"]:
                 return
@@ -412,6 +479,11 @@ class StockGateway:
         if key in self.played:
             return
         self.played.add(key)
+        if self.muted:
+            self.status("audio-muted", "Wearable speaker playback is temporarily muted.")
+            if checkin_capture:
+                self.checkin_audio("unavailable")
+            return
         if name not in self.assets:
             self.status("audio-unavailable", "Requested prepared board prompt is unavailable.")
             if checkin_capture:
@@ -447,8 +519,10 @@ class StockGateway:
 
     def context_update(self, packet):
         incident, checkin, phase = packet.get("incidentId"), packet.get("checkinId"), packet.get("phase")
+        dispatch_mode = packet.get('dispatchMode', 'live')
         if ((incident is None) != (checkin is None) or (incident is not None and (not valid_id(incident) or not valid_id(checkin)))
-                or (phase is not None and phase not in PHASES) or (incident is None) != (phase is None)):
+                or (phase is not None and phase not in PHASES) or (incident is None) != (phase is None)
+                or dispatch_mode not in ('live', 'simulated')):
             raise ValueError("Invalid incident context.")
         asset = packet.get("voiceAsset")
         if asset is not None and asset not in ASSETS:
@@ -465,9 +539,9 @@ class StockGateway:
             self.stop_capture(restore_display=False)
             if self.conversation is None:
                 self.resume_accel()
-        self.context = {"incidentId": incident, "checkinId": checkin, "phase": phase}
+        self.context = {"incidentId": incident, "checkinId": checkin, "phase": phase, "dispatchMode": dispatch_mode}
         if self.ui is not None:
-            self.ui.model.context(phase, owner, self.now())
+            self.ui.model.context(phase, owner, self.now(), dispatch_mode)
         if self.conversation is not None and not self.conversation_current(self.conversation):
             self.conversation["stale"] = True
             self.conversation_hold_until = None
@@ -478,7 +552,7 @@ class StockGateway:
                                         or self.conversation_hold_until is not None and self.now() < self.conversation_hold_until):
             self.show_status(self.idle_display())
         if asset is not None and incident is not None:
-            self.play(asset, phase == "CONFIRMING" and asset == "CHECKIN")
+            self.play(asset, phase == "CONFIRMING" and asset in {"CHECKIN", "MOVEMENT"})
 
     def command(self, packet):
         if not isinstance(packet, dict) or packet.get("sessionId", self.session) != self.session:
@@ -548,6 +622,10 @@ class StockGateway:
             return
         self.conversation_seen.append(packet["eventId"])
         self.conversation_seen = self.conversation_seen[-128:]
+        if self.muted:
+            self.status("audio-muted", "Wearable speaker playback is temporarily muted.")
+            self.playback_status(packet, "failed")
+            return
         if self.conversation is not None or not self.conversation_current(packet):
             self.playback_status(packet, "failed")
             return
@@ -599,6 +677,12 @@ class StockGateway:
             self.accel_paused = True
             self.require(self.serial.enable_accel_events(False, 33))
             self.status("accel-paused", "Dynamic audio upload and playback suspend acceleration; the gap is recorded.")
+            self.serial.process_events(0)
+            before = self.require(self.serial.read_all_buttons())
+            previous = {ButtonColor.Red: self.buttons['red']}
+            self.sync_buttons(before)
+            self.recover_held_red(previous, before)
+            self.show_status('PREPARING MESSAGE | HOLD RED FOR HELP', force_text=True)
             try:
                 self.upload_in_progress = True
                 with upload_watchdog():
@@ -614,7 +698,7 @@ class StockGateway:
                     self.require(self.serial.enable_button_events(True, 50))
                     current = self.require(self.serial.read_all_buttons())
                     self.sync_buttons(current)
-                    self.status("buttons-resumed", "Buttons resumed after the bounded dynamic audio upload.")
+                    self.status("buttons-resumed", "Buttons resumed; a newly held RED press is recovered. Released taps during upload are unavailable.")
                 except RuntimeError as error:
                     raise StockTransferFailure("Stock button restoration failed.") from error
             # Context can change while the sole serial thread uploads. Apply
@@ -632,6 +716,7 @@ class StockGateway:
                     self.command(packet)
                 except ValueError:
                     self.status("input-error", "Malformed stock command was discarded after upload.")
+            self.recover_held_red(before, current)
             if job["stale"] or not self.conversation_current(job) or not self.running:
                 self.finish_conversation("failed")
                 return
@@ -746,7 +831,11 @@ class StockGateway:
             # Disable old streams before uploads, including after a killed bridge.
             self.require(self.serial.enable_accel_events(False, 33))
             self.require(self.serial.enable_button_events(False, 50))
-            self.load_assets()
+            from stock_volume import set_speaker_volume
+            set_speaker_volume(self.serial, self.volume)
+            self.status('speaker-volume', f'Speaker volume verified at {self.volume}/10; playback mute is {"on" if self.muted else "off"}.')
+            self.require(self.serial.set_system_sounds(False))
+            self.status('system-sounds-off', 'Stock menu/system sounds disabled; incident voice remains event-driven.')
             if self.ui is not None:
                 try:
                     self.upload_in_progress = True
@@ -759,11 +848,18 @@ class StockGateway:
                 finally:
                     self.upload_in_progress = False
                 self.ui_tick()
+            self.load_assets()
             current = self.require(self.serial.read_all_buttons())
             self.sync_buttons(current)
             self.serial.set_event_callback(self.on_event)
             self.require(self.serial.enable_accel_events(True, 33))
             self.require(self.serial.enable_button_events(True, 50))
+            if self.ui is not None:
+                # Paint after the final stock setup command, even if the frame
+                # was already accepted before button/sensor initialization.
+                self.ui.last_file = None
+                self.ui.next_at = 0
+                self.ui_tick()
             self.status("ready", "Stock SDK configured; actual sensor cadence and board audio still require verification.")
             threading.Thread(target=self.read_input, daemon=True).start()
             while self.running:
@@ -813,7 +909,9 @@ class StockGateway:
                             disable()
                         except Exception:
                             pass
-                    self.serial.close()
+                    # SDK's default close restores the stock GPIO/menu screen.
+                    # Keep the last LIFELINE frame instead of replacing it.
+                    self.serial.close(restore_menu=False)
 
 
 def main():
@@ -823,6 +921,10 @@ def main():
     parser.add_argument("--conversation-dir", type=pathlib.Path)
     parser.add_argument("--ui-dir", type=pathlib.Path)
     parser.add_argument("--ui-contacts", default="[]", help="At most two display names; never phone numbers.")
+    parser.add_argument("--mute", action="store_true", default=os.environ.get("LIFELINE_WILI_MUTED") == "1",
+                        help="Disable all speaker playback; also enabled by LIFELINE_WILI_MUTED=1.")
+    parser.add_argument("--volume", type=int, choices=range(11), default=int(os.environ.get('LIFELINE_WILI_VOLUME', '5')),
+                        help="Speaker level 0–10, verified before playback. Default 5; LIFELINE_WILI_VOLUME overrides it.")
     parser.add_argument("--keep-accel-during-audio", action="store_true",
                         help="Keep accelerometer events running during voice playback for comparison.")
     options = parser.parse_args()
@@ -839,13 +941,17 @@ def main():
         raise ValueError("Invalid ambient contacts.")
     with contextlib.ExitStack() as lifetime:
         ui_dir = options.ui_dir
-        if ui_dir is not None and contacts:
+        if ui_dir is not None:
             from ambient_ui import build_assets
             ui_dir = pathlib.Path(lifetime.enter_context(tempfile.TemporaryDirectory(prefix="lifeline-wili-ui-")))
-            build_assets(ui_dir, contacts)
-        gateway = StockGateway(FreeWiliSerial(options.port, stay_open=True), options.audio_dir,
+            # One named contact fits alongside prompts/live voice. Additional
+            # responders use generic artwork; backend ownership is unchanged.
+            build_assets(ui_dir, contacts[:1], compact=True,
+                         dispatch_mode=os.environ.get('LIFELINE_DISPATCH_MODE', 'live'))
+        from stock_display import StockDisplaySerial
+        gateway = StockGateway(StockDisplaySerial(options.port, stay_open=True), options.audio_dir,
                                pause_accel_for_audio=not options.keep_accel_during_audio,
-                               conversation_dir=options.conversation_dir, ui_dir=ui_dir)
+                               conversation_dir=options.conversation_dir, ui_dir=ui_dir, muted=options.mute, volume=options.volume)
         def stop(_signal, _frame):
             gateway.request_stop()
         signal.signal(signal.SIGTERM, stop)

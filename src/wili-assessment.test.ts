@@ -64,8 +64,8 @@ test('aligned WILi impact + waist movement + continuous quiet yields frozen sour
   assert.equal(evidence.assessment.supportingWaist.separationMs, 0);
   assert.ok(evidence.assessment.quietWaist.durationMs >= 2200); assert.ok(evidence.assessment.quietWaist.sampleCount >= 50);
   assert.equal(evidence.assessment.quietWaist.maxLinearG, 0); assert.equal(evidence.assessment.quietWaist.maxAngularSpeed, 0);
-  assert.match(evidence.summary, /FREE-WILi primary acceleration impact/);
-  assert.match(evidence.summary, /Provisional demo thresholds; possible incident, not a diagnosis/);
+  assert.match(evidence.summary, /Possible fall: 3\.20 g impact with waist movement/);
+  assert.match(evidence.summary, /Possible fall/);
   assert.doesNotMatch(evidence.summary, /chest|head|orientation|accuracy/i);
   assert.equal(f.motion.views()[1].calibrated, false, 'movement features require no invented orientation baseline');
   assert.equal(Object.isFrozen(evidence.assessment.impact.accelerationG), true);
@@ -89,8 +89,8 @@ test('stock 2g profile freezes lower selected threshold and labels bridge receip
   assert.equal(evidence.assessment.impact.fullScaleG, 2); assert.equal(evidence.assessment.impact.totalG, 1.8);
   assert.equal(evidence.assessment.impact.frameTimestamp, '11');
   assert.equal(evidence.assessment.alignmentAtAssessment.bodyClock, 'host-receipt');
-  assert.match(evidence.summary, /host-receipt timing \(bridge receipt, not board acquisition time\)/);
-  assert.match(evidence.summary, /threshold 1\.65 g/); assert.match(evidence.summary, /Prototype assessment/);
+  assert.match(evidence.summary, /Possible fall: 1\.80 g impact/);
+  assert.match(evidence.summary, /Possible fall/); assert.doesNotMatch(evidence.summary, /demo|prototype/i);
   const stricter = new WiliAssessment(f.now, { stockImpactG: 1.9 }); assert.equal(stricter.candidate(f.wili, f.motion), null);
   const custom = fixture(); custom.frame({ bodyG: [0, 0, 1.8], linear: .6 }); custom.settle(); assert.equal(custom.candidate(), null);
 });

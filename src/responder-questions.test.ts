@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Controller } from './controller.ts';
 import type { ProviderInbound } from './contracts.ts';
-import { handleResponderQuestion } from './responder-questions.ts';
+import { createResponderQuestionWorker, enqueueResponderQuestion, handleResponderQuestion } from './responder-questions.ts';
 
 const responders = [
   { id: 'maya', name: 'Maya', phone: '+12025550101' },
@@ -178,9 +178,190 @@ test('answer, inbound dedupe, and audit roll back together if persistence fails'
     await assert.rejects(handleResponderQuestion(question('rollback'), c, generate), /Offline failure/);
     assert.equal(c.seenInbound('rollback'), false);
     assert.equal(c.actions(i.id).some(a => a.type === 'answer'), false);
+    assert.equal(c.responderQuestion('rollback')?.status, 'queued');
+    assert.equal(c.responderQuestion('rollback')?.answerActionId, undefined);
     c.db.exec('DROP TRIGGER reject_answer_event');
     assert.equal(await handleResponderQuestion(question('rollback'), c, generate), true);
+    assert.equal(c.responderQuestion('rollback')?.status, 'answer_queued');
   } finally { c.close(); }
+});
+
+function boundQuestion(c: Controller, id: string): ProviderInbound {
+  const incident = c.active()!;
+  const alert = c.actions(incident.id).find(a => a.type === 'alert' && a.recipientId === 'maya')!;
+  c.finishAction(alert.id, 'provider_accepted', 'Offline recorded channel', alert.providerMessageId!, { chatId: 'test-maya', lineId: 'test-line' });
+  return question(id, { targetMessageId: alert.providerMessageId!, chatId: 'test-maya', lineId: 'test-line', providerTimestamp: 999 });
+}
+
+test('listener receipt persists original question and channel before a single background preparation starts', async () => {
+  const { c, i } = setup();
+  let ready!: (answer: { text: string; generation: 'ai' }) => void, calls = 0;
+  const worker = createResponderQuestionWorker(c, async (_incident, text) => {
+    calls++; assert.equal(text, 'What medications are recorded?');
+    return new Promise(resolve => { ready = resolve; });
+  });
+  try {
+    const event = boundQuestion(c, 'durable');
+    assert.equal(enqueueResponderQuestion(event, c), true);
+    assert.equal(enqueueResponderQuestion(event, c), false);
+    assert.equal(calls, 0);
+    const job = c.responderQuestion('durable')!;
+    assert.equal(job.status, 'queued'); assert.equal(job.incidentVersion, i.version);
+    assert.equal(job.event.targetMessageId, event.targetMessageId);
+    assert.equal(job.event.providerTimestamp, 999);
+    event.text = 'Changed caller object'; event.chatId = 'changed-chat';
+    assert.equal(c.responderQuestion('durable')!.question, 'What medications are recorded?');
+    const received = JSON.parse(c.events(i.id).find(e => e.type === 'QUESTION_RECEIVED')!.detail);
+    assert.equal(received.question, job.question); assert.equal(received.incidentVersion, i.version);
+    assert.equal(received.providerTimestamp, 999);
+    const pending = worker.tick();
+    assert.equal(calls, 1); assert.equal(c.responderQuestion('durable')?.status, 'preparing');
+    assert.equal(c.actions(i.id).some(a => a.type === 'answer'), false);
+    assert.equal(c.seenInbound('durable'), false, 'Receipt must not pretend an answer was committed');
+    assert.equal(await worker.tick(), false, 'Busy ticks cannot start another preparation');
+    ready({ text: 'Recorded source [med-1].', generation: 'ai' });
+    assert.equal(await pending, true);
+    const completed = c.responderQuestion('durable')!;
+    assert.equal(completed.status, 'answer_queued'); assert.equal(completed.generation, 'ai');
+    const answer = c.actions(i.id).find(a => a.id === completed.answerActionId)!;
+    assert.equal(answer.status, 'queued'); assert.equal(answer.providerMessageId, null);
+    assert.equal(answer.replyToMessageId, 'durable'); assert.equal(answer.replyChatId, 'test-maya'); assert.equal(answer.replyLineId, 'test-line');
+    assert.equal(await worker.tick(), false); assert.equal(calls, 1);
+  } finally { worker.stop(); c.close(); }
+});
+
+test('concurrent duplicate handlers do not generate duplicate answers', async () => {
+  const { c } = setup();
+  let ready!: (text: string) => void, calls = 0;
+  try {
+    const first = handleResponderQuestion(question('duplicate-preparation'), c, () => {
+      calls++; return new Promise(resolve => { ready = resolve; });
+    });
+    assert.equal(await handleResponderQuestion(question('duplicate-preparation'), c, async () => {
+      calls++; return 'Must not run.';
+    }), false);
+    ready('Source-checked offline result.'); assert.equal(await first, true); assert.equal(calls, 1);
+  } finally { c.close(); }
+});
+
+test('queued and interrupted preparations recover after restart with original event and obsolete claim rejection', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifeline-question-preparation-')); const path = join(dir, 'state.sqlite');
+  let c: Controller | null = null;
+  try {
+    ({ c } = setup(path)); const incidentId = c.active()!.id;
+    assert.equal(enqueueResponderQuestion(boundQuestion(c, 'interrupted'), c), true);
+    assert.equal(enqueueResponderQuestion(question('waiting'), c), true);
+    const interrupted = c.claimResponderQuestion('interrupted')!;
+    assert.equal(interrupted.attempts, 1);
+    c.close(); c = new Controller(path, responders, () => 1000);
+    assert.equal(c.responderQuestion('interrupted')?.status, 'queued');
+    assert.equal(c.responderQuestion('waiting')?.attempts, 0);
+    assert.equal(c.finishResponderQuestion('interrupted', interrupted.claimId!, 'Late original result.'), false);
+    const worker = createResponderQuestionWorker(c, async () => ({ text: 'Grounded offline result.', generation: 'degraded' }));
+    assert.equal(await worker.tick(), true);
+    assert.equal(c.responderQuestion('interrupted')?.attempts, 2);
+    assert.equal(c.responderQuestion('interrupted')?.event.chatId, 'test-maya');
+    assert.equal(await worker.tick(), true);
+    worker.stop();
+    assert.equal(c.actions(incidentId).filter(a => a.type === 'answer').length, 2);
+    assert.equal(c.events(incidentId).filter(e => e.type === 'QUESTION_RECEIVED').length, 2);
+    assert.equal(c.events(incidentId).filter(e => e.type === 'ANSWER_QUEUED').length, 2);
+  } finally { c?.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('queued preparations lose authorization before inference on decline, phase change, or closure', async () => {
+  for (const change of ['decline', 'phase', 'close'] as const) {
+    const { c, i } = setup(); let calls = 0;
+    const worker = createResponderQuestionWorker(c, async () => { calls++; return 'Must not generate.'; });
+    try {
+      assert.equal(enqueueResponderQuestion(question(change), c), true);
+      if (change === 'decline') c.decline(i.id, 'maya');
+      if (change === 'phase') c.accept(i.id, 'jordan');
+      if (change === 'close') c.reset();
+      assert.equal(await worker.tick(), false); assert.equal(calls, 0);
+      assert.equal(c.responderQuestion(change)?.status, 'discarded');
+      assert.equal(c.events(i.id).some(e => e.type === 'QUESTION_RECEIVED'), true);
+      assert.equal(c.actions(i.id).some(a => a.type === 'answer'), false);
+    } finally { worker.stop(); c.close(); }
+  }
+});
+
+test('preparation failures retry with finite delay and stop after three attempts without delivery claims', async () => {
+  const { c, i, advance } = setup(); let calls = 0;
+  const worker = createResponderQuestionWorker(c, async () => { calls++; throw new Error('Offline model unavailable'); });
+  try {
+    enqueueResponderQuestion(question('fail-preparation'), c);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      assert.equal(await worker.tick(), false);
+      assert.equal(c.responderQuestion('fail-preparation')?.attempts, attempt);
+      assert.equal(await worker.tick(), false, 'A retry cannot run before its deadline');
+      advance(5000);
+    }
+    assert.equal(c.responderQuestion('fail-preparation')?.status, 'failed');
+    assert.equal(await worker.tick(), false); assert.equal(calls, 3);
+    assert.equal(c.seenInbound('fail-preparation'), false);
+    assert.equal(c.actions(i.id).some(a => a.type === 'answer'), false);
+  } finally { worker.stop(); c.close(); }
+});
+
+test('a bounded preparation timeout aborts the model signal and preserves an unanswered retry job', async () => {
+  const { c, i } = setup(); let signal!: AbortSignal;
+  const worker = createResponderQuestionWorker(c, async (_i, _q, context) => {
+    signal = context!.signal; return new Promise(() => {});
+  }, { timeoutMs: 10 });
+  try {
+    enqueueResponderQuestion(question('timeout'), c);
+    assert.equal(await worker.tick(), false); assert.equal(signal.aborted, true);
+    assert.equal(c.responderQuestion('timeout')?.status, 'queued');
+    assert.equal(c.responderQuestion('timeout')?.attempts, 1);
+    assert.equal(c.actions(i.id).some(a => a.type === 'answer'), false);
+  } finally { worker.stop(); c.close(); }
+});
+
+test('stop immediately releases preparation and late model completion cannot touch a closed database', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifeline-question-stop-')); const path = join(dir, 'state.sqlite');
+  let c: Controller | null = null, ready!: (text: string) => void;
+  try {
+    ({ c } = setup(path)); const incidentId = c.active()!.id;
+    enqueueResponderQuestion(question('stopped'), c);
+    const worker = createResponderQuestionWorker(c, () => new Promise(resolve => { ready = resolve; }));
+    const pending = worker.tick(); worker.stop(); worker.stop();
+    assert.equal(c.responderQuestion('stopped')?.status, 'queued');
+    c.close(); c = null;
+    assert.equal(await pending, false, 'Shutdown cannot wait indefinitely for inference');
+    ready('Late response must not commit.'); await Promise.resolve();
+    c = new Controller(path, responders, () => 1000);
+    assert.equal(c.responderQuestion('stopped')?.status, 'queued');
+    assert.equal(c.actions(incidentId).some(a => a.type === 'answer'), false);
+    const replacement = createResponderQuestionWorker(c, async () => 'Recovered answer.');
+    assert.equal(await replacement.tick(), true); replacement.stop();
+    assert.equal(c.actions(incidentId).filter(a => a.type === 'answer').length, 1);
+  } finally { c?.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('explicit question targets require an accepted message rather than a failed action with a stray ID', () => {
+  const { c, i } = setup();
+  try {
+    const alert = c.actions(i.id).find(a => a.type === 'alert' && a.recipientId === 'maya')!;
+    c.finishAction(alert.id, 'failed', 'Offline failed send', 'stray-message-id');
+    assert.equal(enqueueResponderQuestion(question('failed-target', { targetMessageId: 'stray-message-id' }), c), false);
+    assert.equal(c.responderQuestions(i.id).length, 0);
+  } finally { c.close(); }
+});
+
+test('legacy shutdown guard prevents database access and leaves preparation recoverable on restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifeline-question-legacy-stop-')); const path = join(dir, 'state.sqlite');
+  let c: Controller | null = null, ready!: (text: string) => void, permitted = true;
+  try {
+    ({ c } = setup(path));
+    const pending = handleResponderQuestion(question('legacy-stop'), c,
+      () => new Promise(resolve => { ready = resolve; }), () => permitted);
+    permitted = false; c.close(); c = null;
+    ready('Late answer.'); assert.equal(await pending, false);
+    c = new Controller(path, responders, () => 1000);
+    assert.equal(c.responderQuestion('legacy-stop')?.status, 'queued');
+    assert.equal(c.seenInbound('legacy-stop'), false);
+  } finally { c?.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('queued answers and inbound dedupe survive restart without repeating generation', async () => {

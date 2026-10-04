@@ -28,6 +28,10 @@ This is a long-running foreground command, without an installed service or sched
 
 The optional [ambient communication UI](../../docs/wili-ambient-ui.md) replaces text screens with native blue pulses, measured voice bars, message bubbles and actual responder initials. Build it with `npm run prepare:wili:ui` before starting the foreground bridge. Use `--no-ui` for text presentation. Its standalone preview uses the same 320×240 pixels with fictional people and sends no operational commands.
 
+For a silent device, set `LIFELINE_WILI_MUTED=1` in the private `.env` before starting the bridge. It suppresses cached and dynamic speaker playback while retaining display, buttons and sensing. A muted check-in does not start an unannounced microphone capture; incident deadlines remain in effect. Set it back to `0` and restart only when speech is wanted.
+
+`LIFELINE_WILI_VOLUME=5` sets the stock board's 0–10 speaker level. The bridge applies and reads back this setting before playing anything; a failed readback stops startup. Restoring a closed incident's display does not replay its closing prompt.
+
 Stock acceleration reporting pauses for the duration of spoken prompts to reduce playback load on the display processor, then resumes before microphone capture. Buttons remain enabled. The resulting measurement gap is retained and can appear as stale telemetry; it never establishes safety. This is a playback mitigation awaiting listening comparison, not proof of improved audio.
 
 Use the normal configurable check-in window (default 20 seconds) to rehearse playback, listening and recognition; measure whether that sequence completes before the deadline. The optional five-second demo policy can expire before it finishes. Playback-command acceptance does not prove audibility; prompt duration is an estimate used to exclude echo. Raw utterance audio is transient. The backend records the final transcript and policy decision with incident/check-in identity.

@@ -8,7 +8,10 @@
     <title>LIFELINE — Share location</title>
     <link rel="stylesheet" href="/share-location.css">
     <script src="/share-location.js" defer></script>
-  </head>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+</head>
   <body>
     <main class="share-shell">
       <header><span class="brand">Lifeline</span><span id="sharing-status" class="status">Checking invitation</span></header>
@@ -26,7 +29,7 @@
         <p id="sharing-error" class="error" role="alert" hidden></p>
       </section>
       <section class="shared-people" aria-label="Shared locations">
-        <article class="point-card"><p class="eyebrow">WEARER LOCATION</p><h2 id="wearer-name">Wearer</h2><p id="wearer-position" class="coordinates">Not shared</p><p id="wearer-meta" class="muted">No shared location received.</p><a id="wearer-map" class="map-link" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" hidden>Open in Apple Maps ↗</a></article>
+        <article class="point-card"><p class="eyebrow">PATIENT LOCATION</p><h2 id="wearer-name">Patient</h2><p id="wearer-position" class="coordinates">Not shared</p><p id="wearer-meta" class="muted">No shared location received.</p><a id="wearer-map" class="map-link" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" hidden>Open in Apple Maps ↗</a></article>
         <article class="point-card"><p class="eyebrow">RESPONDER APPROACH</p><h2 id="responder-name">Responder</h2><p id="responder-position" class="coordinates">Not shared</p><p id="responder-meta" class="muted">No shared location received.</p><a id="responder-map" class="map-link" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" hidden>Open in Apple Maps ↗</a></article>
       </section>
       <section class="eta-card" aria-label="Approach estimate"><strong id="approach-eta">Waiting for shared locations</strong><p id="approach-detail" class="muted">Location does not confirm responder arrival.</p></section>

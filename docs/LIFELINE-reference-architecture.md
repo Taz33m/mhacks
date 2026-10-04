@@ -4,7 +4,7 @@ Prepared 2026-10-03 from source reviews of Nook and Wander, Kinesthetic's native
 
 **Product:** LIFELINE follows a suspected physical incident from sensor evidence through verification, authorized responder acceptance, and a recorded outcome. The differentiator is the complete incident-resolution loop. Cross-body sensing supplies additional evidence; its accuracy advantage remains a hypothesis to test.
 
-**Target hardware:** FREE-WILi for primary wearable acceleration and spoken interaction, a waist-mounted AirPod Pro, and the nearby Mac. The iPhone carries Photon/iMessage communication and supplies no sensing or voice input. See the [workshop-grounded migration plan](device-and-record-migration.md) for the device protocol and patient-data design. The existing runtime remains the earlier phone/AirPod implementation until migration is completed.
+**Target hardware:** FREE-WILi for primary wearable acceleration and spoken interaction, a waist-mounted AirPod Pro, and the nearby Mac. The iPhone carries Photon communication and supplies no sensing or voice input. The current runtime uses the stock WILi SDK and retained Mac waist bridge; the earlier phone acquisition requires an explicit legacy profile. See the [workshop-grounded migration plan](device-and-record-migration.md) for the design history and [current interfaces](interfaces.md) for implementation.
 
 This document specifies the reference architecture. The local prototype now implements the incident loop and native acquisition clients; see [current setup and validation](../README.md). Live provider integration and fall-detection accuracy still need device trials.
 

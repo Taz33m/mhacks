@@ -10,6 +10,22 @@ test('validates source, identity, finite values and physical vector bounds', () 
   assert.equal(validSample({ ...sample(), gravity: [0,0,0] }, 'waist-airpod'), false);
   assert.equal(validSample({ ...sample(), userAcceleration: [NaN,0,0] }, 'waist-airpod'), false);
 });
+test('dashboard orientation comes only from accepted fresh sensor samples', () => {
+  let at = 100; const motion = new Motion(() => at);
+  const packet = { ...sample(), quaternion: [0, 0, Math.SQRT1_2, Math.SQRT1_2] as MotionSample['quaternion'] };
+  assert.equal(motion.views()[1].quaternion, null);
+  assert.equal(motion.sample('waist-airpod', packet), true);
+  assert.deepEqual(motion.views()[1].quaternion, packet.quaternion);
+  packet.quaternion[0] = .1;
+  assert.equal(motion.views()[1].quaternion?.[0], 0, 'input mutation cannot change the accepted measurement');
+  const view = motion.views()[1]; view.quaternion![0] = .2;
+  assert.equal(motion.views()[1].quaternion?.[0], 0, 'view mutation cannot change the measurement');
+  assert.equal(motion.sample('waist-airpod', packet), false);
+  at += 501; assert.equal(motion.views()[1].quaternion, null, 'stale orientation is not presented as live');
+  at += 1; motion.sample('waist-airpod', sample(2));
+  motion.disconnected('waist-airpod'); motion.connected('waist-airpod');
+  assert.equal(motion.views()[1].quaternion, null, 'reconnection needs a new sample');
+});
 test('duplicate samples rejected; reconnect gaps and bud switches invalidate calibration', () => {
   let t = 100; const m = new Motion(() => t); m.connected('waist-airpod');
   for (let seq = 1; seq <= 30; seq++) { t += 40; assert.equal(m.sample('waist-airpod', sample(seq)), true); }

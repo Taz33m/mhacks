@@ -21,11 +21,14 @@ test('stock Python gateway controls, capture bounds and shutdown pass offline SD
   assert.deepEqual(sample.accelerationG, [.004, -.048, 1.028]);
   assert.equal(sample.captureClock, 'host-receipt'); assert.equal(sample.frameTimestamp, '999');
   const buttons = packets.filter(packet => packet.type === 'button.press');
-  assert.equal(buttons.length, 2); assert.ok(buttons.every(validDevicePacket));
-  const cancel = buttons[0]!, help = buttons[1]!;
-  assert.ok(cancel.type === 'button.press' && help.type === 'button.press');
+  assert.equal(buttons.length, 3); assert.ok(buttons.every(validDevicePacket));
+  const cancel = buttons.find(packet => packet.type === 'button.press' && packet.action === 'cancel')!,
+    help = buttons.find(packet => packet.type === 'button.press' && packet.action === 'help')!,
+    rehearsal = buttons.find(packet => packet.type === 'button.press' && packet.action === 'rehearse')!;
+  assert.ok(cancel.type === 'button.press' && help.type === 'button.press' && rehearsal.type === 'button.press');
   assert.equal(cancel.action, 'cancel'); assert.equal(cancel.incidentId, 'LF-TEST1234');
   assert.equal(help.action, 'help'); assert.equal(help.incidentId, null); assert.equal(help.checkinId, null);
+  assert.equal(rehearsal.incidentId, null); assert.equal(rehearsal.checkinId, null);
   assert.ok(validWiliPong(packets.find(packet => packet.type === 'clock.pong')));
   const audioStates = packets.filter(packet => packet.type === 'checkin.audio');
   assert.deepEqual(audioStates.map(packet => packet.stage), ['prompting', 'listening']);

@@ -40,9 +40,9 @@
     const labels = { idle: validGrant ? 'Ready to share' : 'Checking invitation', waiting: 'Waiting for location', sharing: 'Sharing', paused: 'Paused', stopping: 'Stopping', stopped: 'Stopped', unavailable: 'Unavailable' };
     text('#sharing-status', labels[state] || 'Unavailable');
     $('#sharing-status').className = `status${state === 'sharing' ? ' sharing' : state === 'paused' ? ' paused' : ''}`;
-    text('#sharing-identity', access ? `This invitation is for ${typeof access.name === 'string' && access.name.trim() ? access.name : access.role === 'wearer' ? 'the wearer' : 'the responder'}.`
+    text('#sharing-identity', access ? `This invitation is for ${typeof access.name === 'string' && access.name.trim() ? access.name : access.role === 'wearer' ? 'the patient' : 'the responder'}.`
       : grant ? 'Checking your invitation.' : 'Open the location invitation from your LIFELINE message.');
-    text('#sharing-context', access ? `${access.role === 'wearer' ? 'Wearer' : 'Responder'}${typeof access.incidentId === 'string' ? ' · incident location sharing' : ' · approved location sharing'}` : '');
+    text('#sharing-context', access ? `${access.role === 'wearer' ? 'Patient' : 'Responder'}${typeof access.incidentId === 'string' ? ' · incident location sharing' : ' · approved location sharing'}` : '');
     text('#sharing-detail', statusDetail);
     const supported = window.isSecureContext && !!navigator.geolocation;
     $('#start-sharing').disabled = !validGrant || !grant || !supported || locationView?.configured !== true || document.hidden || disposed || stopping || stopFailed || watchId !== null;
@@ -61,7 +61,7 @@
     for (const role of ['wearer', 'responder']) {
       const point = locationView?.[role], valid = validPoint(point), age = pointAge(point);
       const fresh = valid && point.fresh === true && age !== null && age <= 60000;
-      text(`#${role}-name`, typeof point?.name === 'string' && point.name.trim() ? point.name : role === 'wearer' ? 'Wearer' : 'Responder');
+      text(`#${role}-name`, typeof point?.name === 'string' && point.name.trim() ? point.name : role === 'wearer' ? 'Patient' : 'Responder');
       text(`#${role}-position`, valid ? `${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)}` : 'Not shared');
       const accuracy = finite(point?.accuracy) && point.accuracy >= 0 ? `accuracy ±${Math.ceil(point.accuracy)} m` : 'accuracy unknown';
       const sources = { 'browser-geolocation': 'Browser location', 'photon-find-my': 'Photon Find My' };
@@ -116,7 +116,7 @@
         statusDetail = !window.isSecureContext ? 'Location sharing requires HTTPS. Open this invitation in a secure browser.'
           : !navigator.geolocation ? 'This browser does not support location sharing. Open the invitation in another browser.'
           : !locationView.configured ? 'Location sharing is not available right now. You can revoke this invitation with Stop.'
-            : access.role === 'wearer' ? 'Tap Share to allow this browser to share with LIFELINE and your approved responder.' : 'Tap Share to show your approach to the wearer and LIFELINE.';
+            : access.role === 'wearer' ? 'Tap Share to allow this browser to share with LIFELINE and your approved responder.' : 'Tap Share to show your approach to the patient and LIFELINE.';
       }
       showError(''); render(); startPolling();
     } catch (error) {

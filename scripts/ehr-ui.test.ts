@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 // The browser module skips DOM initialization in Node; these tests exercise its
 // source interpretation without a browser, backend, credentials or cloud calls.
 const moduleUrl = new URL('../public/ehr.js', import.meta.url).href;
-const { medicationStatus, vitalMetrics, vitalSeries, groupMedicationRecords, careHighlights, answerPresentation, historicalVitalDate } = await import(moduleUrl);
+const { medicationStatus, vitalMetrics, vitalSeries, groupMedicationRecords, careHighlights, answerPresentation, historicalVitalDate, careEventPresentation } = await import(moduleUrl);
 const row = (id: string, name: string, unit: string | null, value: string | number | null, date: string | null) => ({
   id, section: 'vitals', label: name, fields: { name, unit, value, date }, syncedAt: '2026-10-04T12:00:00Z',
 });
@@ -122,4 +122,29 @@ test('answer disclosure keeps actual facts and missing-data notices, moving veri
   const refusal = 'I can relay recorded information, but cannot recommend treatment.';
   assert.deepEqual(answerPresentation(refusal, null).lines, [refusal]);
   assert.deepEqual(answerPresentation('Unrecognized citation [not-a-record]', { records: [allergy] }).records, []);
+});
+
+test('care audit headings and known sources are readable while projected facts stay literal', () => {
+  const event = Object.freeze({ type: 'ANSWER_QUEUED', actor: 'photon-imessage',
+    detail: 'Record question: What allergies are recorded? · ai · clinical revision fixture-1. Queued does not establish receipt.' });
+  const before = JSON.stringify(event), view = careEventPresentation(event);
+  assert.equal(view.title, 'Record answer queued'); assert.equal(view.actor, 'Photon message');
+  assert.equal(view.detail, event.detail); assert.equal(JSON.stringify(event), before);
+  assert.equal(careEventPresentation({ type: 'ON_SCENE', actor: 'simulated-dispatch:fixture-maya', detail: 'Generated arrival report.' }).actor, 'Local dispatch');
+});
+
+test('a human care report that looks like JSON or HTML is never parsed or rewritten', () => {
+  for (const detail of ['{"transcript":"Exact quoted JSON","decision":"help_requested"}', '<img src=x onerror=alert(1)>', 'Legacy plain audit detail']) {
+    const view = careEventPresentation({ type: 'WEARER_REPORT', actor: 'freewili-local-speech', detail });
+    assert.equal(view.detail, detail); assert.equal(view.title, 'Patient report');
+    assert.equal(view.actor, 'WILi microphone / local speech recognition');
+  }
+});
+
+test('unknown and prototype-key audit metadata remain literal rather than acquiring a mapped meaning', () => {
+  for (const type of ['constructor', '__proto__', 'UNKNOWN_EVENT']) {
+    const view = careEventPresentation({ type, actor: 'constructor', detail: 'Exact source facts' });
+    assert.equal(view.title, type.replaceAll('_', ' ')); assert.equal(view.actor, 'constructor'); assert.equal(view.detail, 'Exact source facts');
+  }
+  assert.equal(careEventPresentation(null).detail, 'Event detail unavailable.');
 });

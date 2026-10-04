@@ -1,7 +1,7 @@
 {
-  "revision": 6,
+  "revision": 8,
   "totalFrames": 260,
-  "holdStart": 0.88,
+  "holdStart": 0.89090909,
   "reframeEnd": 1,
   "renditions": {
     "desktop": {
@@ -19,8 +19,8 @@
       "name": "Ordinary life",
       "first": 0,
       "count": 40,
-      "start": 0,
-      "end": 0.14,
+      "start": 0.0,
+      "end": 0.12727273,
       "clip": "standing",
       "offset": 0,
       "duration": 4
@@ -30,8 +30,8 @@
       "name": "Failed recovery",
       "first": 40,
       "count": 30,
-      "start": 0.14,
-      "end": 0.28,
+      "start": 0.12727273,
+      "end": 0.25454545,
       "clip": "imbalance-v4",
       "offset": 5.1,
       "duration": 0.9
@@ -41,8 +41,8 @@
       "name": "Braced landing",
       "first": 70,
       "count": 10,
-      "start": 0.28,
-      "end": 0.35,
+      "start": 0.25454545,
+      "end": 0.31818182,
       "clip": "impact-v4",
       "offset": 0,
       "duration": 2.5
@@ -52,8 +52,8 @@
       "name": "The check-in",
       "first": 80,
       "count": 40,
-      "start": 0.35,
-      "end": 0.49,
+      "start": 0.31818182,
+      "end": 0.44545455,
       "clip": "seated",
       "offset": 1.65,
       "duration": 1.35
@@ -63,19 +63,19 @@
       "name": "Their own words",
       "first": 120,
       "count": 40,
-      "start": 0.49,
-      "end": 0.57,
-      "clip": "seated",
-      "offset": 3,
-      "duration": 3
+      "start": 0.44545455,
+      "end": 0.60909091,
+      "clip": "speaking-v8",
+      "offset": 0,
+      "duration": 4
     },
     {
       "id": "responder",
       "name": "A person responds",
       "first": 160,
       "count": 60,
-      "start": 0.57,
-      "end": 0.77,
+      "start": 0.60909091,
+      "end": 0.79090909,
       "clip": "responder-v4",
       "offset": 0,
       "duration": 8
@@ -85,8 +85,8 @@
       "name": "Waiting, connected",
       "first": 220,
       "count": 40,
-      "start": 0.77,
-      "end": 0.88,
+      "start": 0.79090909,
+      "end": 0.89090909,
       "clip": "seated",
       "offset": 6,
       "duration": 4

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildEhrWorkspace } from './ehr.ts';
-import type { Incident, Evidence } from './contracts.ts';
+import type { Incident, Evidence, TimelineEvent } from './contracts.ts';
 import { normalizePatientRecord } from './patient-record.ts';
 import { patientFixture } from './test-helpers/patient-fixture.ts';
 import { Wellbeing } from './wellbeing.ts';
@@ -13,13 +13,13 @@ function incident(index = 1): Incident {
     ownerId: 'maya', handoff: 'Saved handoff.', outcome: 'Simulated outcome.', resolutionActor: 'maya',
     healthRevision: 'saved-revision', handoffGeneration: 'degraded' };
 }
-function assemble(selected = incident(), incidents = [selected]) {
+function assemble(selected = incident(), incidents = [selected], extraEvents: TimelineEvent[] = []) {
   const w = new Wellbeing(':memory:', { phone: '+15555550101', wearerName: 'Actual wearer' });
   try {
     return buildEhrWorkspace({ patientRecord: normalizePatientRecord(structuredClone(patientFixture), 1000),
       incidentId: null, wearerName: 'Actual wearer', wellbeing: w.view(), incidents, selectedIncident: selected,
       timeline: [{ id: 'E-1', incidentId: selected.id, type: 'WEARER_REPORT', actor: 'wearer', at: 10,
-        detail: JSON.stringify({ transcript: 'My ankle hurts.', messageId: 'private-message', chatId: 'private-chat' }) }],
+        detail: JSON.stringify({ transcript: 'My ankle hurts.', messageId: 'private-message', chatId: 'private-chat' }) }, ...extraEvents],
       conversation: [], responders: [{ id: 'maya', name: 'Maya', phone: '+15555550102', simulated: true }], now: 2000 });
   } finally { w.close(); }
 }
@@ -39,6 +39,19 @@ test('chart preserves distinct fictional and wearer identities, saved revision, 
   original.evidence.summary = 'Later mutation'; original.phase = 'HELP_REQUESTED';
   assert.equal(selected.incident.evidence.summary, 'Help requested by wearer.');
   assert.equal(selected.incident.phase, 'RESOLVED');
+});
+
+test('received responder questions preserve the question without exposing preparation transport identities', () => {
+  const selected = incident();
+  const question = '{"question":"What medications are recorded?"}';
+  const workspace = assemble(selected, [selected], [{ id: 'E-2', incidentId: selected.id,
+    type: 'QUESTION_RECEIVED', actor: 'maya', at: 11,
+    detail: JSON.stringify({ question, inboundId: 'private-inbound', incidentVersion: 3,
+      source: 'photon-imessage', providerTimestamp: 10 }) }]);
+  const description = workspace.care.selectedIncident!.timeline[1].detail;
+  assert.ok(description.includes(question));
+  assert.match(description, /no answer delivery is established/);
+  assert.equal(JSON.stringify(workspace).includes('private-inbound'), false);
 });
 
 test('manual requests have no invented fall measurements; measured evidence preserves capture clock and exact units without device sessions', () => {

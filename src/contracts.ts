@@ -1,6 +1,7 @@
 import type { PatientRecordSnapshot } from './patient-record.ts';
 import type { BodyWiliView } from './freewili.ts';
 import type { WiliAssessmentFeatures } from './wili-assessment.ts';
+import type { ShakingFeatures } from './shaking-assessment.ts';
 import type { WellbeingView } from './wellbeing.ts';
 import type { LocationView } from './location.ts';
 import type { RouteEta } from './route-eta.ts';
@@ -24,6 +25,8 @@ export interface Evidence {
   kind: 'manual' | 'synthetic' | 'single-source' | 'cross-body';
   summary: string; sourceSessions?: Partial<Record<Source | 'body-wili', string>>;
   assessment?: WiliAssessmentFeatures;
+  eventType?: 'sustained-shaking' | 'reported-seizure';
+  shaking?: ShakingFeatures;
 }
 export interface Incident {
   id: string; phase: Phase; version: number; createdAt: number; updatedAt: number;
@@ -64,6 +67,7 @@ export interface SensorView {
   sensorLocation: string | null; sessionId: string | null; ageMs: number | null;
   sampleHz: number; alignmentUncertaintyMs: number | null;
   totalG: number | null; tiltDegrees: number | null;
+  quaternion?: [number, number, number, number] | null;
   trace: { at: number; totalG: number; tiltDegrees: number | null; angularSpeed: number }[];
 }
 export interface Snapshot {

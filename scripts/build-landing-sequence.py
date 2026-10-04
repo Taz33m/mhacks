@@ -1,7 +1,7 @@
 """Extract deliberately authored Higgsfield shots into a scroll-owned WebP sequence.
 
 Run from the repository root after saving the source shots in output/lifeline-sequence.
-Revision 6 trims smiling lead-ins from failed recovery and the seated aftermath.
+Revision 8 adds a dedicated speech insert and expands speech/request scroll space.
 """
 import json
 import base64
@@ -23,10 +23,14 @@ SCENES = [
     dict(id='impact', name='Braced landing', clip='impact-v4', offset=0, duration=2.5, count=10, start=.28, end=.35, mobile_start=1, mobile_end=1),
     # The original seated opening smiles. Enter after that reset, then run into words.
     dict(id='checkin', name='The check-in', clip='seated', offset=1.65, duration=1.35, count=40, start=.35, end=.49),
-    dict(id='words', name='Their own words', clip='seated', offset=3, duration=3, count=40, start=.49, end=.57),
+    dict(id='words', name='Their own words', clip='speaking-v8', offset=0, duration=4, count=40, start=.49, end=.57),
     dict(id='responder', name='A person responds', clip='responder-v4', offset=0, duration=8, count=60, start=.57, end=.77),
     dict(id='waiting', name='Waiting, connected', clip='seated', offset=6, duration=4, count=40, start=.77, end=.88),
 ]
+# Preserve every other beat's scroll distance while adding 55vh for speech.
+for scene in SCENES:
+    scene['start'] = round((scene['start'] + (.10 if scene['start'] >= .57 else 0)) / 1.10, 8)
+    scene['end'] = round((scene['end'] + (.10 if scene['end'] >= .57 else 0)) / 1.10, 8)
 for scene in SCENES:
     if not (SOURCE / f"{scene['clip']}.mp4").is_file():
         raise SystemExit(f"Missing source: {scene['clip']}.mp4")
@@ -78,7 +82,7 @@ shutil.copyfile(DEST / 'desktop' / f'frame_{index - 1:04d}.webp', DEST / 'held.w
 landing = ROOT / 'public/landing.html'
 inline_poster = 'data:image/webp;base64,' + base64.b64encode((DEST / 'held.webp').read_bytes()).decode('ascii')
 landing.write_text(re.sub(r'(id="story-poster"[^>]*?src=")[^"]+', lambda match: match[1] + inline_poster, landing.read_text()))
-manifest = dict(revision=6, totalFrames=index, holdStart=.88, reframeEnd=1,
+manifest = dict(revision=8, totalFrames=index, holdStart=round(.98 / 1.10, 8), reframeEnd=1,
     renditions=dict(desktop=dict(width=1280, height=720), mobile=dict(width=648, height=1152)),
     scenes=[{k: scene[k] for k in ['id', 'name', 'first', 'count', 'start', 'end', 'clip', 'offset', 'duration']} for scene in SCENES])
 (DEST / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')

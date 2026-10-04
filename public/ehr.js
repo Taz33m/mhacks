@@ -53,6 +53,24 @@ export function answerPresentation(answer, snapshot) {
   return { lines, records: [...cited.values()], original: String(answer) };
 }
 
+/** The protected EHR API already removes audit envelopes. Never reinterpret a human quote as JSON. */
+export function careEventPresentation(event) {
+  const names = { CHECKIN_REPLY: 'Patient check-in reply', WEARER_REPORT: 'Patient report', RESPONDER_REPORT: 'Responder report',
+    CONVERSATION_MESSAGE: 'Conversation message', CONVERSATION_PLAYBACK: 'Wearable playback', ANSWER_QUEUED: 'Record answer queued',
+    HANDOFF_PREPARED: 'Handoff prepared', HEALTH_CONTEXT_BOUND: 'Clinical context saved' };
+  const type = typeof event?.type === 'string' ? event.type : '';
+  const actors = { 'photon-imessage': 'Photon message', 'freewili': 'FREE-WILi', 'freewili-local-speech': 'WILi microphone / local speech recognition',
+    'ios-on-device-speech': 'Historical iPhone speech', finchnode: 'FinchNode record source', 'context-composer': 'Grounded context composer',
+    'development-operator': 'Operator' };
+  const actor = typeof event?.actor === 'string' ? event.actor : '';
+  return {
+    title: Object.hasOwn(names, type) ? names[type] : type.replaceAll('_', ' ') || 'Recorded event',
+    detail: typeof event?.detail === 'string' ? event.detail : 'Event detail unavailable.',
+    actor: actor === 'simulated-dispatch' || actor.startsWith('simulated-dispatch:') ? 'Local dispatch'
+      : Object.hasOwn(actors, actor) ? actors[actor] : actor,
+  };
+}
+
 if (typeof document !== 'undefined' && document.getElementById('ehr-main')) initializeEhr();
 
 function initializeEhr() {
@@ -72,8 +90,9 @@ function initializeEhr() {
   };
   const add = (parent, tag, text, className) => { const child = e(tag, text, className); parent.append(child); return child; };
   const setText = (id, text) => { const element = $(id); if (element && element.textContent !== String(text)) element.textContent = String(text); };
+  const setConnection = text => { setText('connection', text); const wrap = $('connection')?.parentElement; if (wrap) wrap.dataset.state = text === 'Connected' ? 'online' : /Unavailable|Pairing/.test(text) ? 'offline' : ''; };
   const stateLabel = state => ({ provider_accepted: 'Provider accepted; delivery unverified', unknown: 'Delivery outcome unknown',
-    simulated: 'Simulated dispatch', policy_refusal: 'Policy refusal', ai: 'Validated AI composition', degraded: 'Source template fallback' })[state] || value(state);
+    simulated: 'Local delivery', policy_refusal: 'Policy refusal', ai: 'Validated AI composition', degraded: 'Source template fallback' })[state] || value(state);
   const contextKey = () => `${authEpoch}:${scopeEpoch}:${incidentId || 'current'}:${payload?.context?.revision || ''}`;
   const record = () => payload?.patientRecord || null;
   const query = () => incidentId ? `?incidentId=${encodeURIComponent(incidentId)}` : '';
@@ -149,7 +168,7 @@ function initializeEhr() {
   function authenticationError() {
     token = ''; authEpoch++; cancelRequests(); payload = null; online = false; rendered.clear();
     if ($('token-panel')) $('token-panel').hidden = false;
-    setText('connection', 'Pairing required'); setText('status', 'Operator token rejected. Enter a current token.');
+    setConnection('Pairing required'); setText('status', 'Operator token rejected. Enter a current token.');
     clearAnswer(); render();
   }
   async function jsonResponse(response) {
@@ -181,12 +200,12 @@ function initializeEhr() {
         refreshRequest?.controller.abort(); refreshRequest = null;
       }
       payload = next; online = true;
-      setText('connection', 'Connected'); setText('status', `Updated ${date(next.generatedAt)} · protected read-only view`);
+      setConnection('Connected'); setText('status', `Updated ${date(next.generatedAt)} · protected read-only view`);
       if ($('token-panel')) $('token-panel').hidden = true;
       render();
     } catch (error) {
       if (!current() || pending.controller.signal.aborted) return;
-      online = false; setText('connection', 'Unavailable');
+      online = false; setConnection('Unavailable');
       setText('status', error?.name === 'TimeoutError' ? 'The record request timed out. Try again.' : error.message || 'The record request failed.');
     } finally { if (loadRequest === pending) loadRequest = null; controls(); }
   }
@@ -199,7 +218,7 @@ function initializeEhr() {
     if (!next || next.length > 500 || /[\s\x00-\x1f\x7f]/.test(next)) { setText('status', 'Enter a valid operator token.'); return; }
     authEpoch++; cancelRequests(); token = next; payload = null; online = false; rendered.clear();
     if ($('token')) $('token').value = '';
-    clearAnswer(); setText('connection', 'Connecting'); render(); void load(true);
+    clearAnswer(); setConnection('Connecting'); render(); void load(true);
   }
   function render() {
     const patient = record(), rows = patient?.records || [], demographic = rows.find(row => row.section === 'demographics');
@@ -207,7 +226,7 @@ function initializeEhr() {
     setText('patient-name', patientName); setText('avatar', typeof patientName === 'string' ? patientName.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]).join('').toUpperCase() : '?');
     setText('patient-meta', patient ? [demographic?.fields?.birthDate ? `Born ${demographic.fields.birthDate}` : 'Birth date unavailable', demographic?.fields?.gender].filter(Boolean).join(' · ') : 'Protected clinical record not loaded.');
     const scope = incidentId ? `Saved incident record · ${incidentId}` : 'Current hospital record';
-    const choices = [['', 'Current hospital context'], ...(payload?.care?.incidents || []).map(i => [i.id, `${i.id} · ${i.phase}${i.dispatchMode === 'simulated' ? ' · simulated' : ''}`])];
+    const choices = [['', 'Current hospital context'], ...(payload?.care?.incidents || []).map(i => [i.id, `${i.id} · ${i.phase}${i.dispatchMode === 'simulated' ? ' · local dispatch' : ''}`])];
     if (incidentId && !choices.some(([id]) => id === incidentId)) choices.push([incidentId, `${incidentId} · selected incident`]);
     options($('context'), choices, incidentId || '');
     options($('care-incident-list'), [['', 'Latest local activity · current hospital context'], ...choices.slice(1)], incidentId || '');
@@ -347,15 +366,16 @@ function initializeEhr() {
     });
   }
   const sourceLabel = source => ({ 'photon-imessage': 'Photon message', 'freewili-local-speech': 'WILi microphone / local speech recognition',
-    'ios-on-device-speech': 'Historical iPhone on-device speech', 'simulated-dispatch': 'Demo simulated responder', agent: 'LIFELINE reply', 'daily-checkin': 'Daily check-in' })[source] || value(source);
+    'ios-on-device-speech': 'Historical iPhone on-device speech', 'simulated-dispatch': 'Local responder', agent: 'LIFELINE reply', 'daily-checkin': 'Daily check-in' })[source] || value(source);
+  const evidenceKinds = { synthetic: 'manual check-in', manual: 'manual request' };
   function renderCare() {
     const care = payload?.care, selected = care?.selectedIncident, i = selected?.incident;
-    setText('care-identity', `${care?.subject?.name || 'Wearer name unavailable'} · local care activity. Personal EHR link: ${care?.subject?.recordLink === 'unlinked' ? 'not connected' : 'not established'}. This person is separate from the fictional Finch patient.`);
+    setText('care-identity', `${care?.subject?.name || 'Patient name unavailable'} · local care activity. Personal EHR link: ${care?.subject?.recordLink === 'unlinked' ? 'not connected' : 'not established'}. This person is separate from the FinchNode patient record.`);
     setText('incident-handoff', i?.handoff || 'No prepared handoff is available for the selected local activity.');
-    setText('handoff-meta', i ? `${i.id} · ${i.phase}${i.dispatchMode === 'simulated' ? ' · demo responder progression is simulated' : ''}\n${i.handoffGeneration ? stateLabel(i.handoffGeneration) : 'Provenance unavailable'} · Saved clinical revision ${selected.clinicalRevision || 'unavailable'}${selected.clinicalRevision && selected.clinicalRevision !== record()?.revision ? '\nThis saved handoff uses a different clinical snapshot from the currently displayed hospital record.' : ''}` : 'No incident selected.');
+    setText('handoff-meta', i ? `${i.id} · ${i.phase}${i.dispatchMode === 'simulated' ? ' · local dispatch' : ''}\n${i.handoffGeneration ? stateLabel(i.handoffGeneration) : 'Provenance unavailable'} · Saved clinical revision ${selected.clinicalRevision || 'unavailable'}${selected.clinicalRevision && selected.clinicalRevision !== record()?.revision ? '\nThis saved handoff uses a different clinical snapshot from the currently displayed hospital record.' : ''}` : 'No incident selected.');
     section('incident-evidence', JSON.stringify([i?.id, i?.evidence]), fragment => {
       const measurements = i?.evidence?.measurements;
-      if (!measurements) return empty(fragment, 'No captured fall measurements are available for this incident. Manual or synthetic triggers do not establish a measured fall.');
+      if (!measurements) return empty(fragment, 'No captured fall measurements are available for this incident. Manually started check-ins and help requests do not establish a measured fall.');
       const measured = (number, unit) => typeof number === 'number' && Number.isFinite(number) ? `${number} ${unit}` : 'Not captured; unknown';
       add(fragment, 'p', 'FREE-WILi chest acceleration + waist AirPod motion. Provisional incident evidence; not clinical vitals.');
       fragment.append(fields([['Detector', measurements.detector], ['Assessed at', date(measurements.assessedAt)],
@@ -374,32 +394,33 @@ function initializeEhr() {
         const article = add(fragment, 'article', '', 'ehr-care-message'); article.dataset.speaker = item.speaker; article.dataset.source = item.source;
         add(article, 'p', `${speaker} · ${date(item.at)}`, 'ehr-message-heading'); add(article, 'p', item.text, 'ehr-message-text');
         add(article, 'p', `${sourceLabel(item.source)} · ${stateLabel(item.delivery)}${item.generation ? ` · ${stateLabel(item.generation)}` : ''}`, 'ehr-message-meta');
-        if (item.recordContext) add(article, 'p', `Clinical reply: ${item.recordContext.subjectName || 'subject name unavailable'} (fictional; not personal EHR) · revision ${item.recordContext.revision || 'unavailable'} · cited source IDs ${item.recordContext.sourceRecordIds?.join(', ') || 'none'}${item.recordContext.truncated ? ' · source lines omitted' : ''}`, 'ehr-message-meta');
+        if (item.recordContext) add(article, 'p', `Clinical reply: ${item.recordContext.subjectName || 'subject name unavailable'} (FinchNode record; not personal EHR) · revision ${item.recordContext.revision || 'unavailable'} · cited source IDs ${item.recordContext.sourceRecordIds?.join(', ') || 'none'}${item.recordContext.truncated ? ' · source lines omitted' : ''}`, 'ehr-message-meta');
       };
       for (const item of daily) message(item, item.speaker === 'wearer' ? care.subject.name : 'LIFELINE');
       if (!i) return;
       add(fragment, 'h3', `${i.id} · local incident activity`);
-      add(fragment, 'p', `${i.phase} · ${i.ownerId ? `Accepted owner: ${selected.ownerName || 'name unavailable'}` : 'No responder has accepted ownership.'}${i.dispatchMode === 'simulated' ? ' · responder ownership, travel, arrival and outcome are simulated.' : ''}`);
-      add(fragment, 'p', `Evidence (${i.evidence?.kind || 'unknown'}): ${i.evidence?.summary || 'not returned'}. Possible-incident observations are not diagnoses.`);
+      add(fragment, 'p', `${i.phase} · ${i.ownerId ? `Accepted owner: ${selected.ownerName || 'name unavailable'}` : 'No responder has accepted ownership.'}${i.dispatchMode === 'simulated' ? ' · responder ownership, travel, arrival and outcome were recorded by local dispatch.' : ''}`);
+      add(fragment, 'p', `Evidence (${Object.hasOwn(evidenceKinds, i.evidence?.kind) ? evidenceKinds[i.evidence.kind] : i.evidence?.kind || 'unknown'}): ${i.evidence?.summary || 'not returned'}. Possible-incident observations are not diagnoses.`);
       if (i.outcome) add(fragment, 'p', `Recorded outcome: ${i.outcome}`);
-      for (const item of selected.conversation || []) message(item, item.source === 'simulated-dispatch' ? `Demo responder ${item.speakerName}` : item.speakerName);
+      for (const item of selected.conversation || []) message(item, item.source === 'simulated-dispatch' ? `Local responder ${item.speakerName}` : item.speakerName);
       const timeline = add(fragment, 'ol', '', 'ehr-timeline');
       for (const event of selected.timeline || []) {
-        const row = add(timeline, 'li', ''); add(row, 'strong', `${event.type} · ${date(event.at)}`); add(row, 'p', event.detail);
-        if (event.actor) add(row, 'p', `Recorded actor: ${event.actor}`, 'ehr-message-meta');
+        const presentation = careEventPresentation(event), row = add(timeline, 'li', '');
+        add(row, 'strong', `${presentation.title} · ${date(event.at)}`); add(row, 'p', presentation.detail);
+        if (presentation.actor) add(row, 'p', `Recorded source: ${presentation.actor}`, 'ehr-message-meta');
       }
     });
   }
   function renderSources() {
     const patient = record();
     section('source-meta', `${incidentId}:${patient?.revision}:${patient?.fetchedAt}`, fragment => {
-      add(fragment, 'p', payload?.sources?.hospital || 'FinchNode read-only synthetic demo; no personal EHR connection.');
+      add(fragment, 'p', payload?.sources?.hospital || 'FinchNode (read-only); no personal EHR connection.');
       add(fragment, 'p', payload?.sources?.observations || 'Local LIFELINE care activity is separate from hospital records.');
       if (!patient) return empty(fragment, 'No patient source snapshot is loaded.');
       fragment.append(fields([['Subject', patient.subject], ['Revision', patient.revision], ['Data as of', patient.dataAsOf], ['Local fetch', date(patient.fetchedAt)],
         ['Consent status', patient.consent?.status], ['Consent expiry', patient.consent?.expiresAt], ['Consent revoked', patient.consent?.revokedAt],
         ['Sync status', patient.sync?.status], ['Prepared', patient.sync?.preparedAt], ['Last successful sync', patient.sync?.lastSuccessfulSyncAt]]));
-      add(fragment, 'p', 'Consent, synchronization and category outcomes are simulated fixture metadata. They do not establish live permission, freshness or completeness.');
+      add(fragment, 'p', 'Consent, synchronization and category outcomes are as reported by FinchNode. They do not establish live permission, freshness or completeness.');
       for (const [category, state] of Object.entries(patient.categories || {})) add(fragment, 'p', `${category}: ${state.state} · ${state.recordIds?.length || 0} returned rows · ${state.detail}`);
       for (const warning of patient.warnings || []) add(fragment, 'p', `${warning.code}: ${warning.message}`, 'ehr-source-warning');
       for (const item of patient.sync?.sources || []) fragment.append(fields(Object.entries(item)));
@@ -508,6 +529,6 @@ function initializeEhr() {
   }).catch(() => {
     if (authEpoch !== initialEpoch) return;
     if ($('token-panel')) $('token-panel').hidden = false;
-    setText('connection', 'Pairing required'); setText('status', 'Enter the operator token to read this protected record.'); controls();
+    setConnection('Pairing required'); setText('status', 'Enter the operator token to read this protected record.'); controls();
   });
 }

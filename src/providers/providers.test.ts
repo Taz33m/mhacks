@@ -52,7 +52,7 @@ test('health uses only keyless synthetic fixture, retains IDs, and marks empty e
   assert.match(health.summary, /conditions: no records returned; absence is not established/);
   assert.match(health.summary, /2026-08-25/);
   const handoff = await providers.buildHandoff(incident, health);
-  assert.match(handoff, /Location not provided/);
+  assert.match(handoff, /Location and current vital signs not available/);
   assert.doesNotMatch(handoff, /ON IT|React 👍/);
   assert.match(handoff, /\[allergy-1\]/);
   assert.match(await providers.answerQuestion(incident, health, 'What allergies were recorded?'), /Fixture rash/);
@@ -140,7 +140,7 @@ test('AI composes an incident-grounded answer with selected source fields and un
   assert.match(answer, /Penicillin/);
   assert.doesNotMatch(answer, /Invented diagnosis/);
   assert.doesNotMatch(answer, /Example medication/);
-  assert.match(answer, /AI-composed answer/);
+  assert.match(answer, /Known source facts:/);
   assert.match(answer, /severity: not returned; unknown/);
   assert.doesNotMatch(answer, /Unavailable information|Location not provided|Current vital signs not provided|Responder ETA/);
   assert.match(providers.providerStatus().llm.detail, /AI answer generation verified/);
@@ -181,9 +181,9 @@ test('templates and missing input are degraded, while the text wrapper stays com
   const providers = createProviders({ env: {}, fetch: fetchStub(() => json(fixture)) });
   const health = await providers.loadHealth();
   for (const [question, expected] of [
-    [' ', /Please send a question/],
+    [' ', /Ask me about the incident or the health record/],
     ['What is the incident status?', /Incident A17: HELP_REQUESTED/],
-    ['What allergies were recorded?', /template fallback/],
+    ['What allergies were recorded?', /From the health record:/],
     ['What conditions were recorded?', /No supporting raw records/],
   ] as const) {
     const answer = await providers.answerQuestionDetailed(incident, health, question);
@@ -212,7 +212,7 @@ test('contextual should questions reach grounded AI answers with source IDs and 
   const health = await providers.loadHealth();
   for (const question of questions) {
     const answer = await providers.answerQuestion(incident, health, question);
-    assert.match(answer, /AI-composed answer/);
+    assert.match(answer, /Known source facts:/);
     assert.match(answer, /Penicillin; reaction: Fixture rash; status: active \[allergy-1\]/);
     assert.match(answer, /Chest impact and waist posture change/);
     assert.equal(answer.includes('Location not provided'), question === 'What should I know before I arrive?');
@@ -254,9 +254,9 @@ test('invented AI records or fields fall back visibly to actual records', async 
   });
   const answer = await providers.answerQuestionDetailed(incident, await providers.loadHealth(), 'What allergies are recorded?');
   assert.equal(answer.generation, 'degraded');
-  assert.match(answer.text, /template fallback/);
+  assert.match(answer.text, /From the health record:/);
   assert.doesNotMatch(answer.text, /invented-record/);
-  assert.match(providers.providerStatus().llm.detail, /AI demo requirement unmet/);
+  assert.match(providers.providerStatus().llm.detail, /template answers only/);
   }
 });
 
@@ -273,7 +273,7 @@ test('empty or wrong-category AI plans cannot omit existing requested records', 
     assert.equal(answer.generation, 'degraded');
     assert.match(answer.text, /Penicillin.*Fixture rash.*\[allergy-1\]/);
     assert.doesNotMatch(answer.text, /Example medication/);
-    assert.match(providers.providerStatus().llm.detail, /AI demo requirement unmet/);
+    assert.match(providers.providerStatus().llm.detail, /template answers only/);
   }
 });
 
@@ -286,10 +286,10 @@ test('handoffs omitting an available health category visibly degrade to complete
       }) } }] })),
     });
     const handoff = await providers.buildHandoff(incident, await providers.loadHealth());
-    assert.match(handoff, /source template fallback/);
+    assert.match(handoff, /Health context:/);
     assert.match(handoff, /\[med-1\]/);
     assert.match(handoff, /\[allergy-1\]/);
-    assert.match(providers.providerStatus().llm.detail, /AI demo requirement unmet/);
+    assert.match(providers.providerStatus().llm.detail, /template answers only/);
   }
 });
 
@@ -312,7 +312,7 @@ test('empty health selection remains valid for incident and unavailable-vitals q
     assert.match(answer.text, /Current vital signs not provided/);
   }
   const handoff = await providers.buildHandoff(incident, health);
-  assert.match(handoff, /source template fallback/);
+  assert.match(handoff, /Health context:/);
   assert.match(handoff, /\[allergy-1\]/);
 });
 
@@ -333,7 +333,7 @@ test('no returned health records produces a valid empty-array schema and preserv
   const answer = await providers.answerQuestionDetailed(incident, health, 'What allergies were recorded?');
   assert.equal(answer.generation, 'ai');
   assert.match(answer.text, /missing entries do not establish absence/);
-  assert.match(await providers.buildHandoff(incident, health), /AI-composed synthetic health handoff/);
+  assert.match(await providers.buildHandoff(incident, health), /Health context:/);
 });
 
 test('AI handoff uses physical incident context and produces source-cited facts with explicit unavailable information', async () => {
@@ -354,9 +354,9 @@ test('AI handoff uses physical incident context and produces source-cited facts 
     }),
   });
   const handoff = await providers.buildHandoff(incident, await providers.loadHealth());
-  assert.match(handoff, /AI-composed synthetic health handoff/);
+  assert.match(handoff, /Health context:/);
   assert.match(handoff, /Penicillin; reaction: Fixture rash; status: active \[allergy-1\]/);
-  assert.match(handoff, /Current vital signs not provided/);
+  assert.match(handoff, /Location and current vital signs not available/);
   assert.doesNotMatch(handoff, /source template fallback/);
   assert.match(providers.providerStatus().llm.detail, /AI handoff generation verified/);
 });

@@ -6,8 +6,90 @@ import type { BodyWiliView } from '../src/freewili.ts';
 // Pure presentation tests with generated snapshots only: no DOM, fetch,
 // runtime, hardware, clinical inference or provider transport is exercised.
 const moduleUrl = new URL('../public/dashboard-view.js', import.meta.url).href;
-const { activeIncident, dashboardPresentation, retainWiliReading } = await import(moduleUrl);
+const { activeIncident, dashboardPresentation, retainWiliReading, workspaceView, motionPresentation, conditionPresentation,
+  watchPreview, appendWiliTrace } = await import(moduleUrl);
 const at = 1_800_000_000_000;
+test('four clinical routes retain old links and reject unknown route keys', () => {
+  for (const view of ['motion', 'location', 'status', 'medical']) assert.equal(workspaceView(`#${view}`), view);
+  assert.equal(workspaceView('#overview'), 'status');
+  assert.equal(workspaceView('#care'), 'medical');
+  assert.equal(workspaceView('#dev'), 'developer');
+  for (const hash of ['', '#unknown', '#constructor', '#__proto__']) assert.equal(workspaceView(hash), 'motion');
+});
+
+test('a manual check-in never becomes a measured fall or injury severity', () => {
+  const state = snapshot({ incident: incident(), sensors: [waist({ calibrated: true, tiltDegrees: 70 })] });
+  const view = motionPresentation(state);
+  assert.equal(view.event, 'Patient check-in');
+  assert.equal(view.impact, 'Not recorded');
+  assert.equal(view.rotation, 'Not recorded');
+  assert.equal(view.quiet, 'Not recorded');
+  assert.equal(view.severity, 'Needs assessment');
+  assert.equal(view.tilt, '70° from baseline');
+  assert.equal(motionPresentation(state, false).tilt, 'Orientation unavailable');
+  state.sensors[0].fresh = false;
+  assert.equal(motionPresentation(state).tilt, 'Orientation unavailable');
+});
+
+test('cross-body assessment keeps frozen measurements distinct from current orientation and a saved outcome', () => {
+  const state = snapshot();
+  // Generated, partial presentation fixture: no actual hardware or diagnosis.
+  state.incident = incident('CONFIRMING', { evidence: { kind: 'cross-body', summary: 'Generated measurement fixture',
+    assessment: { detector: 'wili-waist-provisional-v1', impact: { totalG: 1.72 }, supportingWaist: { angularSpeed: 2.5 },
+      quietWaist: { durationMs: 2400 } } as Incident['evidence']['assessment'] } });
+  const view = motionPresentation(state);
+  assert.equal(view.event, 'Possible fall');
+  assert.equal(view.impact, '1.72 g');
+  assert.equal(view.rotation, '2.50 rad/s');
+  assert.equal(view.quiet, '2.4 s');
+  assert.equal(view.tilt, 'Orientation unavailable');
+  assert.equal(view.severity, 'Needs assessment');
+  state.incident.phase = 'RESOLVED';
+  assert.equal(motionPresentation(state).impact, 'Not recorded');
+  assert.equal(motionPresentation(state).event, 'Monitoring');
+});
+
+test('a voice reply is source-attributed and does not imply physiological measurements', () => {
+  const current = incident();
+  const state = snapshot({ incident: current, conversation: [{ id: 'generated-reply', incidentId: current.id,
+    speaker: 'wearer', speakerName: 'Generated wearer', text: 'I cannot stand', source: 'freewili-local-speech', at,
+    delivery: 'recorded' }] });
+  const condition = conditionPresentation(state);
+  assert.equal(condition.response, 'Reply recorded');
+  assert.equal(condition.speaking, 'Voice reply recorded');
+  assert.equal(condition.source, 'freewili-local-speech');
+  assert.equal(condition.at, at);
+  assert.equal(Object.hasOwn(condition, 'breathing'), false);
+  assert.equal(conditionPresentation(state, false).response, 'Last received state');
+  state.incident = incident('CONFIRMING', { id: 'LF-NEXT-GENERATED' });
+  assert.equal(conditionPresentation(state).response, 'Awaiting reply');
+  assert.equal(conditionPresentation(state).speaking, 'Not observed');
+});
+
+test('watch preview is explicitly non-live and does not mutate or populate incident state', () => {
+  const state = snapshot({ incident: incident() }), before = JSON.stringify(state);
+  conditionPresentation(state); motionPresentation(state);
+  assert.equal(watchPreview.live, false);
+  assert.equal(watchPreview.source, 'Sample watch observations');
+  assert.ok(Object.isFrozen(watchPreview));
+  assert.ok(watchPreview.conditions.every((item: object) => Object.isFrozen(item)));
+  assert.equal(JSON.stringify(state), before);
+  assert.equal(conditionPresentation(state).speaking, 'Not observed');
+});
+
+test('chest chart never duplicates retained samples or interpolates quiet gaps, and resets on a new session', () => {
+  const first = { sessionId: 'generated-A', totalG: 1.01, receivedAt: at };
+  const initial = appendWiliTrace({ sessionId: null, points: [] }, first, at);
+  const retained = appendWiliTrace(initial, first, at + 1000);
+  assert.equal(retained.points.length, 1);
+  const next = appendWiliTrace(retained, { ...first, receivedAt: at + 2000, totalG: 1.9 }, at + 2000);
+  assert.equal(next.points.length, 2);
+  assert.equal(next.points[1].at - next.points[0].at, 2000);
+  const reset = appendWiliTrace(next, { ...first, sessionId: 'generated-B', receivedAt: at + 3000 }, at + 3000);
+  assert.equal(reset.points.length, 1);
+  const expired = appendWiliTrace(reset, { ...first, sessionId: 'generated-B', receivedAt: at + 40000 }, at + 40000);
+  assert.equal(expired.points.length, 1);
+});
 function incident(phase: Phase = 'CONFIRMING', changes: Partial<Incident> = {}): Incident {
   return { id: 'LF-GENERATED-DASHBOARD', phase, version: 1, createdAt: at, updatedAt: at,
     dispatchMode: 'live', evidence: { kind: 'synthetic', summary: 'Generated presentation fixture; no measured fall.' },
@@ -46,7 +128,7 @@ test('terminal saved incidents leave a calm idle dashboard without changing reta
     assert.equal(activeIncident(input), null);
     const view = dashboardPresentation(input);
     assert.equal(view.statusLabel, 'No active incident');
-    assert.doesNotMatch(view.statusLabel + view.summary + view.nextStep, /rehearsal ended|development reset|wearer is safe|all clear/i);
+    assert.doesNotMatch(view.statusLabel + view.summary + view.nextStep, /rehearsal ended|development reset|patient is safe|all clear/i);
     assert.equal(JSON.stringify(input), before);
     assert.equal(input.incident!.outcome, saved.outcome);
     assert.equal(dashboardPresentation(snapshot()).statusLabel, 'No active incident');
@@ -98,10 +180,10 @@ test('assigned ownership distinguishes acceptance, departure and arrival without
 test('simulation labels follow the persisted incident mode rather than the current backend profile', () => {
   const demo = dashboardPresentation(snapshot({ incident: incident('ACKNOWLEDGED', { ownerId: 'maya', dispatchMode: 'simulated' }),
     dispatch: { mode: 'live', detail: 'Backend profile changed after incident opened.' } }));
-  assert.equal(demo.simulated, true); assert.match(demo.ownerDetail, /^Simulated responder\./);
+  assert.equal(demo.simulated, true); assert.match(demo.ownerDetail, /^Local responder\./);
   const live = dashboardPresentation(snapshot({ incident: incident('ACKNOWLEDGED', { ownerId: 'maya', dispatchMode: 'live' }),
     dispatch: { mode: 'simulated', detail: 'Backend profile changed after incident opened.' } }));
-  assert.equal(live.simulated, false); assert.doesNotMatch(live.ownerDetail, /^Simulated responder\./);
+  assert.equal(live.simulated, false); assert.doesNotMatch(live.ownerDetail, /^Local responder\./);
 });
 
 test('wearer reports preserve exact text, source, time and attribution and never use fictional clinical handoff as symptoms', () => {
@@ -149,7 +231,7 @@ test('identity uses the approved wearer and never the fictional clinical subject
   const unnamed = { ...named, wearer: undefined };
   assert.equal(dashboardPresentation(unnamed).wearerName, 'Recorded fixture wearer');
   const empty = dashboardPresentation(snapshot());
-  assert.equal(empty.wearerName, 'Wearer'); assert.doesNotMatch(empty.wearerName, /Liam|Fictional Patient/i);
+  assert.equal(empty.wearerName, 'Patient'); assert.doesNotMatch(empty.wearerName, /Liam|Fictional Patient/i);
 });
 
 test('sensing counts distinguish connections from actual fresh measured data and exclude the communication-only phone', () => {
@@ -173,7 +255,7 @@ test('offline cached incident status is explicitly last known and never turns in
   const before = JSON.stringify(input), view = dashboardPresentation(input, false);
   assert.equal(view.statusLabel, 'Last known: Help is on the way');
   assert.equal(dashboardPresentation(snapshot(), false).statusLabel, 'Connection interrupted');
-  assert.doesNotMatch(view.statusLabel + view.summary + view.nextStep, /wearer is safe|all clear|confirmed arrival/i);
+  assert.doesNotMatch(view.statusLabel + view.summary + view.nextStep, /patient is safe|all clear|confirmed arrival/i);
   assert.equal(JSON.stringify(input), before);
 });
 

@@ -33,7 +33,7 @@ test('restored clinical snapshot answers through templates and AI without proces
   }) as typeof fetch });
   const answer = await restarted.answerQuestionDetailed(incident, restored, 'What allergies were recorded?');
   assert.equal(answer.generation, 'ai'); assert.match(answer.text, /Historical fictional rash; status: active; recordedDate: 2021-03-15 \[allergy-1\]/);
-  assert.match(answer.text, new RegExp(restored.patientRecord.revision)); assert.equal(calls, 1);
+  assert.equal(calls, 1);
   const fallback = createProviders({ env: {}, fetch: (async () => { throw new Error('No new reads allowed'); }) as typeof fetch });
   const historical = await fallback.answerPatientQuestionDetailed(restored, 'What historical vitals were recorded?');
   assert.equal(historical.generation, 'degraded'); assert.match(historical.text, /Historical vitals.*date: 2026-07-18.*\[vital-1\]/);
@@ -65,7 +65,7 @@ test('record-only questions reject invented incident fields even without an empt
   const health = await provider.loadHealth();
   const answer = await provider.answerPatientQuestionDetailed(health, 'What allergies are recorded, and when were they documented?');
   assert.equal(answer.generation, 'degraded');
-  assert.match(answer.text, /Recorded source fields \(template fallback\)/);
+  assert.match(answer.text, /From the health record:/);
   assert.doesNotMatch(answer.text, /Observed evidence|Incident created/);
 });
 
@@ -81,5 +81,5 @@ test('each detailed handoff reports its actual AI or degraded provenance and ret
   const first = await provider.buildHandoffDetailed(incident, health), second = await provider.buildHandoffDetailed(incident, health);
   assert.equal(first.generation, 'ai'); assert.equal(second.generation, 'degraded');
   assert.equal(first.healthRevision, health.patientRecord!.revision); assert.equal(second.healthRevision, first.healthRevision);
-  assert.match(first.text, /\[allergy-1\]/); assert.match(second.text, /source template fallback/);
+  assert.match(first.text, /\[allergy-1\]/); assert.match(second.text, /Health context:/);
 });

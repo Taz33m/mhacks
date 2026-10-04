@@ -284,7 +284,7 @@ export class Wellbeing {
         snapshot: JSON.parse(String(row.body)) as PatientRecordSnapshot,
       }));
     return { schemaVersion: 1, kind: 'LIFELINE care journal', exportedAt: new Date(this.now()).toISOString(),
-      hospitalRecords: { source: 'FinchNode read-only synthetic demo; not the wearer’s personal EHR', snapshots },
+      hospitalRecords: { source: 'FinchNode (read-only)', snapshots },
       lifelineObservations: { source: 'LIFELINE local everyday conversation; not hospital EHR entries',
         conversationId: this.conversationId, historyWindow: 'Most recent 40 messages', messages,
         limitations: 'Messages are attributed reports. This journal does not diagnose, score mood, or write to hospital records.' },

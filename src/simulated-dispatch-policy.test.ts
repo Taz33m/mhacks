@@ -32,7 +32,7 @@ test('simulated ownership requires a locally delivered alert and cannot be manua
     assert.equal(c.conversation(i.id)[0]?.source, 'simulated-dispatch');
     assert.equal(c.events(i.id).find(e => e.type === 'ACKNOWLEDGED')?.actor, 'simulated-dispatch:demo-maya');
     assert.ok(c.actions(i.id).filter(a => a.recipientId === null && a.type !== 'checkin')
-      .every(a => a.text.startsWith('[DEMO · simulated dispatch]')));
+      .every(a => !a.text.includes('DEMO')));
   } finally { c.close(); }
 });
 

@@ -12,6 +12,14 @@ const confirmation = new Set([
   'i dont need help', 'i do not need help', 'false alarm', 'cancel this check in',
 ]);
 
+/** A current first-person report requests help; it does not establish a diagnosis. */
+export function reportsCurrentSeizure(transcript: string): boolean {
+  const command = transcript.toLowerCase().replace(/['’]/g, '').replace(/[.,!;:\-]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (/[?"“”‘]/.test(transcript) || /(?:^|\s)'[^']*'/.test(transcript)) return false;
+  if (/\b(?:said|says|say|saying|told|heard|quote|quoted|if|unless|whether|not|dont|never|no longer|but|however|yesterday|previously|earlier|ago|last|might|may|could|would|will|think|feel like|pretend|example)\b/.test(command)) return false;
+  return /^(?:help |please help |yes )?(?:im|i am) (?:having a seizure|seizing)(?: right now| now| please| help me| i need help)*$/.test(command);
+}
+
 export function classifyCheckinReply(transcript: string): CheckinDecision {
   const command = transcript.toLowerCase().replace(/['’]/g, '')
     .replace(/[.,!?;:\-]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -19,6 +27,7 @@ export function classifyCheckinReply(transcript: string): CheckinDecision {
   if (/[?"“”‘]/.test(transcript) || /(?:^|\s)'[^']*'/.test(transcript)) return 'unresolved';
   if (help.has(command)) return 'help_requested';
   if (confirmation.has(command)) return 'confirmation_required';
+  if (reportsCurrentSeizure(transcript)) return 'help_requested';
   const reportedOrConditional = /\b(?:said|says|say|saying|told|heard|quote|quoted|if|unless|whether)\b/.test(command)
     || /^(?:who|what|when|where|why|how|can|could|would|should|do|does|did)\b/.test(command);
   const conflicting = /\b(?:dont|do not|never|never mind|no longer|not|but|however)\b/.test(command);

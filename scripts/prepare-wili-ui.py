@@ -8,7 +8,9 @@ ROOT=pathlib.Path(__file__).resolve().parents[1]
 # Use the board runtime's Pillow for identical contact/preview pixels. Different
 # Pillow versions can rasterize the same font differently and change asset hashes.
 runtime=ROOT/'output/freewili-runtime/bin/python'
-if runtime.is_file() and pathlib.Path(sys.executable).resolve()!=runtime.resolve():
+# A virtual environment's Python can symlink to the same binary as the host.
+# Compare the environment rather than resolving those executable symlinks.
+if runtime.is_file() and pathlib.Path(sys.prefix).resolve()!=runtime.parent.parent.resolve():
  os.execv(str(runtime),[str(runtime),str(pathlib.Path(__file__).resolve()),*sys.argv[1:]])
 from PIL import Image,ImageDraw
 spec=importlib.util.spec_from_file_location('ambient_ui',ROOT/'native/freewili/ambient_ui.py')

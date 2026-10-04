@@ -15,7 +15,7 @@ export interface CareReplyOptions {
 }
 const MAX_REPLY = 6000;
 const OMITTED = 'Additional source lines omitted to fit this message. Ask about one category for more detail.';
-const UNAVAILABLE = 'Finch demo record unavailable. Your personal medical record is not connected.';
+const UNAVAILABLE = 'Your health record is unavailable right now.';
 const FAILED_ANSWER = 'I could not prepare a source-verified record answer. Please ask again about the recorded fields.';
 const forbiddenControls = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
 
@@ -100,7 +100,7 @@ export function createCareReply(options: CareReplyOptions = {}) {
     const recordContext = context(patientRecord, latest, patientRecord.fetchedAt);
     if (!health.available || !['available', 'partial'].includes(patientRecord.status))
       return { text: UNAVAILABLE, generation: 'degraded', recordContext: context(null, latest, null) };
-    const prefix = `Finch demo record — ${recordContext.subjectName ?? 'subject name unavailable'} (fictional; not your personal record).`;
+    const prefix = 'From your health record:';
     const failed = (): CareReply => ({ text: `${prefix}\n${FAILED_ANSWER}`, generation: 'degraded', recordContext, patientRecord });
     try {
       const answer = await patientAnswer(health, latest.text);
@@ -111,7 +111,7 @@ export function createCareReply(options: CareReplyOptions = {}) {
       // An ID merely mentioned as ordinary text or a name is not a citation.
       const citations = [...answer.text.matchAll(/\[([^\]\r\n]*)\]/g)].map(match => match[1]);
       if (citations.some(id => !knownIds.has(id))) return failed();
-      const bounded = boundLines(prefix, answer.text);
+      const bounded = boundLines(prefix, answer.text.replace(/^From the health record:\n/, ''));
       recordContext.truncated = bounded.truncated;
       const retainedCitations = new Set(bounded.text.split(/\r?\n/).slice(1).flatMap(line => {
         const match = line.match(/\[([^\]\r\n]*)\]\s*$/); return match ? [match[1]] : [];

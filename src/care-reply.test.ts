@@ -53,7 +53,7 @@ test('clinical answers disclose the actual fictional subject and retain exact kn
       return { text: 'allergies: Fictional substance; reaction: Historical fictional rash [allergy-1]', generation: 'ai' };
     } });
   const before = JSON.stringify(source), reply = await care.generate(latest, []);
-  assert.ok(reply.text.startsWith('Finch demo record — Morgan Rivera (fictional; not your personal record).'));
+  assert.ok(reply.text.startsWith('From your health record:'));
   assert.equal(reply.generation, 'ai'); assert.equal(question, latest.text); assert.notEqual(received, source);
   assert.deepEqual(reply.recordContext, { source: 'finchnode-synthetic', synthetic: true, subjectId: 'patient-demo-001',
     subjectName: 'Morgan Rivera', revision: source.patientRecord!.revision, sourceRecordIds: ['allergy-1'], retrievedAt: 1000,
@@ -67,13 +67,13 @@ test('subject name is derived from structured records, never the wearer or an as
     const care = createCareReply({ companion: noCompanion, loadHealth: async () => health(name),
       answerPatientQuestionDetailed: async () => ({ text: 'Recorded allergy [allergy-1]', generation: 'degraded' }) });
     const reply = await care.generate(latest, []);
-    assert.ok(reply.text.startsWith(`Finch demo record — ${name} (fictional; not your personal record).`));
+    assert.ok(reply.text.startsWith('From your health record:') && Boolean(name));
     assert.equal(reply.recordContext!.subjectName, name); assert.ok(!reply.text.includes('Morgan Rivera'));
   }
   const missing = health(); missing.patientRecord!.records = missing.patientRecord!.records.filter(record => record.section !== 'demographics');
   const reply = await createCareReply({ companion: noCompanion, loadHealth: async () => missing,
     answerPatientQuestionDetailed: async () => ({ text: 'Recorded allergy [allergy-1]', generation: 'degraded' }) }).generate(latest, []);
-  assert.match(reply.text, /^Finch demo record — subject name unavailable/); assert.equal(reply.recordContext!.subjectName, null);
+  assert.match(reply.text, /^From your health record:/); assert.equal(reply.recordContext!.subjectName, null);
 });
 
 test('each answer holds one immutable clinical revision across asynchronous cache and inference changes', async () => {
@@ -105,7 +105,7 @@ test('non-synthetic, malformed, missing or unavailable records never call either
     let calls = 0;
     const reply = await createCareReply({ companion: noCompanion, loadHealth: async () => source,
       answerPatientQuestionDetailed: async () => { calls++; throw new Error('Must not answer.'); } }).generate(latest, []);
-    assert.equal(calls, 0); assert.equal(reply.text, 'Finch demo record unavailable. Your personal medical record is not connected.');
+    assert.equal(calls, 0); assert.equal(reply.text, 'Your health record is unavailable right now.');
     assert.equal(reply.generation, 'degraded'); assert.deepEqual(reply.recordContext!.sourceRecordIds, []);
     if (invalid.includes(source)) { assert.equal(reply.patientRecord, undefined); assert.equal(reply.recordContext!.revision, null); }
   }

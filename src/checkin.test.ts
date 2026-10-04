@@ -1,6 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyCheckinReply } from './checkin.ts';
+import { classifyCheckinReply, reportsCurrentSeizure } from './checkin.ts';
+
+test('current first-person seizure reports request help, without interpreting history or quoted speech', () => {
+  for (const reply of ["I'm having a seizure", 'I am having a seizure right now!', 'I’m seizing', 'Please help I am having a seizure']) {
+    assert.equal(reportsCurrentSeizure(reply), true, reply);
+    assert.equal(classifyCheckinReply(reply), 'help_requested', reply);
+  }
+  for (const reply of ["I'm not having a seizure", 'I had a seizure yesterday', 'He is having a seizure',
+    'If I am having a seizure call Maya', 'Am I having a seizure?', 'The TV said I am having a seizure',
+    '“I am having a seizure”', 'I think I might be having a seizure', 'I am having a seizure but never mind']) {
+    assert.equal(reportsCurrentSeizure(reply), false, reply);
+    assert.equal(classifyCheckinReply(reply), 'unresolved', reply);
+  }
+});
 import { Controller } from './controller.ts';
 import type { CheckinReply } from './contracts.ts';
 

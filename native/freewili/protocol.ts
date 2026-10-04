@@ -9,7 +9,7 @@ export interface WiliHello {
   capabilities: { accelerometer: true; speaker: boolean; microphone: boolean; buttons: boolean };
 }
 export interface WiliButton {
-  type: 'button.press'; source: 'body-wili'; sessionId: string; eventId: string; action: 'help' | 'cancel';
+  type: 'button.press'; source: 'body-wili'; sessionId: string; eventId: string; action: 'help' | 'cancel' | 'rehearse';
   incidentId: string | null; checkinId: string | null;
 }
 export interface WiliAudioAck {
@@ -24,7 +24,8 @@ export interface WiliIncidentContext {
   type: 'incident.context'; sessionId: string; incidentId: string | null; checkinId: string | null;
   phase: string | null; checkinDeadline: number | null; serverTime: number;
   ownerName?: string | null; statusText?: string;
-  voiceAsset?: 'CHECKIN' | 'HELP' | 'ACCEPTED' | 'ENROUTE' | 'ARRIVED' | 'RESOLVED' | 'OKAY' | null;
+  dispatchMode?: 'live' | 'simulated';
+  voiceAsset?: 'CHECKIN' | 'MOVEMENT' | 'HELP' | 'ACCEPTED' | 'ENROUTE' | 'ARRIVED' | 'RESOLVED' | 'OKAY' | null;
 }
 export interface WiliSpeechReply {
   type: 'checkin.reply'; source: 'body-wili'; sessionId: string; eventId: string;
@@ -111,9 +112,10 @@ export function validDevicePacket(p: unknown): p is WiliDevicePacket {
     && ['prompting', 'listening', 'transcribing', 'complete', 'unavailable'].includes(p.stage);
   if (p.type === 'button.press') {
     return keys(p, ['type', 'source', 'sessionId', 'eventId', 'action', 'incidentId', 'checkinId'])
-      && wiliId(p.eventId) && typeof p.action === 'string' && ['help', 'cancel'].includes(p.action)
+      && wiliId(p.eventId) && typeof p.action === 'string' && ['help', 'cancel', 'rehearse'].includes(p.action)
       && nullableId(p.incidentId) && nullableId(p.checkinId) && (p.incidentId === null) === (p.checkinId === null)
-      && (p.action !== 'cancel' || (wiliId(p.incidentId) && wiliId(p.checkinId)));
+      && (p.action !== 'cancel' || (wiliId(p.incidentId) && wiliId(p.checkinId)))
+      && (p.action !== 'rehearse' || (p.incidentId === null && p.checkinId === null));
   }
   if (p.type === 'audio.ack') {
     return keys(p, ['type', 'source', 'sessionId', 'eventId', 'commandId', 'incidentId', 'checkinId', 'status'])
@@ -132,11 +134,12 @@ export function validHostPacket(p: unknown): p is WiliHostPacket {
     && wiliId(p.conversationId) && typeof p.enabled === 'boolean' && typeof p.statusText === 'string'
     && p.statusText.length <= 300 && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(p.statusText);
   if (p.type === 'incident.context') {
-    return keys(p, ['type', 'sessionId', 'incidentId', 'checkinId', 'phase', 'checkinDeadline', 'serverTime', 'ownerName', 'statusText', 'voiceAsset'])
+    return keys(p, ['type', 'sessionId', 'incidentId', 'checkinId', 'phase', 'checkinDeadline', 'serverTime', 'ownerName', 'statusText', 'voiceAsset', 'dispatchMode'])
       && nullableId(p.incidentId) && nullableId(p.checkinId) && (p.incidentId === null) === (p.checkinId === null)
       && phase(p.phase) && (p.incidentId === null) === (p.phase === null)
       && (p.checkinDeadline === null || finite(p.checkinDeadline)) && finite(p.serverTime)
       && (p.ownerName === undefined || p.ownerName === null || (typeof p.ownerName === 'string' && p.ownerName.length <= 100))
+      && (p.dispatchMode === undefined || p.dispatchMode === 'live' || p.dispatchMode === 'simulated')
       && (p.statusText === undefined || (typeof p.statusText === 'string' && p.statusText.length <= 300))
       && (p.voiceAsset === undefined || p.voiceAsset === null || ['CHECKIN', 'HELP', 'ACCEPTED', 'ENROUTE', 'ARRIVED', 'RESOLVED', 'OKAY'].includes(p.voiceAsset as string));
   }

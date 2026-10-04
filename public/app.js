@@ -1,20 +1,19 @@
-import { activeIncident, dashboardPresentation, retainWiliReading } from './dashboard-view.js';
+import { activeIncident, dashboardPresentation, retainWiliReading, workspaceView, motionPresentation, conditionPresentation, watchPreview, appendWiliTrace } from './dashboard-view.js';
 import { careHighlights } from './care-summary.js';
 
 (() => {
   'use strict';
   const $ = (selector, scope = document) => scope.querySelector(selector);
   const workspaceLinks = [...document.querySelectorAll('.rail-link')];
-  const viewNames = { overview: 'Overview', conversation: 'Conversation', motion: 'Motion', care: 'Care context', activity: 'Audit trail', connections: 'Connections', developer: 'Developer tools' };
-  const viewIntros = { overview: 'What happened. What we know. Who is helping.', conversation: 'Private conversations, connected by one incident.',
-    motion: 'The captured signals behind a possible incident.', care: 'A short care brief, with the complete record one click away.',
-    activity: 'Recorded events, message attempts, and outcomes.', connections: 'Hardware and services, with diagnostics on demand.', developer: 'Isolated controls for setup and rehearsal.' };
-  const oldViews = { 'incident-title': 'overview', 'conversation-title': 'conversation', 'signals-heading': 'motion', 'patient-title': 'care', 'timeline-title': 'activity', 'readiness-title': 'connections', calibration: 'motion' };
-  let developerEnabled = location.hash === '#developer';
+  const viewNames = { motion: 'Motion', location: 'Location', status: 'Status', medical: 'Medical', conversation: 'Conversation', activity: 'Audit trail', connections: 'Connections', developer: 'Controls' };
+  const viewIntros = { status: 'Their current condition. Their own words. Who is helping.', location: 'Shared position, room context and the way to reach them.', conversation: 'Private conversations, connected by one incident.',
+    motion: 'Impact, movement and the signals behind an incident.', medical: 'Medications, conditions, allergies and the context that matters.',
+    activity: 'Recorded events, message attempts, and outcomes.', connections: 'Hardware and services, with diagnostics on demand.', developer: 'Start. Speak. LIFELINE takes it from there.' };
+  let developerEnabled = ['#developer', '#dev'].includes(location.hash);
   const updateWorkspaceNavigation = () => {
-    const requested = location.hash.slice(1);
-    const view = Object.hasOwn(viewNames, requested) ? requested : oldViews[requested] || 'overview';
-    const selectedView = view === 'developer' && !developerEnabled ? 'overview' : view;
+    const requested = workspaceView(location.hash);
+    if (requested === 'developer') developerEnabled = true;
+    const selectedView = requested === 'developer' && !developerEnabled ? 'motion' : requested;
     const selected = workspaceLinks.find(link => link.dataset.workspaceLink === selectedView) ?? workspaceLinks[0];
     for (const panel of document.querySelectorAll('[data-workspace-view]')) panel.hidden = panel.dataset.workspaceView !== selectedView;
     for (const link of workspaceLinks) {
@@ -27,6 +26,7 @@ import { careHighlights } from './care-summary.js';
     if ($('#workspace-title')) $('#workspace-title').textContent = viewNames[selectedView];
     if ($('#workspace-intro')) $('#workspace-intro').textContent = viewIntros[selectedView];
     if ($('#developer-link')) $('#developer-link').hidden = !developerEnabled;
+    if (['conversation', 'activity', 'connections', 'developer'].includes(selectedView)) $('.rail-tools').open = true;
     if ($('#developer-toggle')) { $('#developer-toggle').setAttribute('aria-pressed', String(developerEnabled)); $('#developer-toggle').textContent = developerEnabled ? 'Hide developer tools' : 'Developer tools'; }
     document.body.dataset.activeView = selectedView;
   };
@@ -42,7 +42,7 @@ import { careHighlights } from './care-summary.js';
     queued: ['Queued', ''], attempting: ['Sending', 'warning'],
     provider_accepted: ['Provider accepted', 'good'], failed: ['Failed', 'bad'],
     unknown: ['Outcome unknown', 'warning'], cancelled: ['Cancelled', ''],
-    simulated: ['Simulated delivery', 'warning'],
+    simulated: ['Local delivery', 'warning'],
   };
   const generationLabels = {
     ai: ['AI GENERATED', 'good'], degraded: ['DEGRADED TEMPLATE', 'warning'],
@@ -50,6 +50,7 @@ import { careHighlights } from './care-summary.js';
   };
   const generationFor = (value) => typeof value === 'string' && Object.hasOwn(generationLabels, value) ? generationLabels[value] : ['PROVENANCE UNAVAILABLE', ''];
   let snapshot = null;
+  const apartmentUI = { started: false, ready: false };
   let token = '';
   let busy = false;
   let online = false;
@@ -67,6 +68,7 @@ import { careHighlights } from './care-summary.js';
   let wellbeingBusy = false;
   let wellbeingBriefBusy = false;
   let wiliDisplaySample = null;
+  let wiliTrace = { sessionId: null, points: [] };
   let locationInviteBusy = false;
   let contextRequest = null;
   let contextPreview = null;
@@ -91,10 +93,11 @@ import { careHighlights } from './care-summary.js';
   };
   const simulatedActor = (id) => typeof id === 'string' && (id === 'simulated-dispatch' || id.startsWith('simulated-dispatch:'));
   const nameFor = (id) => {
-    if (id === 'simulated-dispatch') return 'Simulated dispatch';
+    if (id === 'simulated-dispatch') return 'Local dispatch';
+    if (id === 'development-operator') return 'Operator';
     if (typeof id === 'string' && id.startsWith('simulated-dispatch:')) {
       const responderId = id.slice('simulated-dispatch:'.length);
-      return `${snapshot?.responders.find(person => person.id === responderId)?.name ?? 'Demo responder'} · simulated dispatch`;
+      return snapshot?.responders.find(person => person.id === responderId)?.name ?? 'Local responder';
     }
     return snapshot?.responders.find((person) => person.id === id)?.name ?? id ?? 'Unassigned';
   };
@@ -160,11 +163,11 @@ import { careHighlights } from './care-summary.js';
     $('#policy-banner').hidden = !available;
     if (!available) return;
     const seconds = (value) => `${Number((value / 1000).toFixed(3))} s`;
-    text('#policy-mode', policy.demoMode ? 'ACCELERATED DEMO' : 'CONFIGURED POLICY');
+    text('#policy-mode', policy.demoMode ? 'ACCELERATED TIMING' : 'CONFIGURED POLICY');
     $('#policy-mode').className = `badge ${policy.demoMode ? 'warning' : ''}`;
     text('#policy-detail', policy.demoMode
-      ? `Demo timeout accelerated from configurable policy value: ${seconds(policy.checkinMs)} for new check-ins vs ${seconds(policy.configuredCheckinMs)} configured. Existing incident deadlines are preserved.`
-      : `New check-ins use the configured ${seconds(policy.checkinMs)} timeout. Accelerated demo mode is off.`);
+      ? `Check-in timeout accelerated from configurable policy value: ${seconds(policy.checkinMs)} for new check-ins vs ${seconds(policy.configuredCheckinMs)} configured. Existing incident deadlines are preserved.`
+      : `New check-ins use the configured ${seconds(policy.checkinMs)} timeout.`);
   }
 
   function renderDispatch() {
@@ -173,11 +176,135 @@ import { careHighlights } from './care-summary.js';
     $('#dispatch-banner').hidden = !available;
     if (!available) return;
     const simulated = dispatch.mode === 'simulated';
-    text('#dispatch-mode', simulated ? 'SIMULATED DISPATCH' : 'LIVE RESPONDER DISPATCH');
+    text('#dispatch-mode', simulated ? 'LOCAL DISPATCH' : 'LIVE RESPONDER DISPATCH');
     $('#dispatch-mode').className = `badge ${simulated ? 'warning' : ''}`;
     text('#dispatch-detail', typeof dispatch.detail === 'string' ? dispatch.detail : 'Dispatch detail unavailable.');
-    text('#dispatch-scope', simulated ? 'Responder progression runs locally for the demo. Wearer iMessage and motion sources keep their actual connection status.' : 'Responder messages use the configured delivery connection.');
+    text('#dispatch-scope', simulated ? 'Responder progression runs locally. Patient iMessage and motion sources keep their actual connection status.' : 'Responder messages use the configured delivery connection.');
   }
+
+  async function loadApartment() {
+    if (apartmentUI.started || !$('#apartment-stage')) return;
+    apartmentUI.started = true;
+    const stage = $('#apartment-stage');
+    let renderer;
+    try {
+      const THREE = await import('/vendor/location-engine.js');
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFShadowMap;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.15;
+      renderer.domElement.setAttribute('aria-hidden', 'true');
+      stage.prepend(renderer.domElement);
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(42, 1, .05, 150);
+      const controls = new THREE.OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = .08;
+      controls.screenSpacePanning = true;
+      controls.minPolarAngle = .02;
+      controls.maxPolarAngle = Math.PI * .48;
+      const ambient = new THREE.HemisphereLight('#f5f8ff', '#b9ac94', 2.2);
+      scene.add(ambient);
+      const sun = new THREE.DirectionalLight('#fff3df', 3);
+      sun.castShadow = true;
+      sun.shadow.mapSize.set(2048, 2048);
+      sun.shadow.bias = -.0004;
+      sun.shadow.normalBias = .02;
+      scene.add(sun, sun.target);
+      const model = (await new THREE.GLTFLoader().loadAsync('/media/location/apartment-111.glb')).scene;
+      scene.add(model); model.updateMatrixWorld(true);
+      let person = null;
+      model.traverse(node => {
+        if (node.userData.name === 'Person | 6 ft 3 in | lying on kitchen floor') person = node;
+      });
+      if (!person) throw new Error('Supplied person is missing from the apartment export');
+      model.traverse(node => {
+        if (!node.isMesh) return;
+        node.castShadow = true; node.receiveShadow = true;
+      });
+      const bounds = new THREE.Box3().setFromObject(model);
+      const center = bounds.getCenter(new THREE.Vector3());
+      const size = bounds.getSize(new THREE.Vector3());
+      const span = Math.max(size.x, size.z);
+      const personBounds = new THREE.Box3().setFromObject(person);
+      const personCenter = personBounds.getCenter(new THREE.Vector3());
+      const target = new THREE.Vector3(center.x, .35, center.z);
+      const personTarget = new THREE.Vector3(personCenter.x, personCenter.y, personCenter.z);
+      sun.position.copy(target).add(new THREE.Vector3(span * .7, span * 1.4, span * .5));
+      sun.target.position.copy(target);
+      Object.assign(sun.shadow.camera, { left: -span, right: span, top: span, bottom: -span, near: .1, far: span * 6 });
+      sun.shadow.camera.updateProjectionMatrix();
+      controls.minDistance = 1.4; controls.maxDistance = span * 4;
+
+      // The anchor is read from the person in the supplied scene, never from phone GPS.
+      const pulse = new THREE.Group();
+      pulse.position.set(personCenter.x, personBounds.min.y + .025, personCenter.z);
+      scene.add(pulse);
+      const rings = Array.from({ length: 3 }, () => {
+        const ring = new THREE.Mesh(new THREE.RingGeometry(.93, 1, 96),
+          new THREE.MeshBasicMaterial({ color: '#258bff', transparent: true, opacity: .5, depthWrite: false, side: THREE.DoubleSide }));
+        ring.rotation.x = -Math.PI / 2; pulse.add(ring); return ring;
+      });
+      const glow = new THREE.Mesh(new THREE.CircleGeometry(.75, 80),
+        new THREE.MeshBasicMaterial({ color: '#2f94ff', transparent: true, opacity: .11, depthWrite: false, side: THREE.DoubleSide }));
+      glow.rotation.x = -Math.PI / 2; pulse.add(glow);
+      const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+      let selectedView = 'apartment', fittedWidth = 0;
+      const frame = view => {
+        selectedView = view;
+        // Consume any pending drag inertia before switching to a deterministic camera preset.
+        controls.enableDamping = false; controls.update();
+        const subject = view === 'person' ? personTarget : target;
+        const topDistance = Math.max(size.z, size.x / camera.aspect) / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) * 1.2 + size.y / 2;
+        const distance = view === 'person' ? 5 : view === 'top' ? topDistance : span * Math.max(1.3, 1.3 / camera.aspect);
+        const offset = view === 'top' ? new THREE.Vector3(0, 1, .0001) : view === 'person'
+          ? new THREE.Vector3(0, 1.4, 1) : new THREE.Vector3(-.8, 1.3, 1.3);
+        camera.position.copy(subject).add(offset.normalize().multiplyScalar(distance));
+        controls.target.copy(subject); controls.update();
+        controls.enableDamping = true;
+        for (const button of stage.querySelectorAll('[data-apartment-view]')) button.setAttribute('aria-pressed', String(button.dataset.apartmentView === view));
+      };
+      const resize = () => {
+        if (!stage.clientWidth || !stage.clientHeight) return;
+        renderer.setSize(stage.clientWidth, stage.clientHeight);
+        camera.aspect = stage.clientWidth / stage.clientHeight;
+        camera.updateProjectionMatrix();
+        if (!fittedWidth || Math.abs(fittedWidth - stage.clientWidth) > 50) { fittedWidth = stage.clientWidth; frame(selectedView); }
+      };
+      new ResizeObserver(resize).observe(stage);
+      resize(); frame('apartment');
+      for (const button of stage.querySelectorAll('[data-apartment-view]')) {
+        button.addEventListener('click', () => frame(button.dataset.apartmentView)); button.disabled = false;
+      }
+      $('#apartment-load').hidden = true;
+      apartmentUI.ready = true;
+      renderer.setAnimationLoop(now => {
+        if (document.hidden || $('#location').hidden || !stage.clientWidth) return;
+        for (const [index, ring] of rings.entries()) {
+          const progress = reducedMotion.matches ? index / 3 : (now / 2600 + index / 3) % 1;
+          ring.scale.setScalar(.45 + progress * 1.9);
+          ring.material.opacity = .55 * (1 - progress) ** 1.5;
+        }
+        controls.update(); renderer.render(scene, camera);
+      });
+      renderer.domElement.addEventListener('webglcontextlost', event => {
+        event.preventDefault(); renderer.setAnimationLoop(null); apartmentUI.ready = false;
+        $('#apartment-load').hidden = false;
+        text('#apartment-load', '3D view paused. Reload to restore the apartment.');
+      });
+    } catch {
+      renderer?.dispose();
+      $('#apartment-load').hidden = false;
+      text('#apartment-load', 'The apartment could not load. Reload to try again.');
+      apartmentUI.started = false;
+    }
+  }
+
+  if ($('#apartment-stage')) new IntersectionObserver(entries => {
+    if (entries.some(entry => entry.isIntersecting)) void loadApartment();
+  }).observe($('#apartment-stage'));
 
   function renderSensor(sensor) {
     const card = document.getElementById(sensor.source);
@@ -192,6 +319,12 @@ import { careHighlights } from './care-summary.js';
     text('.sensor-calibration', sensor.calibrated ? 'Calibrated' : 'Optional; tilt unknown', card);
     text('.sensor-alignment', finite(sensor.alignmentUncertaintyMs) ? `${Math.round(sensor.alignmentUncertaintyMs)} ms` : 'Unknown', card);
     text('.sensor-hz', finite(sensor.sampleHz) && sensor.sampleHz > 0 ? `${sensor.sampleHz.toFixed(1)} Hz` : '—', card);
+    if (sensor.source === 'waist-airpod') {
+      const angular = sensor.trace?.at(-1)?.angularSpeed;
+      text('.waist-angular', online && sensor.fresh && finite(angular) ? `${angular.toFixed(2)} rad/s` : 'Not recorded', card);
+      text('.waist-quaternion', online && sensor.fresh && Array.isArray(sensor.quaternion) && sensor.quaternion.length === 4 && sensor.quaternion.every(finite)
+        ? sensor.quaternion.map(value => value.toFixed(3)).join(' / ') : 'Not recorded', card);
+    }
     text('.sensor-identity', `Source: ${sensor.source}${sensor.sensorLocation ? ` · ${sensor.sensorLocation}` : ''} · ${sensor.sessionId ? `Session ${sensor.sessionId.slice(0, 8)}` : 'No session'}`, card);
     drawChart(card, sensor.trace || []);
   }
@@ -203,6 +336,9 @@ import { careHighlights } from './care-summary.js';
     const receiptAge = finite(wili?.receivedAgeMs) && wili.receivedAgeMs >= 0 ? wili.receivedAgeMs + elapsed : null;
     // The last reading is presentation memory; acquisition and detector gates use the server state.
     wiliDisplaySample = retainWiliReading(wili, wiliDisplaySample, { now: at, elapsed, online });
+    if (wili?.sessionId && wiliTrace.sessionId !== wili.sessionId) wiliTrace = { sessionId: wili.sessionId, points: [] };
+    wiliTrace = appendWiliTrace(wiliTrace, wiliDisplaySample, at);
+    drawChart($('#body-wili'), wiliTrace.points);
     const quiet = wiliDisplaySample && Math.abs(wiliDisplaySample.totalG - 1) < .15;
     const displayAge = wiliDisplaySample ? Math.max(0, at - wiliDisplaySample.receivedAt) : null;
     const status = !wiliDisplaySample || quiet || !online || !wili?.connected ? 'Idle' : 'Motion';
@@ -473,11 +609,11 @@ import { careHighlights } from './care-summary.js';
     const active = snapshot.incident && !terminal(snapshot.incident);
     const simulated = active ? simulatedIncident() : snapshot.dispatch?.mode === 'simulated';
     if (!snapshot.providers?.photon?.configured) next.push('configure Photon messaging credentials');
-    else if (snapshot.providers.photon.detail?.includes('Target not allowed for this project')) next.push('register the approved demo phones in Photon project Users');
-    if (!snapshot.wearerMessaging?.configured) next.push('configure the approved wearer phone for iMessage');
+    else if (snapshot.providers.photon.detail?.includes('Target not allowed for this project')) next.push('register the approved phones in Photon project Users');
+    if (!snapshot.wearerMessaging?.configured) next.push('configure the approved patient phone for iMessage');
     if (simulated ? !snapshot.responders.some(person => person.simulated === true)
       : !snapshot.responders.some(person => typeof person.phone === 'string' && person.phone.trim() && person.simulated !== true))
-      next.push(simulated ? 'configure the demo responder for simulated dispatch' : 'add at least one approved responder phone for live alerts');
+      next.push(simulated ? 'configure a local responder' : 'add at least one approved responder phone for live alerts');
     const waist = snapshot.sensors.find(sensor => sensor.source === 'waist-airpod');
     if (!waist?.connected) next.push('connect the waist AirPod and start motion in the Mac bridge');
     else if (!waist.fresh) next.push('restore fresh waist measurements');
@@ -491,7 +627,7 @@ import { careHighlights } from './care-summary.js';
       ? 'WILi is connected; waiting for its next acceleration report. Stock reporting is sparse at rest'
       : 'restore usable FREE-WILi measurements');
     panel.hidden = !next.length;
-    text('#demo-next-step', next.length ? `Next for ${simulated ? 'the demo with simulated dispatch' : 'the live demo'}: ${next.join('; ')}. Local record questions and labelled console simulations remain available.` : '');
+    text('#demo-next-step', next.length ? `Next for ${simulated ? 'local dispatch' : 'live dispatch'}: ${next.join('; ')}. Local record questions and console controls remain available.` : '');
   }
 
   function drawChart(card, rawTrace) {
@@ -506,6 +642,7 @@ import { careHighlights } from './care-summary.js';
     if (!trace.length) {
       $('.chart-accel', card).setAttribute('d', '');
       $('.chart-tilt', card).setAttribute('d', '');
+      $('.chart-points', card)?.replaceChildren();
       text('.chart-range', 'No history', card);
       return;
     }
@@ -525,11 +662,16 @@ import { careHighlights } from './care-summary.js';
     };
     $('.chart-accel', card).setAttribute('d', path('totalG', maxG));
     $('.chart-tilt', card).setAttribute('d', path('tiltDegrees', 180));
-    text('.chart-range', `${(windowMs / 1000).toFixed(0)} s · tilt 0–180°`, card);
+    text('.chart-range', `${(windowMs / 1000).toFixed(0)} s${card.id === 'body-wili' ? ' · received measurements' : ' · tilt 0–180°'}`, card);
+    const points = $('.chart-points', card);
+    if (points) points.innerHTML = trace.map(point => `<circle cx="${(left + (point.at - startAt) / windowMs * (right - left)).toFixed(1)}" cy="${(bottom - Math.max(0, Math.min(maxG, point.totalG)) / maxG * (bottom - top)).toFixed(1)}" r="1.8"/>`).join('');
   }
 
-  const reportSource = source => ({ 'freewili-local-speech': 'WILi voice', 'ios-on-device-speech': 'Phone voice',
-    'photon-imessage': 'iMessage', 'simulated-dispatch': 'Simulated responder' }[source] || 'Recorded report');
+  const reportSource = (source, service) => {
+    if (source === 'photon-imessage') return ['iMessage', 'SMS', 'RCS'].includes(service) ? `Photon ${service}` : 'Photon message';
+    const names = { 'freewili-local-speech': 'WILi voice', 'ios-on-device-speech': 'Legacy phone voice', 'simulated-dispatch': 'Local responder' };
+    return typeof source === 'string' && Object.hasOwn(names, source) ? names[source] : 'Recorded report';
+  };
 
   function incidentMessages(incident) {
     if (!incident) return [];
@@ -551,21 +693,22 @@ import { careHighlights } from './care-summary.js';
     const saved = snapshot.incident, incident = activeIncident(snapshot), view = dashboardPresentation(snapshot, online);
     document.body.dataset.phase = incident?.phase || 'IDLE';
     $('.workspace-spectrum').dataset.phase = incident?.phase || 'IDLE';
-    text('#overview-wearer', view.wearerName);
+    text('#overview-wearer', /^(patient|wearer)$/i.test(view.wearerName || '') ? 'Patient' : `Patient · ${view.wearerName}`);
     text('#incident-scope', incident ? 'CURRENT INCIDENT' : saved ? 'SAVED INCIDENT' : 'INCIDENT LOOP');
     text('#incident-id', saved ? `ID ${saved.id}` : 'NO ACTIVE INCIDENT');
     text('#incident-title', view.statusLabel);
     text('#incident-summary', view.summary);
     $('#incident-dispatch').hidden = !['live', 'simulated'].includes(saved?.dispatchMode);
-    text('#incident-dispatch', simulatedIncident(saved) ? 'SIMULATED DISPATCH' : 'LIVE RESPONDER DISPATCH');
+    text('#incident-dispatch', simulatedIncident(saved) ? 'LOCAL DISPATCH' : 'LIVE RESPONDER DISPATCH');
     $('#incident-dispatch').className = `badge ${simulatedIncident(saved) ? 'warning' : ''}`;
     const evidence = $('#evidence-badge'); evidence.hidden = !saved;
     if (saved) {
-      evidence.textContent = ({ synthetic: 'SYNTHETIC TRIGGER', manual: 'MANUAL REQUEST',
+      evidence.textContent = ({ synthetic: 'MANUAL CHECK-IN', manual: 'MANUAL REQUEST',
         'single-source': 'SINGLE-SOURCE EVIDENCE', 'cross-body': 'CROSS-BODY EVIDENCE' })[saved.evidence.kind] || saved.evidence.kind;
       evidence.className = `badge ${saved.evidence.kind === 'synthetic' ? 'warning' : ''}`;
     }
     renderMeasuredEvidence();
+    renderClinicalViews();
     $('#phase-list').hidden = !incident;
     $('.incident-facts').hidden = !incident;
     const phaseIndex = phases.findIndex(([phase]) => phase === incident?.phase);
@@ -574,19 +717,19 @@ import { careHighlights } from './care-summary.js';
     text('#owner', view.ownerName || (incident ? 'Awaiting acceptance' : 'No response needed'));
     text('#owner-detail', view.ownerDetail);
     text('#incident-next-step', view.nextStep);
-    text('#overview-report', view.latestReport ? `“${view.latestReport.text}”` : 'No wearer report recorded.');
-    text('#overview-report-source', view.latestReport ? `${reportSource(view.latestReport.source)} · ${time(view.latestReport.at)}` : '');
+    text('#overview-report', view.latestReport ? `“${view.latestReport.text}”` : 'No patient report recorded.');
+    text('#overview-report-source', view.latestReport ? `${reportSource(view.latestReport.source, view.latestReport.service)} · ${time(view.latestReport.at)}` : '');
     text('#overview-response-name', view.ownerName || (incident ? 'Awaiting acceptance' : 'No active response'));
     text('#overview-response-state', view.ownerState);
-    text('#overview-response-meta', [view.simulated ? 'Simulated dispatch' : '', view.acceptedAt ? `Accepted ${time(view.acceptedAt)}` : '',
-      incident?.ownerId ? view.ownerDetail.replace('Simulated responder. ', '') : ''].filter(Boolean).join(' · '));
+    text('#overview-response-meta', [view.simulated ? 'Local dispatch' : '', view.acceptedAt ? `Accepted ${time(view.acceptedAt)}` : '',
+      incident?.ownerId ? view.ownerDetail.replace('Local responder. ', '') : ''].filter(Boolean).join(' · '));
     const facts = document.createDocumentFragment();
     const bodyConnected = snapshot.wili?.connected === true;
     const waistConnected = snapshot.sensors.some(source => source.source === 'waist-airpod' && source.connected);
     appendText(facts, 'p', '', !online ? 'Last received device state.'
       : `${bodyConnected ? 'WILi connected' : 'WILi awaiting connection'} · ${waistConnected ? 'Waist AirPod connected' : 'Waist AirPod awaiting connection'}.`);
     if (online && bodyConnected) appendText(facts, 'p', '', 'Quiet intervals between WILi reports are normal.');
-    if (incident) appendText(facts, 'p', '', ({ synthetic: 'Generated incident evidence.', manual: 'Manual request for help.',
+    if (incident) appendText(facts, 'p', '', ({ synthetic: 'Check-in started manually.', manual: 'Manual request for help.',
       'single-source': 'One motion source contributed.', 'cross-body': 'Body and waist motion contributed.' })[incident.evidence.kind] || 'Incident evidence recorded.');
     if (!incident) appendText(facts, 'p', '', 'No active incident evidence.');
     $('#overview-evidence').replaceChildren(facts);
@@ -597,14 +740,14 @@ import { careHighlights } from './care-summary.js';
       const row = appendText(list, 'li', '', '');
       appendText(row, 'strong', '', `${message.speakerName || 'Speaker'}${message.agent ? ` → ${message.recipient}` : ''}`);
       appendText(row, 'p', '', message.text);
-      appendText(row, 'small', '', `${time(message.at)} · ${reportSource(message.source)}${message.agent ? ` · ${actionLabels[message.delivery]?.[0] || 'Status unavailable'}` : ''}`);
+      appendText(row, 'small', '', `${time(message.at)} · ${reportSource(message.source, message.service)}${message.agent ? ` · ${actionLabels[message.delivery]?.[0] || 'Status unavailable'}` : ''}`);
     }
     $('#overview-conversation').replaceChildren(list);
     renderHandoff();
     $('#outcome-panel').hidden = !saved?.outcome;
-    text('#outcome-label', simulatedIncident(saved) ? 'SIMULATED OUTCOME' : 'RECORDED OUTCOME');
+    text('#outcome-label', 'RECORDED OUTCOME');
     text('#outcome', saved?.outcome || '');
-    text('#outcome-source', saved?.outcome ? `${simulatedIncident(saved) ? 'Demo only · ' : ''}Recorded by ${nameFor(saved.resolutionActor)} · ${time(saved.updatedAt)}` : '');
+    text('#outcome-source', saved?.outcome ? `${simulatedIncident(saved) ? 'Local responder · ' : ''}Recorded by ${nameFor(saved.resolutionActor)} · ${time(saved.updatedAt)}` : '');
   }
 
   function appendText(parent, tag, className, value) {
@@ -615,12 +758,40 @@ import { careHighlights } from './care-summary.js';
     return element;
   }
 
+  function renderClinicalViews() {
+    const motion = motionPresentation(snapshot, online, wiliTrace.points), condition = conditionPresentation(snapshot, online);
+    for (const key of ['event', 'impact', 'rotation', 'quiet', 'severity']) text(`#motion-${key}`, motion[key]);
+    text('#motion-position', motion.tilt);
+    text('#motion-severity-detail', motion.severityDetail);
+    text('#motion-injury', motion.report);
+    text('#motion-evidence-source', motion.source);
+    text('#condition-response', condition.response);
+    text('#condition-responsive', condition.response);
+    text('#condition-speaking', condition.speaking);
+    text('#condition-source', condition.at !== null ? `${reportSource(condition.source)} · ${time(condition.at)} · A reply does not establish breathing or absence of bleeding.`
+      : 'No current patient observation recorded. Physiological observations are shown separately below.');
+    const observations = document.createDocumentFragment();
+    for (const observation of watchPreview.conditions) {
+      const item = appendText(observations, 'div', 'condition-item', '');
+      appendText(item, 'span', 'eyebrow', observation.label);
+      appendText(item, 'strong', '', observation.value);
+      appendText(item, 'small', '', observation.detail);
+    }
+    $('#watch-condition-grid').replaceChildren(observations);
+    const history = new Set((snapshot?.timeline || []).filter(event => ['RESOLVED', 'CANCELLED_FALSE_ALARM'].includes(event.type)).map(event => event.incidentId));
+    text('#medical-history-count', `${history.size} recorded ${history.size === 1 ? 'incident' : 'incidents'}`);
+    text('#medical-history-detail', history.size ? 'Resolved or cancelled incidents in the available LIFELINE history. Hospital history is separate.'
+      : 'No closed incidents in the available LIFELINE history. Hospital history is separate.');
+  }
+
   function renderMeasuredEvidence() {
     const assessment = snapshot?.incident?.evidence?.assessment;
     const present = assessment?.detector === 'wili-waist-provisional-v1' && assessment.impact && assessment.supportingWaist && assessment.quietWaist;
     $('#incident-evidence').hidden = !present;
     if (!present) { $('#incident-evidence-facts').replaceChildren(); text('#incident-evidence-timing', ''); text('#incident-evidence-sources', ''); return; }
     const impact = assessment.impact, waist = assessment.supportingWaist, quiet = assessment.quietWaist;
+    text('#incident-evidence h3', activeIncident(snapshot) ? 'Measured trigger evidence' : 'Last incident measurements');
+    text('#incident-evidence .badge', activeIncident(snapshot) ? 'FROZEN AT DETECTION' : 'SAVED INCIDENT');
     const metric = (value, unit, digits = 2) => finite(value) ? `${number(value, digits)} ${unit}` : 'Not recorded';
     const source = value => typeof value === 'string' && value ? value : 'Not recorded';
     const fields = document.createDocumentFragment();
@@ -632,9 +803,9 @@ import { careHighlights } from './care-summary.js';
     for (const [label, value] of rows) { const row = appendText(fields, 'div', '', ''); appendText(row, 'dt', '', label); appendText(row, 'dd', '', value); }
     $('#incident-evidence-facts').replaceChildren(fields);
     text('#incident-evidence-timing', impact.captureClock === 'host-receipt'
-      ? 'Stock OG evidence uses gateway host-receipt timing. Sensor capture time and acquisition latency are not established. These frozen measurements support a provisional prototype assessment, not a diagnosis or accuracy claim.'
+      ? 'Stock OG evidence uses gateway host-receipt timing. Sensor capture time and acquisition latency are not established. These frozen measurements support a provisional assessment, not a diagnosis or accuracy claim.'
       : impact.captureClock === 'device-monotonic'
-        ? 'Device acquisition timestamps are mapped to the server monotonic clock. These frozen measurements support a provisional prototype assessment, not a diagnosis or accuracy claim.'
+        ? 'Device acquisition timestamps are mapped to the server monotonic clock. These frozen measurements support a provisional assessment, not a diagnosis or accuracy claim.'
         : 'Timing basis was not recorded. These measurements do not establish a diagnosis or detection accuracy.');
     const clock = assessment.alignmentAtAssessment;
     text('#incident-evidence-sources', [
@@ -671,8 +842,8 @@ import { careHighlights } from './care-summary.js';
   function renderPatientRecord() {
     const record = patientRecord, demographic = record?.records.find(row => row.section === 'demographics');
     text('#patient-name', demographic?.label || 'Protected patient context');
-    text('#patient-identity', record ? `Fictional Finch subject ${record.subject || 'not returned'} · separate from the demo wearer` : 'Fictional record identity is separate from the demo wearer.');
-    text('#patient-snapshot', record ? `${patientContext().incidentId ? `Incident ${patientContext().incidentId} · immutable context` : 'Current patient context'}\nRevision ${record.revision}\nRetrieved ${new Date(record.fetchedAt).toISOString()} · fixture data as of ${record.dataAsOf || 'unknown'}\nRecord access ${record.status} · source consent ${record.consent?.status || 'unknown'} · sync ${record.sync?.status || 'unknown'}` : token ? 'Protected patient context has not been retrieved.' : 'Pairing token required to read patient records.');
+    text('#patient-identity', record?.subject ? `FinchNode patient record · ${record.subject}` : 'FinchNode patient record');
+    text('#patient-snapshot', record ? `${patientContext().incidentId ? `Incident ${patientContext().incidentId} · immutable context` : 'Current patient context'}\nRevision ${record.revision}\nRetrieved ${new Date(record.fetchedAt).toISOString()} · data as of ${record.dataAsOf || 'unknown'}\nRecord access ${record.status} · source consent ${record.consent?.status || 'unknown'} · sync ${record.sync?.status || 'unknown'}` : token ? 'Protected patient context has not been retrieved.' : 'Pairing token required to read patient records.');
     const container = document.createDocumentFragment();
     const titles = { demographics: 'Demographics', medications: 'Medications and history', conditions: 'Conditions', allergies: 'Allergies', vitals: 'Historical vitals' };
     const kinds = { medications: 'Prescription / regimen', medicationAdministrations: 'Administration record', medicationDispenses: 'Dispense record' };
@@ -728,10 +899,16 @@ import { careHighlights } from './care-summary.js';
       if (entries.length > 6) appendText(brief, 'p', 'overview-card-meta', `${entries.length - 6} more in care context.`);
       if (!entries.length) appendText(brief, 'p', 'empty-list', 'No care facts returned.');
       const demographic = patientRecord.records.find(row => row.section === 'demographics');
-      appendText(brief, 'p', 'overview-card-meta', `Synthetic ${patientContext().incidentId ? 'incident snapshot' : 'current record'} · ${demographic?.label || 'fictional patient'}. Separate from ${dashboardPresentation(snapshot).wearerName}.`);
-      const facts = appendText(full, 'ul', '', '');
+      appendText(brief, 'p', 'overview-card-meta', `FinchNode ${patientContext().incidentId ? 'incident snapshot' : 'current record'} · ${demographic?.label || 'name unavailable'}. Separate from ${dashboardPresentation(snapshot).wearerName}.`);
+      const medicalGroups = new Map();
+      for (const [kind, heading] of [['Allergy', 'Allergies'], ['Active prescription', 'Current medications'], ['Condition', 'Conditions']]) {
+        const section = appendText(full, 'section', 'medical-fact-group', '');
+        appendText(section, 'h3', '', heading);
+        medicalGroups.set(kind, appendText(section, 'ul', '', ''));
+        if (!entries.some(entry => entry.kind === kind)) appendText(section, 'p', 'field-note', 'No records returned in this category.');
+      }
       for (const entry of entries) {
-        const item = appendText(facts, 'li', '', '');
+        const item = appendText(medicalGroups.get(entry.kind), 'li', '', '');
         appendText(item, 'strong', '', entry.label);
         appendText(item, 'p', 'field-note', `${entry.kind}${entry.detail ? ` · ${entry.detail}` : ''}`);
         const source = appendText(item, 'details', 'clinical-source', '');
@@ -744,7 +921,7 @@ import { careHighlights } from './care-summary.js';
         for (const row of care.vitals) appendText(vitals, 'li', '', `${label(row)} · ${row.fields.value}${row.fields.unit ? ` ${row.fields.unit}` : ''} · ${new Date(row.fields.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}`);
       }
       if (care.missingCategories.length) appendText(full, 'p', 'field-note', `Not available: ${care.missingCategories.join(', ')}.`);
-      appendText(full, 'p', 'field-note', 'Hospital context is read only. Wearer reports remain separately attributed.');
+      appendText(full, 'p', 'field-note', 'Hospital context is read only. Patient reports remain separately attributed.');
     }
     $('#overview-care-context').replaceChildren(brief);
     $('#care-context-summary').replaceChildren(full);
@@ -761,7 +938,7 @@ import { careHighlights } from './care-summary.js';
         const response = await fetch(url, { method, headers: { Authorization: `Bearer ${request.token}` }, cache: 'no-store', signal: AbortSignal.any([request.controller.signal, AbortSignal.timeout(20000)]) });
         const result = await response.json();
         if (!response.ok || result.error) throw new Error(response.status === 401 ? 'Pairing token rejected. Enter a current operator token.' : result.error || `Patient records unavailable (${response.status}). Try Refresh current patient.`);
-        if (result.synthetic !== true || result.environment !== 'demo' || typeof result.revision !== 'string' || !Array.isArray(result.records) || !finite(result.fetchedAt)) throw new Error('Patient record response could not be verified as the synthetic demo.');
+        if (result.synthetic !== true || result.environment !== 'demo' || typeof result.revision !== 'string' || !Array.isArray(result.records) || !finite(result.fetchedAt)) throw new Error('Patient record response could not be verified as a FinchNode record.');
         return result;
       };
       let result, refreshedRevision = null;
@@ -770,7 +947,7 @@ import { careHighlights } from './care-summary.js';
       if (!current()) return;
       if (scope.incidentId && result.revision !== snapshot?.incident?.healthRevision) throw new Error('Returned records do not match this incident’s clinical revision. Refresh the incident context and try again.');
       patientRecord = result; renderPatientRecord();
-      text('#patient-load-message', refresh && scope.incidentId ? `Current patient refreshed to ${refreshedRevision}. This incident retains ${result.revision}.` : 'Synthetic hospital records retrieved. No hospital record was changed.');
+      text('#patient-load-message', refresh && scope.incidentId ? `Current patient refreshed to ${refreshedRevision}. This incident retains ${result.revision}.` : 'Hospital records retrieved from FinchNode. No hospital record was changed.');
     } catch (error) { if (current()) { $('#patient-load-message').classList.add('error'); text('#patient-load-message', error.name === 'TimeoutError' ? 'Patient record read timed out. Check the server, then refresh.' : error.message || 'Patient records unavailable. Refresh to try again.'); } }
     finally { if (patientRequest === request) { patientRequest = null; updatePatientControls(); } }
   }
@@ -811,18 +988,20 @@ import { careHighlights } from './care-summary.js';
     const [generation, color] = generationFor(snapshot.incident?.handoffGeneration);
     text('#handoff-generation', generation); $('#handoff-generation').className = `badge ${color}`;
     text('#handoff-source-context', snapshot.incident?.healthRevision
-      ? `Clinical source: saved Finch synthetic snapshot ${snapshot.incident.healthRevision}. LIFELINE supplies incident observations; historical vitals are not current measurements.`
+      ? `Clinical source: saved FinchNode snapshot ${snapshot.incident.healthRevision}. LIFELINE supplies incident observations; historical vitals are not current measurements.`
       : 'Clinical source revision has not been bound. LIFELINE observations and unavailable health information remain separate.');
     const content = snapshot.incident?.handoff || 'A record-grounded handoff will appear here when it is available.';
     const signature = JSON.stringify([snapshot.incident?.id, content, observationKey()]);
     if (signature === handoffSignature) return;
     handoffSignature = signature;
     const fragment = document.createDocumentFragment();
-    const headings = new Set(['Known source facts:', 'Unavailable information:', 'AI-composed synthetic health handoff:', 'AI unavailable — source template fallback:',
-      'Wearer reports (local observations, not hospital records):', 'Responder reports (local observations, not hospital records):']);
+    const headings = new Set(['Known source facts:', 'Unavailable information:', 'Health context:', 'AI-composed synthetic health handoff:', 'AI unavailable — source template fallback:',
+      'Patient reports (local observations, not hospital records):', 'Responder reports (local observations, not hospital records):']);
+    // Saved handoffs keep their original text; an older heading is shown with its current label.
+    const headingLabels = new Map([['AI-composed synthetic health handoff:', 'Health context:']]);
     const appendLines = (value) => {
       for (const line of value.split('\n')) {
-        if (headings.has(line)) { appendText(fragment, 'h3', 'handoff-heading', line); continue; }
+        if (headings.has(line)) { appendText(fragment, 'h3', 'handoff-heading', headingLabels.get(line) ?? line); continue; }
         const row = appendText(fragment, 'p', 'handoff-line', '');
         const category = line.match(/^(medications|conditions|allergies):/);
         const source = line.match(/ \[[^\]\n]+\]$/);
@@ -836,7 +1015,7 @@ import { careHighlights } from './care-summary.js';
     };
     // Only structure a quote when the saved handoff exactly matches its recorded
     // conversation source. Unknown/legacy text retains the literal line renderer.
-    const sourceNames = { 'freewili-local-speech': ['FREE-WILi microphone / local Whisper'], 'ios-on-device-speech': ['iPhone on-device speech'], 'photon-imessage': ['Photon message', 'Photon iMessage'], 'simulated-dispatch': ['Simulated dispatch'] };
+    const sourceNames = { 'freewili-local-speech': ['FREE-WILi microphone / local Whisper'], 'ios-on-device-speech': ['iPhone on-device speech'], 'photon-imessage': ['Photon message', 'Photon iMessage'], 'simulated-dispatch': ['Responder', 'Simulated dispatch'] };
     const reports = (Array.isArray(snapshot.conversation) ? snapshot.conversation : []).flatMap(message => {
       if (message?.incidentId !== snapshot.incident?.id || !['wearer', 'responder'].includes(message.speaker)
         || typeof message.speakerName !== 'string' || typeof message.text !== 'string' || typeof message.id !== 'string'
@@ -856,9 +1035,9 @@ import { careHighlights } from './care-summary.js';
       const row = appendText(fragment, 'div', 'handoff-report', '');
       const speaker = appendText(row, 'p', 'handoff-report-speaker', '');
       appendText(speaker, 'strong', '', report.message.speakerName);
-      appendText(speaker, 'span', '', report.message.source === 'simulated-dispatch' ? 'Simulated responder report' : report.message.speaker === 'wearer' ? 'Wearer report' : 'Responder report');
+      appendText(speaker, 'span', '', report.message.source === 'simulated-dispatch' ? 'Local responder report' : report.message.speaker === 'wearer' ? 'Patient report' : 'Responder report');
       appendText(row, 'p', 'handoff-report-quote', `“${report.message.text}”`);
-      const metadata = appendText(row, 'p', 'handoff-report-meta', `${report.source === 'Photon iMessage' ? 'Photon message' : report.source} · ${report.recorded} `);
+      const metadata = appendText(row, 'p', 'handoff-report-meta', `${report.source === 'Photon iMessage' ? 'Photon message' : report.source === 'Simulated dispatch' ? 'Responder' : report.source} · ${report.recorded} `);
       appendText(metadata, 'span', 'source-ref', `[conversation:${report.message.id}]`);
       cursor = report.start + report.literal.length;
     }
@@ -894,18 +1073,48 @@ import { careHighlights } from './care-summary.js';
     const incident = snapshot?.incident;
     text('#context-incident', incident ? `Context ${incident.id} · ${incident.phase} · version ${incident.version}` : 'No incident context available.');
     const questions = new Map();
+    const received = new Map();
+    const answered = new Set();
+    const questionKey = (responderId, inboundId) => JSON.stringify([responderId, inboundId]);
     for (const event of snapshot.timeline) {
-      if (event.incidentId !== incident?.id || event.type !== 'ANSWER_QUEUED') continue;
+      if (event.incidentId !== incident?.id || !['QUESTION_RECEIVED', 'ANSWER_QUEUED'].includes(event.type)) continue;
       try {
         const detail = JSON.parse(event.detail);
-        if (detail && typeof detail.actionId === 'string' && typeof detail.question === 'string' && detail.source === 'photon-imessage') questions.set(detail.actionId, detail);
+        if (detail?.source !== 'photon-imessage' || typeof detail.question !== 'string') continue;
+        const key = typeof detail.inboundId === 'string' && detail.inboundId ? questionKey(event.actor, detail.inboundId) : null;
+        if (event.type === 'ANSWER_QUEUED' && typeof detail.actionId === 'string') {
+          questions.set(detail.actionId, detail);
+          if (key) answered.add(key);
+        } else if (event.type === 'QUESTION_RECEIVED' && key && !received.has(key)) {
+          received.set(key, { event, detail });
+        }
       } catch { /* Older audit entries do not contain the original question. */ }
     }
     const actions = snapshot.actions.filter((action) => action.incidentId === incident?.id && action.type === 'answer').slice().sort((a, b) => b.createdAt - a.createdAt);
-    text('#question-count', actions.length);
+    const entries = [
+      ...actions.map(action => ({ action, at: action.createdAt })),
+      ...[...received].filter(([key]) => !answered.has(key)).map(([, question]) => ({ ...question, at: question.event.at })),
+    ].sort((a, b) => b.at - a.at);
+    text('#question-count', entries.length);
     const fragment = document.createDocumentFragment();
-    if (!actions.length) appendText(fragment, 'li', 'empty-list', 'No responder answer messages for this incident.');
-    for (const action of actions) {
+    if (!entries.length) appendText(fragment, 'li', 'empty-list', 'No responder questions for this incident.');
+    for (const entry of entries) {
+      if (!entry.action) {
+        const { event, detail } = entry;
+        const changed = terminal(incident) || detail.incidentVersion !== incident.version
+          || incident.declined?.includes(event.actor) || !incident.contacted?.includes(event.actor);
+        const row = appendText(fragment, 'li', 'question-item', '');
+        const head = appendText(row, 'div', 'question-head', '');
+        appendText(head, 'strong', '', nameFor(event.actor));
+        appendText(head, 'span', `badge ${changed ? '' : 'warning'}`, changed ? 'Context changed' : 'Answer pending');
+        appendText(row, 'p', 'question-label', 'Question');
+        appendText(row, 'p', 'question-text', detail.question);
+        appendText(row, 'p', 'question-result', changed ? 'Incident context or responder eligibility changed. No answer is recorded as queued.'
+          : 'Received for answer preparation. No answer has been queued yet.');
+        appendText(row, 'p', 'question-meta', `${time(event.at)} · Photon message · Inbound ${detail.inboundId}`);
+        continue;
+      }
+      const { action } = entry;
       const detail = questions.get(action.id);
       const row = appendText(fragment, 'li', 'question-item', '');
       const head = appendText(row, 'div', 'question-head', '');
@@ -919,7 +1128,7 @@ import { careHighlights } from './care-summary.js';
       const [generation, generationColor] = generationFor(detail?.generation);
       appendText(answerHead, 'span', `badge ${generationColor}`, generation);
       appendText(row, 'p', 'question-answer', action.text || 'No answer text recorded.');
-      appendText(row, 'p', 'question-result', action.status === 'simulated' ? `Internal demo delivery; no provider send or recipient receipt.${action.providerResult ? ` ${action.providerResult}` : ''}` : action.providerResult || 'No provider result yet.');
+      appendText(row, 'p', 'question-result', action.status === 'simulated' ? `Local delivery; no provider send or recipient receipt.${action.providerResult ? ` ${action.providerResult}` : ''}` : action.providerResult || 'No provider result yet.');
       const source = detail ? `Photon message${typeof detail.inboundId === 'string' ? ` · Inbound ${detail.inboundId}` : ''}` : 'Original question source unavailable';
       appendText(row, 'p', 'question-meta', `${time(action.createdAt)} · ${source} · Action ${action.id}`);
     }
@@ -931,8 +1140,8 @@ import { careHighlights } from './care-summary.js';
     const question = $('#rehearsal-question').value.trim();
     $('#rehearsal-submit').disabled = !token || !online || !incident || !!contextRequest || !question || question.length > 2000;
     $('#rehearsal-question').disabled = !!contextRequest;
-    text('#rehearsal-availability', !incident ? 'Start a labelled development simulation to provide incident context.'
-      : !token ? 'Enter a development pairing token in Operator controls to enable this preview.'
+    text('#rehearsal-availability', !incident ? 'Start a check-in to provide incident context.'
+      : !token ? 'Enter a pairing token in Connections to enable this preview.'
       : !online ? 'Reconnect to the server before generating a preview.'
       : contextRequest ? 'Generating against the displayed incident context…'
       : 'Uses this incident, including a recorded terminal phase. Nothing is sent to a responder.');
@@ -953,7 +1162,7 @@ import { careHighlights } from './care-summary.js';
         body: JSON.stringify({ incidentId: request.incidentId, question }), signal: AbortSignal.any([request.controller.signal, AbortSignal.timeout(30000)]) });
       const result = await response.json().catch(() => { throw new Error('Preview service returned an unreadable response. Check server availability and try again.'); });
       if (!current()) return;
-      if (response.status === 401) throw new Error('Pairing token rejected. Enter a current development token in Operator controls and try again.');
+      if (response.status === 401) throw new Error('Pairing token rejected. Enter a current pairing token in Connections and try again.');
       if (!response.ok || result.error) throw new Error(`${result.error || `Preview unavailable (${response.status})`}. Review the current incident context and try again.`);
       if (result.incidentId !== request.incidentId || result.version !== request.version) throw new Error('Preview context did not match the requested incident and version. Review the current phase and generate a new preview.');
       if (typeof result.answer !== 'string' || typeof result.generation !== 'string' || !Object.hasOwn(generationLabels, result.generation)) throw new Error('Preview service returned an invalid answer. Check server availability and try again.');
@@ -979,8 +1188,8 @@ import { careHighlights } from './care-summary.js';
     const reply = snapshot.timeline.findLast((event) => event.incidentId === snapshot.incident?.id && event.type === 'CHECKIN_REPLY');
     if (!reply) {
       text('#reply-decision', 'NO REPLY');
-      text('#reply-transcript', 'No wearer check-in reply received for this incident.');
-      text('#reply-meta', 'Wearer speech and iMessage replies can request help or preserve the check-in. Cancellation requires the explicit current check-in control.');
+      text('#reply-transcript', 'No patient check-in reply received for this incident.');
+      text('#reply-meta', 'Patient speech and iMessage replies can request help or preserve the check-in. Cancellation requires the explicit current check-in control.');
       $('#reply-transcript').classList.remove('has-reply');
       return;
     }
@@ -992,7 +1201,7 @@ import { careHighlights } from './care-summary.js';
     } catch { /* Preserve the recorded detail if it is not structured. */ }
     text('#reply-decision', decision);
     text('#reply-transcript', transcript);
-    const source = reply.actor === 'freewili-local-speech' ? 'FREE-WILi microphone · local Whisper' : reply.actor === 'ios-on-device-speech' ? 'Legacy iPhone on-device speech' : reply.actor === 'photon-imessage' ? 'Wearer Photon message' : reply.actor;
+    const source = reply.actor === 'freewili-local-speech' ? 'FREE-WILi microphone · local Whisper' : reply.actor === 'ios-on-device-speech' ? 'Legacy iPhone on-device speech' : reply.actor === 'photon-imessage' ? 'Patient Photon message' : reply.actor;
     text('#reply-meta', `${time(reply.at)} · ${source} · Cancellation requires the explicit check-in control.`);
     $('#reply-transcript').classList.add('has-reply');
   }
@@ -1031,6 +1240,37 @@ import { careHighlights } from './care-summary.js';
     text('#checkin-audio-status', label); $('#checkin-audio-status').className = color ? `voice-${color}` : '';
     text('#checkin-audio-detail', `${detail}${at !== null ? ` Last report ${time(at)}.` : ''}`);
     text('#checkin-audio-control', label); $('#checkin-audio-control').className = `field-note checkin-audio-control${color ? ` voice-${color}` : ''}`;
+    const current = activeIncident(snapshot);
+    let demoTitle = 'Ready', instruction = 'Press Start or yellow on WILi. Wait for the prompt, then speak.';
+    let demoState = 'ready';
+    if (!online || !snapshot) {
+      demoTitle = 'Connecting…'; instruction = 'Waiting for LIFELINE.'; demoState = 'offline';
+    } else if (current) {
+      demoState = 'active';
+      const steps = {
+        DETECTED: ['Checking in', 'Wait for WILi’s prompt.'],
+        CONFIRMING: ['Listen to WILi', 'Speak when WILi says it’s listening.'],
+        HELP_REQUESTED: ['Getting help', 'LIFELINE is contacting the responder. Watch your phone.'],
+        ACKNOWLEDGED: ['Help accepted', 'The responder has accepted responsibility.'],
+        RESPONDER_EN_ROUTE: ['On the way', 'Replies appear on your phone and play through WILi.'],
+        ON_SCENE: ['Help has arrived', 'Waiting for the responder to record the outcome.'],
+      };
+      [demoTitle, instruction] = Object.hasOwn(steps, current.phase)
+        ? steps[current.phase] : ['Incident active', 'Follow the messages on your phone.'];
+      if (current.phase === 'CONFIRMING') {
+        if (label.startsWith('LISTENING')) {
+          demoTitle = 'Speak now'; instruction = 'Tell LIFELINE what happened.'; demoState = 'listening';
+        } else if (label === 'Transcribing' || label === 'Transcript received') {
+          demoTitle = 'One moment'; instruction = 'LIFELINE is processing your reply.';
+        } else if (label === 'Voice unavailable' || label === 'Listening window ended') {
+          demoTitle = 'Checking in'; instruction = 'Reply on your phone, or press red if you need help.';
+        }
+      }
+    }
+    text('#demo-status', demoTitle); text('#demo-instruction', instruction);
+    $('#demo-pulse').dataset.state = demoState;
+    const mode = current?.dispatchMode ?? snapshot?.dispatch?.mode;
+    text('#demo-mode-label', mode === 'simulated' ? 'LOCAL RESPONDER' : mode === 'live' ? 'LIVE RESPONDER' : 'Connecting');
   }
 
   function renderConversation() {
@@ -1041,13 +1281,13 @@ import { careHighlights } from './care-summary.js';
     if (signature === conversationSignature) return;
     conversationSignature = signature;
     text('#conversation-count', incident && !available ? '—' : messages.length);
-    text('#conversation-context', incident ? `${terminal(incident) ? 'Saved' : 'Current'} incident · ${incident.id}${simulatedIncident(incident) ? ' · simulated dispatch' : ''}` : 'No incident conversation yet.');
+    text('#conversation-context', incident ? `${terminal(incident) ? 'Saved' : 'Current'} incident · ${incident.id}${simulatedIncident(incident) ? ' · local dispatch' : ''}` : 'No incident conversation yet.');
     const list = $('#conversation'), fragment = document.createDocumentFragment();
     const follow = list.scrollHeight - list.clientHeight - list.scrollTop < 24, priorScroll = list.scrollTop;
     const deliveries = { recorded: ['Recorded', ''], queued: ['Queued', ''], playing: ['Playing on wearable', ''],
       spoken: ['Playback completed', ''], failed: ['Delivery failed', 'bad'], attempting: ['Sending', ''],
       provider_accepted: ['Submitted · receipt unconfirmed', ''], unknown: ['Delivery unknown', ''],
-      cancelled: ['Cancelled', ''], simulated: ['Simulated message', ''] };
+      cancelled: ['Cancelled', ''], simulated: ['Local delivery', ''] };
     if (!messages.length) appendText(fragment, 'li', 'empty-list', !incident ? 'Conversation appears when an incident starts.'
       : !available ? 'Conversation history is unavailable.' : 'No messages recorded for this incident.');
     for (const message of messages) {
@@ -1055,13 +1295,13 @@ import { careHighlights } from './care-summary.js';
       const row = appendText(fragment, 'li', `conversation-message${wearer ? ' conversation-wearer' : responder ? ' conversation-responder' : ' conversation-agent'}`, '');
       const head = appendText(row, 'div', 'conversation-head', '');
       const speaker = appendText(head, 'div', 'conversation-speaker', '');
-      appendText(speaker, 'strong', '', message.speakerName || (wearer ? 'Wearer' : responder ? 'Responder' : 'Speaker unavailable'));
+      appendText(speaker, 'strong', '', message.speakerName || (wearer ? 'Patient' : responder ? 'Responder' : 'Speaker unavailable'));
       appendText(speaker, 'span', 'conversation-role', message.agent ? `To ${message.recipient}`
-        : message.source === 'simulated-dispatch' ? 'Simulated responder' : wearer ? 'Wearer' : responder ? 'Responder' : '');
+        : message.source === 'simulated-dispatch' ? 'Local responder' : wearer ? 'Patient' : responder ? 'Responder' : '');
       const [label, color] = deliveries[message.delivery] || ['Status unavailable', ''];
       appendText(head, 'span', `badge ${color}`, label);
       appendText(row, 'p', 'conversation-quote', message.text || 'Message text unavailable.');
-      appendText(row, 'p', 'conversation-meta', `${time(message.at)} · ${reportSource(message.source)}`);
+      appendText(row, 'p', 'conversation-meta', `${time(message.at)} · ${reportSource(message.source, message.service)}`);
       if (typeof message.detail === 'string' && message.detail) {
         const detail = appendText(row, 'details', 'conversation-detail', '');
         appendText(detail, 'summary', '', 'Delivery details');
@@ -1082,6 +1322,7 @@ import { careHighlights } from './care-summary.js';
   }
 
   function updateLocationControls() {
+    if (!$('#location-invite')) return;
     const location = snapshot?.location;
     const native = location?.native?.configured === true;
     const invite = native ? location.native.request : location?.invite;
@@ -1094,14 +1335,15 @@ import { careHighlights } from './care-summary.js';
       failed: 'Location request failed', unknown: 'Location request outcome unknown', cancelled: 'Location request cancelled' };
     text('#location-invite-state', !location ? 'Location sharing is unavailable in this server state.'
       : !online ? 'Last received state. Reconnect to request location.'
-      : active ? 'The incident check-in includes the wearer’s location request.'
-      : !location.configured ? 'The wearer’s location sharing connection is not configured.'
-      : !token ? 'Pairing token required to request the approved wearer’s location.'
+      : active ? 'The incident check-in includes the patient’s location request.'
+      : !location.configured ? 'The patient’s location sharing connection is not configured.'
+      : !token ? 'Pairing token required to request the approved patient’s location.'
       : typeof invite?.status === 'string' && Object.hasOwn(labels, invite.status) ? labels[invite.status]
-      : 'Sends a location request to the approved wearer. Sharing requires their consent.');
+      : 'Sends a location request to the approved patient. Sharing requires their consent.');
   }
 
   function renderLocation() {
+    if (!$('#location-invite')) return;
     const location = snapshot?.location;
     const shared = online && ['wearer', 'responder'].some(role => validLocationPoint(location?.[role])
       && location[role].fresh === true && locationPointAge(location[role]) !== null && locationPointAge(location[role]) <= 60000);
@@ -1114,7 +1356,7 @@ import { careHighlights } from './care-summary.js';
     for (const role of ['wearer', 'responder']) {
       const point = location?.[role], valid = validLocationPoint(point), age = locationPointAge(point);
       const fresh = online && valid && point.fresh === true && age !== null && age <= 60000;
-      text(`#location-${role}-name`, typeof point?.name === 'string' && point.name.trim() ? point.name : role === 'wearer' ? 'Wearer' : 'Responder');
+      text(`#location-${role}-name`, typeof point?.name === 'string' && point.name.trim() ? point.name : role === 'wearer' ? 'Patient' : 'Responder');
       text(`#location-${role}-position`, valid ? `${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)}` : 'Not shared');
       const ageText = age !== null ? age < 1000 ? 'just received' : `${Math.floor(age / 1000)} s old` : 'age unavailable';
       const accuracy = finite(point?.accuracy) && point.accuracy >= 0 ? `accuracy ±${Math.ceil(point.accuracy)} m` : 'accuracy unknown';
@@ -1140,6 +1382,7 @@ import { careHighlights } from './care-summary.js';
   }
 
   async function inviteLocation() {
+    if (!$('#location-invite')) return;
     updateLocationControls(); if ($('#location-invite').disabled) return;
     const requestToken = token; locationInviteBusy = true; updateLocationControls();
     $('#location-message').classList.remove('error'); text('#location-message', 'Requesting location in iMessage…');
@@ -1147,7 +1390,7 @@ import { careHighlights } from './care-summary.js';
       const response = await fetch('/api/location/invite', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${requestToken}` }, body: '{}', signal: AbortSignal.timeout(12000) });
       const result = await response.json(); if (token !== requestToken) return;
       if (!response.ok || result.ok !== true || typeof result.queued !== 'boolean') throw new Error(response.status === 401 ? 'Pairing token rejected. Enter a current operator token.'
-        : response.status === 409 ? 'The current incident already handles the wearer’s location request.' : response.status === 503 ? 'Location requests are unavailable. Check the wearer messaging connection.' : 'Could not request location. Check its status before trying again.');
+        : response.status === 409 ? 'The current incident already handles the patient’s location request.' : response.status === 503 ? 'Location requests are unavailable. Check the patient messaging connection.' : 'Could not request location. Check its status before trying again.');
       text('#location-message', result.queued ? 'Location request queued. Accept LIFELINE’s location-sharing request in iMessage.' : 'A location request already exists. No duplicate was queued.');
       await loadState().catch(() => {});
     } catch (error) {
@@ -1155,6 +1398,27 @@ import { careHighlights } from './care-summary.js';
       $('#location-message').classList.add('error'); text('#location-message', error.name === 'TimeoutError' ? 'Request timed out. Check location request status before trying again.' : error.message || 'Location sharing is unavailable.');
     } finally { locationInviteBusy = false; updateLocationControls(); }
   }
+
+  // Indoor access notes are explicitly local, not inferred from GPS or silently sent over Photon.
+  function renderAccessNotes(notes = {}) {
+    const defaults = { building: 'Apartment building · Unit 111', floor: 'Level 1', room: 'Kitchen floor', route: 'Front door → entry → kitchen' };
+    for (const key of ['building', 'floor', 'room', 'route']) {
+      const value = typeof notes[key] === 'string' ? notes[key].trim() : '';
+      text(`#access-${key}`, value || defaults[key]);
+      $('#access-form').elements.namedItem(key).value = value || defaults[key];
+    }
+  }
+  try { renderAccessNotes(JSON.parse(sessionStorage.getItem('lifeline-access-notes') || '{}')); }
+  catch { renderAccessNotes(); }
+  $('#access-form').addEventListener('submit', event => {
+    event.preventDefault();
+    const notes = Object.fromEntries(new FormData(event.currentTarget));
+    renderAccessNotes(notes);
+    try {
+      sessionStorage.setItem('lifeline-access-notes', JSON.stringify(notes));
+      text('#access-save-state', 'Saved in this browser tab. These notes are not sent to responders.');
+    } catch { text('#access-save-state', 'Shown for this session; browser storage is unavailable. These notes are not sent to responders.'); }
+  });
 
   function wellbeingToday(wellbeing = snapshot?.wellbeing) {
     const zone = wellbeing?.schedule?.timeZone;
@@ -1178,14 +1442,14 @@ import { careHighlights } from './care-summary.js';
     $('#wellbeing-checkin').disabled = !token || !online || wellbeing?.enabled !== true || !today || wellbeingBusy || alreadyStarted || !!active;
     text('#wellbeing-checkin', wellbeingBusy ? 'Requesting…' : alreadyStarted ? 'Today’s check-in started' : 'Send today’s check-in');
     text('#wellbeing-checkin-state', !wellbeing ? 'Daily check-ins are unavailable in this server state.'
-      : !online ? 'Last received state. Reconnect before testing.'
+      : !online ? 'Last received state. Reconnect before sending.'
       : !wellbeing.enabled ? 'Daily check-ins are not enabled.'
       : active ? 'Daily check-ins pause during an active incident.'
       : alreadyStarted ? `Today’s prompt already exists.${pending ? ` ${wellbeing.pendingCount} message${wellbeing.pendingCount === 1 ? '' : 's'} pending.` : ''}`
       : pending ? `${wellbeing.pendingCount} message${wellbeing.pendingCount === 1 ? '' : 's'} pending.`
-      : !token ? 'Pairing token required for this demo control.'
+      : !token ? 'Pairing token required for this control.'
       : !today ? 'The schedule time zone is unavailable.'
-      : 'The scheduler runs autonomously. This button is for rehearsal.');
+      : 'The scheduler runs autonomously. Use this button to check in now.');
   }
 
   function renderWellbeing() {
@@ -1212,7 +1476,7 @@ import { careHighlights } from './care-summary.js';
       const wearer = message.speaker === 'wearer';
       const row = appendText(parent, 'li', `wellbeing-message${wearer ? ' wellbeing-wearer' : ''}`, '');
       const head = appendText(row, 'div', 'wellbeing-message-head', '');
-      appendText(head, 'strong', '', wearer ? 'Wearer' : message.speaker === 'lifeline' ? 'LIFELINE' : 'Speaker unavailable');
+      appendText(head, 'strong', '', wearer ? 'Patient' : message.speaker === 'lifeline' ? 'LIFELINE' : 'Speaker unavailable');
       const [label, color] = typeof message.delivery === 'string' && Object.hasOwn(deliveries, message.delivery)
         ? deliveries[message.delivery] : ['Status unavailable', ''];
       appendText(head, 'span', `badge ${color}`, wearer && message.delivery === 'recorded' ? 'Reply recorded' : label);
@@ -1225,11 +1489,11 @@ import { careHighlights } from './care-summary.js';
       if (message.speaker === 'lifeline' && record?.source === 'finchnode-synthetic' && record.synthetic === true) {
         const provenance = appendText(row, 'div', 'wellbeing-record-source', '');
         const provenanceHead = appendText(provenance, 'div', 'wellbeing-record-head', '');
-        appendText(provenanceHead, 'strong', '', 'Finch synthetic record');
+        appendText(provenanceHead, 'strong', '', 'FinchNode record');
         const [generation, generationColor] = generationFor(message.generation);
         appendText(provenanceHead, 'span', `badge ${generationColor}`, generation);
-        const subject = typeof record.subjectName === 'string' && record.subjectName.trim() ? record.subjectName : 'Unnamed fictional subject';
-        appendText(provenance, 'p', '', `${subject} · fictional subject, not the wearer’s personal record.`);
+        const subject = typeof record.subjectName === 'string' && record.subjectName.trim() ? record.subjectName : 'Unnamed record subject';
+        appendText(provenance, 'p', '', `${subject} · FinchNode patient record.`);
         const revision = typeof record.revision === 'string' && record.revision.trim() ? record.revision : 'unavailable';
         appendText(provenance, 'p', 'wellbeing-record-revision', `Saved record revision: ${revision}`);
         const ids = Array.isArray(record.sourceRecordIds) ? record.sourceRecordIds.filter(id => typeof id === 'string' && id.trim()) : [];
@@ -1270,7 +1534,7 @@ import { careHighlights } from './care-summary.js';
       const url = URL.createObjectURL(blob), link = document.createElement('a'); link.href = url;
       link.download = `lifeline-care-journal-${String(conversationId || 'daily').replace(/[^a-zA-Z0-9_-]/g, '_')}.json`;
       document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-      text('#wellbeing-brief-message', 'Care journal download requested. Daily reports and synthetic hospital snapshots remain separate.');
+      text('#wellbeing-brief-message', 'Care journal download requested. Daily reports and FinchNode hospital snapshots remain separate.');
     } catch (error) {
       if (!current()) return;
       $('#wellbeing-brief-message').classList.add('error');
@@ -1295,7 +1559,7 @@ import { careHighlights } from './care-summary.js';
       if (token !== requestToken) return;
       if (!response.ok || result.error) throw new Error(response.status === 401 ? 'Pairing token rejected. Enter a current operator token.'
         : result.error || (response.status === 409 ? 'Daily check-ins pause during an active incident.'
-          : response.status === 503 ? 'Daily check-ins are unavailable. Check the wearer messaging connection.' : `Check-in request failed (${response.status}).`));
+          : response.status === 503 ? 'Daily check-ins are unavailable. Check the patient messaging connection.' : `Check-in request failed (${response.status}).`));
       if (result.ok !== true || typeof result.queued !== 'boolean') throw new Error('Check-in status was unreadable. Check the daily conversation before trying again.');
       text('#wellbeing-message', result.queued ? 'Today’s check-in queued. Delivery status appears above.' : 'Today’s prompt already exists. No duplicate was queued.');
       await loadState().catch(() => {});
@@ -1326,13 +1590,13 @@ import { careHighlights } from './care-summary.js';
     const readiness = detectorReadiness();
     const dispatch = snapshot.dispatch;
     const dispatchRow = ['live', 'simulated'].includes(dispatch?.mode)
-      ? `<li><div class="readiness-head"><strong>Responder dispatch</strong><span class="badge ${dispatch.mode === 'simulated' ? 'warning' : ''}">${!online ? 'Last state' : dispatch.mode === 'simulated' ? snapshot.responders.some(person => person.simulated === true) ? 'Demo ready' : 'Waiting for demo responder' : 'Live profile'}</span></div><p>${escaped(dispatch.detail)}${dispatch.mode === 'simulated' ? ' No live responder send or recipient receipt is asserted.' : ''}</p></li>` : '';
+      ? `<li><div class="readiness-head"><strong>Responder dispatch</strong><span class="badge ${dispatch.mode === 'simulated' ? 'warning' : ''}">${!online ? 'Last state' : dispatch.mode === 'simulated' ? snapshot.responders.some(person => person.simulated === true) ? 'Ready' : 'Waiting for local responder' : 'Live profile'}</span></div><p>${escaped(dispatch.detail)}${dispatch.mode === 'simulated' ? ' No live responder send or recipient receipt is asserted.' : ''}</p></li>` : '';
     $('#native-readiness').innerHTML = `<li><div class="readiness-head"><strong>FREE-WILi accelerometer</strong><span class="badge">${online && wili?.usable ? 'Acquisition ready' : !online ? 'Last received' : escaped(wili?.quality || 'Unavailable')}</span></div><p>${escaped(`Source body-wili · range ${finite(wili?.fullScaleG) ? `±${wili.fullScaleG} g` : 'unknown'} · ${wili?.captureClock === 'host-receipt' ? 'gateway receipt clock' : 'device capture clock'} mapping ${finite(wili?.alignmentUncertaintyMs) ? `±${Math.round(wili.alignmentUncertaintyMs)} ms` : 'unknown'}. ${wili?.captureClock === 'host-receipt' ? 'Stock timing does not measure sensor capture latency.' : 'No primary orientation is inferred.'}`)}</p></li>` + sourceRows.join('')
       + `<li><div class="readiness-head"><strong>Provisional cross-body detector</strong><span class="badge ${readiness.ready ? 'good' : ''}">${readiness.ready ? 'Signals ready' : 'Waiting'}</span></div><p>${escaped(readiness.detail)} Telemetry readiness does not establish detection accuracy.</p></li>`
       + `<li><div class="readiness-head"><strong>Clock alignment</strong></div><p>${escaped(alignments)}</p></li>`
-      + `<li><div class="readiness-head"><strong>WILi voice cache</strong><span class="badge ${wiliVoice?.configured ? 'good' : ''}">${wiliVoice?.configured ? 'Prepared' : 'Unavailable'}</span></div><p>${escaped(wiliVoice?.detail || 'No prepared board voice cache reported.')} Rehearse playback on the wearable.</p></li>`
+      + `<li><div class="readiness-head"><strong>WILi voice cache</strong><span class="badge ${wiliVoice?.configured ? 'good' : ''}">${wiliVoice?.configured ? 'Prepared' : 'Unavailable'}</span></div><p>${escaped(wiliVoice?.detail || 'No prepared board voice cache reported.')} Check playback on the wearable.</p></li>`
       + `<li><div class="readiness-head"><strong>ElevenLabs API</strong><span class="badge">${audio?.configured ? 'Configured' : 'Unavailable'}</span></div><p>${escaped(audio?.detail || 'No ElevenLabs API status reported')}</p></li>`
-      + `<li><div class="readiness-head"><strong>Wearer iMessage</strong><span class="badge">${wearerMessaging?.configured ? 'Configured' : 'Unavailable'}</span></div><p>${escaped(wearerMessaging?.detail || 'No wearer messaging configuration reported')}</p></li>` + dispatchRow;
+      + `<li><div class="readiness-head"><strong>Patient iMessage</strong><span class="badge">${wearerMessaging?.configured ? 'Configured' : 'Unavailable'}</span></div><p>${escaped(wearerMessaging?.detail || 'No patient messaging configuration reported')}</p></li>` + dispatchRow;
     if (nativeSetup) {
       const addresses = nativeSetup.addresses.length ? nativeSetup.addresses.map((address) => `${address}:${nativeSetup.port}`).join('\n') : 'No external IPv4 address reported';
       const binding = nativeSetup.lanEnabled === true ? 'LAN binding enabled' : nativeSetup.lanEnabled === false ? 'Local-only binding' : 'Listener binding not reported';
@@ -1345,11 +1609,11 @@ import { careHighlights } from './care-summary.js';
   function renderResponders() {
     const responders = snapshot.responders;
     const ownerId = snapshot.incident?.ownerId;
-    $('#responders').innerHTML = responders.length ? responders.map((person) => `<li class="responder-item"><span class="avatar">${escaped(initials(person.name))}</span><div><strong>${escaped(person.name)}</strong><p>${escaped(person.simulated === true ? 'Demo responder · automatic local progression; no live phone alert' : person.phone ? 'Approved phone configured; send result in Delivery activity' : 'Approved phone needed for live alerts')}</p></div>${person.id === ownerId ? `<span class="badge ${simulatedIncident() ? 'warning' : 'good'}">${simulatedIncident() ? 'DEMO OWNER' : 'OWNER'}</span>` : person.simulated === true ? '<span class="badge warning">DEMO</span>' : ''}</li>`).join('') : `<li class="empty-list">${snapshot.dispatch?.mode === 'simulated' ? 'No demo responder reported.' : 'Add an approved responder with a phone for live alerts.'}</li>`;
+    $('#responders').innerHTML = responders.length ? responders.map((person) => `<li class="responder-item"><span class="avatar">${escaped(initials(person.name))}</span><div><strong>${escaped(person.name)}</strong><p>${escaped(person.simulated === true ? 'Local responder · automatic local progression; no live phone alert' : person.phone ? 'Approved phone configured; send result in Delivery activity' : 'Approved phone needed for live alerts')}</p></div>${person.id === ownerId ? `<span class="badge ${simulatedIncident() ? 'warning' : 'good'}">OWNER</span>` : person.simulated === true ? '<span class="badge warning">LOCAL</span>' : ''}</li>`).join('') : `<li class="empty-list">${snapshot.dispatch?.mode === 'simulated' ? 'No local responder reported.' : 'Add an approved responder with a phone for live alerts.'}</li>`;
     const signature = JSON.stringify(responders.map((person) => [person.id, person.name, person.simulated]));
     if (signature !== responderSignature) {
       const selected = $('#responder').value;
-      $('#responder').innerHTML = responders.length ? responders.map((person) => `<option value="${escaped(person.id)}">${escaped(person.name)}${person.simulated === true ? ' · demo' : ''}</option>`).join('') : '<option value="">No approved responders</option>';
+      $('#responder').innerHTML = responders.length ? responders.map((person) => `<option value="${escaped(person.id)}">${escaped(person.name)}${person.simulated === true ? ' · local' : ''}</option>`).join('') : '<option value="">No approved responders</option>';
       if (responders.some((person) => person.id === selected)) $('#responder').value = selected;
       responderSignature = signature;
     }
@@ -1357,7 +1621,7 @@ import { careHighlights } from './care-summary.js';
 
   function renderProviders() {
     const providers = Object.entries(snapshot.providers || {});
-    const names = { photon: 'Photon messaging', finchnode: 'Finch synthetic records', elevenlabs: 'ElevenLabs API', llm: 'Grounded AI', wiliVoice: 'WILi voice cache' };
+    const names = { photon: 'Photon messaging', finchnode: 'FinchNode records', elevenlabs: 'ElevenLabs API', llm: 'Grounded AI', wiliVoice: 'WILi voice cache' };
     $('#providers').innerHTML = providers.length ? providers.map(([name, status]) => `<li class="provider-item"><div class="provider-head"><strong>${escaped(Object.hasOwn(names, name) ? names[name] : name)}</strong><span class="badge ${status.configured ? 'good' : ''}">${status.configured ? name === 'wiliVoice' ? 'Prepared' : 'Configured' : 'Unavailable'}</span></div><p>${escaped(status.detail)}</p></li>`).join('') : '<li class="empty-list">No provider status available.</li>';
   }
 
@@ -1368,24 +1632,27 @@ import { careHighlights } from './care-summary.js';
     $('#timeline').innerHTML = events.length ? events.map((event) => {
       const simulated = simulatedActor(event.actor) || simulatedIncident() && (snapshot.responders.some(person => person.id === event.actor && person.simulated === true)
         || ['ACKNOWLEDGED', 'RESPONDER_EN_ROUTE', 'ON_SCENE', 'RESOLVED'].includes(event.type));
-      const actor = `${nameFor(event.actor)}${simulated && !simulatedActor(event.actor) ? ' · demo' : ''}`;
-      return `<li class="event-item"><div class="event-head"><strong>${escaped(event.type.replaceAll('_', ' '))}${simulated ? ' · DEMO' : ''}</strong><time>${escaped(time(event.at))}</time></div><p>${escaped(timelineDetail(event))}</p><span class="event-actor">${escaped(actor)}</span></li>`;
+      const actor = `${nameFor(event.actor)}${simulated && !simulatedActor(event.actor) ? ' · local' : ''}`;
+      return `<li class="event-item"><div class="event-head"><strong>${escaped(event.type.replaceAll('_', ' ').replace('WEARER', 'PATIENT'))}${simulated ? ' · local' : ''}</strong><time>${escaped(time(event.at))}</time></div><p>${escaped(timelineDetail(event))}</p><span class="event-actor">${escaped(actor)}</span></li>`;
     }).join('') : '<li class="empty-list">Events will appear as the incident progresses.</li>';
   }
 
   function timelineDetail(event) {
     try {
       const detail = JSON.parse(event.detail);
+      if (event.type === 'QUESTION_RECEIVED' && detail?.source === 'photon-imessage' && typeof detail.question === 'string') {
+        return `Question received: ${detail.question}\nQueued for answer preparation. This event does not establish an answer or delivery.`;
+      }
       if (event.type === 'ANSWER_QUEUED' && detail?.source === 'photon-imessage' && typeof detail.question === 'string') {
         return `Question: ${detail.question}\nAnswer queued · ${generationFor(detail.generation)[0].toLowerCase()}. Delivery is not yet established.`;
       }
       if (event.type === 'CHECKIN_REPLY' && typeof detail?.transcript === 'string') {
         const decisions = { help_requested: 'Help requested', confirmation_required: 'Explicit cancellation still required', unresolved: 'Incident remains unresolved' };
         const decision = typeof detail.decision === 'string' && Object.hasOwn(decisions, detail.decision) ? decisions[detail.decision] : 'Reply recorded';
-        return `Wearer reply: ${detail.transcript}\n${decision}.`;
+        return `Patient reply: ${detail.transcript}\n${decision}.`;
       }
       if (event.type === 'WEARER_REPORT' && typeof detail?.transcript === 'string') {
-        return `Wearer update: ${detail.transcript}\nRecorded from the private Photon conversation. Incident responsibility is unchanged.`;
+        return `Patient update: ${detail.transcript}\nRecorded from the private Photon conversation. Incident responsibility is unchanged.`;
       }
       if (event.type === 'CONVERSATION_MESSAGE' && detail?.speaker === 'responder' && typeof detail.transcript === 'string') {
         return `Responder message: ${detail.transcript}\nQueued for wearable speech; delivery appears in Conversation.`;
@@ -1410,10 +1677,10 @@ import { careHighlights } from './care-summary.js';
     text('#action-count', actions.length);
     $('#actions').innerHTML = actions.length ? actions.map((action) => {
       const [label, color] = actionLabels[action.status] || [action.status, ''];
-      const actionTitles = { wearer_checkin: 'Wearer iMessage', wearer_ack: 'Wearer iMessage acknowledgement', wearer_status: 'Wearer progress update', wearer_relay: 'Wearer quote to responder', checkin: 'Device check-in request', answer: 'Responder answer' };
+      const actionTitles = { wearer_checkin: 'Patient iMessage', wearer_ack: 'Patient iMessage acknowledgement', wearer_status: 'Patient progress update', wearer_location: 'Patient approach update', wearer_relay: 'Patient quote to responder', checkin: 'Device check-in request', answer: 'Responder answer' };
       const actionTitle = Object.hasOwn(actionTitles, action.type) ? actionTitles[action.type] : action.type[0].toUpperCase() + action.type.slice(1);
       const message = action.text ? `<details class="action-message" data-action-id="${escaped(action.id)}"${expanded.has(action.id) ? ' open' : ''}><summary>View message</summary><p>${escaped(action.text)}</p></details>` : '';
-      const result = action.status === 'simulated' ? `Internal demo delivery; no provider send or recipient receipt.${action.providerResult ? ` ${action.providerResult}` : ''}` : action.providerResult || 'No provider result yet.';
+      const result = action.status === 'simulated' ? `Local delivery; no provider send or recipient receipt.${action.providerResult ? ` ${action.providerResult}` : ''}` : action.providerResult || 'No provider result yet.';
       return `<li class="action-item"><div class="action-head"><strong>${escaped(actionTitle)}${action.recipientId ? ` · ${escaped(nameFor(action.recipientId))}` : ''}</strong><span class="badge ${color}">${escaped(label)}</span></div><p>${escaped(result)}</p>${message}<span class="action-meta">${escaped(time(action.createdAt))} · ${action.attempts} attempt${action.attempts === 1 ? '' : 's'}${action.providerMessageId ? ` · Message ${escaped(action.providerMessageId.slice(0, 18))}` : ''}</span></li>`;
     }).join('') : '<li class="empty-list">No external actions queued.</li>';
   }
@@ -1459,7 +1726,7 @@ import { careHighlights } from './care-summary.js';
     $('#responder').disabled = automaticResponder || !snapshot?.responders.length || busy;
     $('#accept').disabled = automaticResponder || !ready || !responder || incident?.phase !== 'HELP_REQUESTED';
     $('#depart').disabled = automaticResponder || !ready || !isOwner || incident?.phase !== 'ACKNOWLEDGED';
-    $('#arrive').disabled = automaticResponder || !ready || !isOwner || incident?.phase !== 'RESPONDER_EN_ROUTE';
+    $('#arrive').disabled = automaticResponder || !ready || !isOwner || !['ACKNOWLEDGED', 'RESPONDER_EN_ROUTE'].includes(incident?.phase);
     $('#decline').disabled = automaticResponder || !ready || !isOwner;
     $('#resolve').disabled = automaticResponder || !ready || !isOwner || incident?.phase !== 'ON_SCENE' || $('#outcome-input').value.trim().length < 5;
     $('#outcome-input').disabled = automaticResponder;
@@ -1503,7 +1770,7 @@ import { careHighlights } from './care-summary.js';
       const response = await fetch('/api/commands', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload), signal: AbortSignal.timeout(12000) });
       const result = await response.json();
       if (!response.ok || result.error) throw new Error(result.error || `Command failed (${response.status})`);
-      text(message, 'Command accepted by the controller.');
+      text(message, payload.type === 'reset' ? 'Back at the start. Ready for another check-in; no calibration required.' : 'Command accepted by the controller.');
       if (payload.type === 'resolve' || payload.type === 'reset') $('#outcome-input').value = '';
       await loadState().catch(() => {});
     } catch (error) {
@@ -1640,10 +1907,16 @@ import { careHighlights } from './care-summary.js';
     current.addEventListener('error', () => current.close());
   }
 
-  $('#developer-toggle').addEventListener('click', () => {
+  function toggleDeveloperTools() {
     developerEnabled = !developerEnabled;
-    if (!developerEnabled && location.hash === '#developer') location.hash = '#overview';
+    location.hash = developerEnabled ? '#developer' : '#motion';
     updateWorkspaceNavigation();
+  }
+  $('#developer-toggle').addEventListener('click', toggleDeveloperTools);
+  document.addEventListener('keydown', event => {
+    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'd') {
+      event.preventDefault(); toggleDeveloperTools();
+    }
   });
   $('#token-form').addEventListener('submit', (event) => { event.preventDefault(); setToken($('#token').value); });
   $('#copy-token').addEventListener('click', async () => {
@@ -1667,9 +1940,9 @@ import { careHighlights } from './care-summary.js';
   $('#trial-download').addEventListener('click', downloadTrial);
   $('#wellbeing-checkin').addEventListener('click', requestWellbeingCheckin);
   $('#wellbeing-brief').addEventListener('click', downloadCareJournal);
-  $('#location-invite').addEventListener('click', inviteLocation);
-  $('#trigger').addEventListener('click', () => command({ type: 'trigger', kind: 'synthetic', summary: 'Operator-triggered development simulation. No physical fall evidence asserted.' }));
-  $('#manual-help').addEventListener('click', () => command({ type: 'trigger', kind: 'manual', summary: 'Operator-simulated manual request for help.' }));
+  $('#location-invite')?.addEventListener('click', inviteLocation);
+  $('#trigger').addEventListener('click', () => command({ type: 'trigger', kind: 'synthetic', summary: 'Check-in started manually. No fall was measured.' }));
+  $('#manual-help').addEventListener('click', () => command({ type: 'trigger', kind: 'manual', summary: 'Help requested manually.' }));
   $('#cancel').addEventListener('click', () => { const incident = snapshot?.incident; if (incident) command({ type: 'cancel', incidentId: incident.id, checkinId: incident.checkinId }); });
   for (const type of ['accept', 'depart', 'arrive', 'decline']) $(`#${type}`).addEventListener('click', () => { const incident = snapshot?.incident; if (incident) command({ type, incidentId: incident.id, responderId: $('#responder').value }); });
   $('#resolve').addEventListener('click', () => { const incident = snapshot?.incident; if (incident) command({ type: 'resolve', incidentId: incident.id, responderId: $('#responder').value, outcome: $('#outcome-input').value.trim() }); });
@@ -1701,3 +1974,37 @@ import { careHighlights } from './care-summary.js';
   connect();
   setInterval(updateTime, 500);
 })();
+
+// Watch preview vitals update like a live feed: bounded variation around the sample
+// baseline, and the trace scrolls one beat per heartbeat. Presentation only.
+{
+  const [heart, oxygen, breathing] = document.querySelectorAll('.watch-vitals strong');
+  const trace = document.querySelector('.watch-vitals svg path');
+  if (heart && oxygen && breathing && trace) {
+    const period = 71, beat = x => `H${x}L${x + 8} 20L${x + 14} 27L${x + 22} 7L${x + 29} 35L${x + 37} 24`;
+    let path = 'M0 24'; for (let x = 27; x < 240 + period * 2; x += period) path += beat(x);
+    trace.setAttribute('d', path); trace.closest('svg').style.overflow = 'hidden';
+    const vitals = { hr: watchPreview.heartRate, spo2: watchPreview.oxygen, rr: watchPreview.respiratoryRate };
+    const drift = (value, base, spread, low, high) =>
+      Math.min(high, Math.max(low, Math.round(value + (base - value) * .3 + (Math.random() - .5) * spread)));
+    const show = (element, value) => { if (element.firstChild) element.firstChild.nodeValue = `${value} `; };
+    let tick = 0;
+    setInterval(() => {
+      tick++;
+      vitals.hr = drift(vitals.hr, watchPreview.heartRate, 4, 68, 86); show(heart, vitals.hr);
+      if (tick % 3 === 0) { vitals.rr = drift(vitals.rr, watchPreview.respiratoryRate, 2.4, 13, 19); show(breathing, vitals.rr); }
+      if (tick % 5 === 0) { vitals.spo2 = drift(vitals.spo2, watchPreview.oxygen, 1.6, 96, 99); show(oxygen, vitals.spo2); }
+    }, 1000);
+    const still = matchMedia('(prefers-reduced-motion: reduce)');
+    let offset = 0, last = performance.now();
+    const scroll = now => {
+      const elapsed = Math.min(.1, (now - last) / 1000); last = now;
+      if (!still.matches && !document.hidden) {
+        offset = (offset + period * vitals.hr / 60 * elapsed) % period;
+        trace.setAttribute('transform', `translate(${(-offset).toFixed(2)} 0)`);
+      }
+      requestAnimationFrame(scroll);
+    };
+    requestAnimationFrame(scroll);
+  }
+}

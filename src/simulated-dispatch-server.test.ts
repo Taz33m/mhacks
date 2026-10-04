@@ -22,7 +22,7 @@ async function waitFor<T>(read: () => Promise<T>, matches: (value: T) => boolean
 
 // Generated wire packets verify the local demo orchestration only. No physical
 // sensing, microphone recognition, audio audibility, GPS or Photon receipt is inferred.
-test('isolated demo dispatch cancels explicit check-ins and automatically resolves device help with honest provenance', { timeout: 15_000 }, async () => {
+test('isolated wearable rehearsal cancels check-ins and resolves a spoken report through autonomous Maya with honest provenance', { timeout: 15_000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'lifeline-simulated-dispatch-'));
   const child = spawn(process.execPath, ['--import', './src/test-helpers/offline.ts', './src/server.ts'], {
     cwd: process.cwd(),
@@ -82,20 +82,17 @@ test('isolated demo dispatch cancels explicit check-ins and automatically resolv
       deviceModel: 'freewili-og', fullScaleG: 2, transport: 'stock-sdk',
       capabilities: { accelerometer: true, speaker: true, microphone: true, buttons: true } }));
     await waitFor(async () => contexts, packets => packets.some(packet => packet.incidentId === null));
-    const press = (action: 'help' | 'cancel', eventId: string, incidentId: string | null, checkinId: string | null) =>
+    const press = (action: 'help' | 'cancel' | 'rehearse', eventId: string, incidentId: string | null, checkinId: string | null) =>
       ws.send(JSON.stringify({ type: 'button.press', source: 'body-wili', sessionId, eventId, action, incidentId, checkinId }));
 
-    // One labelled development trigger sets up the cancellation case. Progress
-    // below is exclusively the device control and autonomous demo scheduler.
-    const triggered = await fetch(`${base}/api/commands`, { method: 'POST', signal: AbortSignal.timeout(2000),
-      headers: { Authorization: `Bearer ${setup.token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'trigger', kind: 'synthetic', summary: 'Generated cancellation fixture; no physical event.' }) });
-    assert.equal(triggered.status, 200);
+    // Generated Yellow is the only rehearsal trigger; no operator drives the
+    // incident. Packets establish transport behavior, not a physical button test.
+    press('rehearse', 'generated-yellow-cancellation', null, null);
     const confirming = (await waitFor(state, value => value.incident?.phase === 'CONFIRMING')).incident!;
     assert.equal(confirming.dispatchMode, 'simulated');
     assert.equal(confirming.checkinDeadline - confirming.createdAt, 20_000);
     await waitFor(async () => contexts, packets => packets.some(packet => packet.incidentId === confirming.id
-      && packet.phase === 'CONFIRMING' && /DEMO/.test(packet.statusText ?? '')));
+      && packet.phase === 'CONFIRMING' && /^LIFELINE\n/.test(packet.statusText ?? '') && !/DEMO/.test(packet.statusText ?? '')));
     press('cancel', 'generated-green-before-dispatch', confirming.id, confirming.checkinId);
     const cancelled = await waitFor(state, value => value.incident?.phase === 'CANCELLED_FALSE_ALARM');
     assert.equal(cancelled.incident!.id, confirming.id);
@@ -107,18 +104,27 @@ test('isolated demo dispatch cancels explicit check-ins and automatically resolv
     assert.equal(stillCancelled.actions.some(action => action.status === 'simulated'), false);
     assert.equal(stillCancelled.conversation?.some(message => message.source === 'simulated-dispatch'), false);
 
-    press('help', 'generated-red-starts-automatic-dispatch', null, null);
+    press('rehearse', 'generated-yellow-starts-spoken-rehearsal', null, null);
+    const spokenCheckin = (await waitFor(state, value => value.incident?.id !== confirming.id
+      && value.incident?.phase === 'CONFIRMING')).incident!;
+    await waitFor(async () => contexts, packets => packets.some(packet => packet.incidentId === spokenCheckin.id
+      && packet.phase === 'CONFIRMING' && packet.voiceAsset === 'CHECKIN'));
+    const exactQuote = "I fell, I can't stand up.";
+    ws.send(JSON.stringify({ type: 'checkin.reply', source: 'body-wili', sessionId,
+      eventId: 'generated-voice-reply', incidentId: spokenCheckin.id, checkinId: spokenCheckin.checkinId,
+      transcript: exactQuote }));
     const requested = await waitFor(state, value => value.incident?.id !== confirming.id && value.incident?.phase === 'HELP_REQUESTED');
     const incidentId = requested.incident!.id;
     assert.equal(requested.incident!.dispatchMode, 'simulated');
-    assert.equal(requested.incident!.evidence.kind, 'manual');
+    assert.equal(requested.incident!.evidence.kind, 'synthetic');
+    assert.equal(requested.conversation?.find(message => message.speaker === 'wearer')?.text, exactQuote);
     assert.ok(requested.timeline.some(event => event.type === 'DEVICE_BUTTON' && event.actor === 'freewili-button'));
     const resolved = await waitFor(state, value => value.incident?.id === incidentId && value.incident.phase === 'RESOLVED'
       && value.actions.some(action => action.type === 'alert' && action.status === 'simulated'));
     assert.equal(resolved.incident!.ownerId, 'demo-maya');
     assert.equal(resolved.incident!.resolutionActor, 'simulated-dispatch:demo-maya');
-    assert.match(resolved.incident!.outcome!, /Simulated dispatch outcome:/);
-    assert.match(resolved.incident!.outcome!, /No real arrival or patient assessment is claimed/);
+    assert.match(resolved.incident!.outcome!, /reached the wearer and stayed with them/);
+    assert.match(resolved.incident!.outcome!, /arranging further assistance\./);
     const expected: Phase[] = ['HELP_REQUESTED', 'ACKNOWLEDGED', 'RESPONDER_EN_ROUTE', 'ON_SCENE', 'RESOLVED'];
     assert.deepEqual(resolved.timeline.filter(event => expected.includes(event.type as Phase)).map(event => event.type), expected);
     assert.ok(resolved.timeline.filter(event => expected.slice(1).includes(event.type as Phase))
@@ -128,10 +134,10 @@ test('isolated demo dispatch cancels explicit check-ins and automatically resolv
     const phases = incidentContexts.reduce<string[]>((list, packet) => {
       if (packet.phase && list.at(-1) !== packet.phase) list.push(packet.phase); return list;
     }, []);
-    assert.deepEqual(phases, expected);
-    assert.ok(incidentContexts.every(packet => /DEMO/.test(packet.statusText ?? '')));
+    assert.deepEqual(phases, ['CONFIRMING', ...expected]);
+    assert.ok(incidentContexts.every(packet => !/DEMO/.test(packet.statusText ?? '')));
     assert.equal(speech.filter(packet => packet.incidentId === incidentId).length, 3);
-    assert.ok(speech.every(packet => packet.speakerName === 'Demo responder Maya'));
+    assert.ok(speech.every(packet => packet.speakerName === 'Maya'));
     const reports = resolved.conversation!.filter(message => message.speaker === 'responder');
     assert.equal(reports.length, 4); assert.ok(reports.every(message => message.source === 'simulated-dispatch'));
     assert.equal(reports.slice(0, 3).every(message => message.delivery === 'spoken'), true);

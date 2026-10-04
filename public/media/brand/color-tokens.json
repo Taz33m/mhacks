@@ -1,0 +1,14 @@
+{
+  "charcoal": "#1F1F1F",
+  "ivory": "#FAF8F4",
+  "activation": {
+    "peach": "#FFC6A5",
+    "lilac": "#D8B7F3",
+    "periwinkle": "#A8ABFF",
+    "blue": "#96BEF4",
+    "mint": "#98DDC6"
+  },
+  "typeface": "Aspekta",
+  "weight": 500,
+  "note": "Charcoal and ivory follow the supplied board. Activation hex values are web specifications sampled visually from its gradient."
+}

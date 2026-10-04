@@ -14,7 +14,6 @@
   const nav = document.getElementById('story-nav');
   const hero = document.getElementById('sequence-hero');
   const utility = document.getElementById('story-utility');
-  const bottom = document.getElementById('story-bottom');
   const captions = [...document.querySelectorAll('.story-caption')];
   const phone = document.getElementById('story-phone');
   const thread = document.getElementById('phone-thread');
@@ -27,7 +26,7 @@
   const prefetchRadius = mobile ? 4 : 6;
   const blobs = new Map(), decoded = new Map(), fetching = new Map(), decoding = new Map();
   const failed = new Set(), pinned = new Set();
-  let manifest, enabled = false, disabledByUser = false, progress = 0, requested = 0, drawn = -1;
+  let manifest, enabled = false, progress = 0, requested = 0, drawn = -1;
   let renderId = 0, fetchCount = 0, backgroundCursor = 0, backgroundScheduled = false;
   const clamp = (n, a = 0, b = 1) => Math.max(a, Math.min(b, n));
   const interval = (n, a, b) => clamp((n - a) / (b - a));
@@ -141,7 +140,7 @@
     stage.style.setProperty('--reframe', r);
     stage.style.setProperty('--nav-reveal', interval(r, .42, .68));
     stage.style.setProperty('--hero-reveal', interval(r, narrow ? .84 : .70, 1));
-    gate(nav, r > .68); gate(hero, r > .99); gate(utility, r <= .68); gate(bottom, r < .85);
+    gate(nav, r > .68); gate(hero, r > .99); gate(utility, r <= .68);
   }
   function render() {
     renderId = 0;
@@ -152,6 +151,10 @@
     const scene = holding ? manifest.scenes.at(-1) : manifest.scenes[sceneIndex];
     const sceneProgress = holding ? 1 : interval(progress, scene.start, scene.end);
     requested = holding ? manifest.totalFrames - 1 : scene.first + Math.min(scene.count - 1, Math.floor(sceneProgress * scene.count));
+    // Speech uses the first 62% of this expanded beat; the last pose holds while
+    // HELP REQUESTED appears. Pausing or reversing still owns the exact frame.
+    if (!holding && scene.id === 'words') requested = scene.first
+      + Math.min(scene.count - 1, Math.floor(interval(sceneProgress, 0, .62) * scene.count));
     // Give the live DOM conversation a stable human pose; keys follow departure.
     if (!holding && scene.id === 'responder') requested = sceneProgress < .17
       ? 160 + Math.floor(interval(sceneProgress, 0, .17) * 15)
@@ -193,10 +196,10 @@
     });
     const answer = document.querySelector('[data-answer]');
     const words = manifest.scenes.find(item => item.id === 'words');
-    const answerReveal = ease(interval(progress, words.start + .01, words.start + .04));
+    const answerReveal = ease(interval(interval(progress, words.start, words.end), .015, .10));
     answer.style.opacity = answerReveal;
     const wordsProgress = interval(progress, words.start, words.end);
-    const contextReveal = ease(interval(wordsProgress, .4, .7));
+    const contextReveal = ease(interval(wordsProgress, .64, .76));
     const prompt = document.querySelector('.checkin-caption > p');
     const promptFade = scene.id === 'words' ? ease(interval(wordsProgress, 0, .32)) : 0;
     prompt.style.opacity = String(1 - promptFade);
@@ -211,14 +214,13 @@
     context.style.opacity = contextReveal;
     context.style.maxHeight = `${contextReveal * 140}px`;
     wave.querySelectorAll('i').forEach((bar, i) => {
-      bar.style.height = `${4 + (Math.sin(i * 1.7 + wordsProgress * 18) + 1) * Math.sin((i + 1) / 25 * Math.PI) * 12}px`;
+      bar.style.height = `${4 + (Math.sin(i * 1.7 + interval(wordsProgress, 0, .62) * 18) + 1) * Math.sin((i + 1) / 25 * Math.PI) * 12}px`;
     });
     const responder = manifest.scenes.find(item => item.id === 'responder');
     const responseProgress = interval(progress, responder.start, responder.end);
     coordination(responseProgress, scene.id === 'responder' && !holding);
     stage.style.setProperty('--phone-focus', scene.id === 'responder' && !holding
       ? ease(interval(responseProgress, .025, .17)) * (1 - ease(interval(responseProgress, .89, 1))) : 0);
-    document.getElementById('sequence-position').textContent = `${String(holding ? manifest.scenes.length + 1 : sceneIndex + 1).padStart(2, '0')} / ${String(manifest.scenes.length + 1).padStart(2, '0')}`;
     document.getElementById('story-progress-bar').style.transform = `scaleX(${progress})`;
     // No interpolation or elapsed-time playhead: a stopped scroll owns this exact still.
     load(requested, true);
@@ -241,8 +243,8 @@
     canvas.classList.remove('has-frame');
     poster.src = mobile ? '/media/story/mobile/frame_0259.webp' : '/media/story/held.webp';
     captions.forEach(el => { el.classList.remove('is-visible'); el.style.opacity = '0'; });
-    poster.alt = 'A fictional illustrated wearer sits awake beside his sofa, listening to a reassuring reply.';
-    gate(nav, true); gate(hero, true); gate(utility, false); gate(bottom, false);
+    poster.alt = 'An illustrated patient sits awake beside his sofa, listening to a reassuring reply.';
+    gate(nav, true); gate(hero, true); gate(utility, false);
     phone.style.opacity = '0';
     if (renderId) cancelAnimationFrame(renderId);
     renderId = 0;
@@ -258,12 +260,12 @@
     drawn = -1;
   }
   async function start() {
-    if (reduce.matches || disabledByUser || !ctx || !window.createImageBitmap) { staticMode(); return; }
+    if (reduce.matches || !ctx || !window.createImageBitmap) { staticMode(); return; }
     enabled = true;
     body.classList.add('sequence-ready');
     geometry(0);
     poster.src = mobile ? '/media/story/mobile/frame_0000.webp' : '/media/story/opening.webp';
-    poster.alt = 'An illustrative story of a wearer at home and a responder preparing to help.';
+    poster.alt = 'An illustrated story of a patient at home and a responder preparing to help.';
     try {
       if (!manifest) {
         const response = await fetch('/media/story/manifest.json', { cache: 'no-cache' });
@@ -274,7 +276,7 @@
         manifest.scenes.forEach((scene, index) => { scene.id ||= previousIds[index]; });
         manifest.reframeEnd ||= .96;
       }
-      if (reduce.matches || disabledByUser) return;
+      if (reduce.matches) return;
       sizeCanvas();
       manifest.scenes.forEach(scene => pinned.add(scene.first));
       pinned.add(manifest.totalFrames - 1);
@@ -293,20 +295,14 @@
   addEventListener('resize', () => { if (enabled && manifest) sizeCanvas(); schedule(); }, { passive: true });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { schedule(); preloadBackground(); } });
   reduce.addEventListener('change', () => reduce.matches ? staticMode() : start());
-  document.getElementById('sequence-static').addEventListener('click', () => {
-    disabledByUser = true; staticMode();
-    hero.querySelector('a').focus({ preventScroll: true });
-    story.scrollIntoView({ behavior: 'instant', block: 'start' });
-  });
-  document.getElementById('sequence-replay').addEventListener('click', () => story.scrollIntoView({ behavior: 'instant', block: 'start' }));
   function initSignals() {
     const section = document.querySelector('.signal-scroll'), pin = section.querySelector('.signal-pin');
     const plot = document.getElementById('signal-canvas'), stills = document.getElementById('signal-static');
     const chapters = [...section.querySelectorAll('[data-signal-chapter]')];
     const families = [
-      { name: 'A fall', unit: 'g', x: 'Time (seconds)', y: 'Acceleration (g)', duration: 12, scope: 'Fall sensing · prototype', detail: 'A short window. A sudden change.' },
-      { name: 'Seizure-like motion', unit: 'g', x: 'Time (seconds)', y: 'Acceleration (g)', duration: 8, scope: 'Seizure detection · research direction', detail: 'A different rhythm. A closer look.' },
-      { name: 'Gait over time', unit: '%', x: 'Time (days)', y: 'Step interval variability (%)', duration: 28, scope: 'Gait detection · research direction', detail: 'Small changes become visible over time.' }
+      { name: 'A fall', unit: 'g', x: 'Time (seconds)', y: 'Acceleration (g)', duration: 12, scope: 'Synthetic sketch · fall pattern', detail: 'A short window. A sudden change.' },
+      { name: 'Seizure-like motion', unit: 'g', x: 'Time (seconds)', y: 'Acceleration (g)', duration: 8, scope: 'Unusual movement → patient check-in', detail: 'A different rhythm. A closer look.' },
+      { name: 'Gait over time', unit: '%', x: 'Time (days)', y: 'Step interval variability (%)', duration: 28, scope: 'Synthetic sketch · exploratory gait trend', detail: 'Small changes become visible over time.' }
     ];
     let chartRequest = 0;
     const normal = t => 1 + Math.sin(t * 89) * .012 + Math.sin(t * 143) * .009;
@@ -354,7 +350,7 @@
         section.classList.add('is-static'); stills.hidden = false;
         if (!stills.children.length) families.forEach((family, index) => {
           const figure = document.createElement('figure'), title = document.createElement('figcaption'), drawing = document.createElement('canvas'), label = document.createElement('p');
-          title.textContent = family.name; drawing.setAttribute('role', 'img'); drawing.setAttribute('aria-label', `${family.name}: illustrative ${family.y} against ${family.x}.`);
+          title.textContent = family.name; drawing.setAttribute('role', 'img'); drawing.setAttribute('aria-label', `${family.name}: ${family.y} against ${family.x}.`);
           drawing.dataset.family = index; label.textContent = `${family.y} / ${family.x} · ${family.scope}`;
           figure.append(title, drawing, label); stills.append(figure);
         });

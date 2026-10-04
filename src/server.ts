@@ -12,19 +12,20 @@ import { parsePolicy } from './policy.ts';
 import { Motion, validSample } from './motion.ts';
 import { FreeWili } from './freewili.ts';
 import { WiliAssessment } from './wili-assessment.ts';
+import { ShakingAssessment } from './shaking-assessment.ts';
 import { WiliDeviceProtocol } from '../native/freewili/protocol.ts';
 import type { WiliHello } from '../native/freewili/protocol.ts';
 import { readStockVoiceManifest } from '../native/freewili/prepare-stock-audio.ts';
 import { approvedResponder, phoneIdentity } from './identity.ts';
 import { handleWearerInbound } from './wearer.ts';
-import { handleResponderQuestion } from './responder-questions.ts';
+import { enqueueResponderQuestion, createResponderQuestionWorker } from './responder-questions.ts';
 import { handleResponderProgress } from './responder.ts';
 import { handleResponderRelay } from './responder-relay.ts';
 import { Trials } from './trials.ts';
 import { Wellbeing } from './wellbeing.ts';
 import { createCareReply } from './care-reply.ts';
 import { buildEhrWorkspace } from './ehr.ts';
-import { classifyCheckinReply } from './checkin.ts';
+import { classifyCheckinReply, reportsCurrentSeizure } from './checkin.ts';
 import { Location } from './location.ts';
 import { createLocationGateway } from './location-gateway.ts';
 import { createRouteEta } from './route-eta.ts';
@@ -103,6 +104,7 @@ let wellbeingVoiceSession: string | null = null;
 const motion = new Motion();
 const wili = new FreeWili();
 const wiliAssessment = new WiliAssessment();
+const shakingAssessment = new ShakingAssessment();
 const legacyPhone = process.env.LIFELINE_LEGACY_PHONE === '1';
 const trials = new Trials(resolve(dataDir, 'trials'));
 const trialPinged = new Set<TrialSource>();
@@ -120,10 +122,17 @@ let audioPreparing = false;
 // Demo pacing belongs to our outbox, not a claimed provider quota.
 const messageGapMs = Number(process.env.LIFELINE_MESSAGE_GAP_MS ?? 5000);
 if (!Number.isFinite(messageGapMs) || messageGapMs < 0 || messageGapMs > 60_000) throw new Error('Invalid LIFELINE_MESSAGE_GAP_MS.');
-let messageBusy = false, nextMessageAt = 0;
+// Different people have independent submission lanes. A slow wearer check-in
+// must not hold an approved responder alert behind its network request.
+type MessageLane = 'wearer' | 'responders';
+const messageLanes: Record<MessageLane, { busy: boolean; nextAt: number }> = {
+  wearer: { busy: false, nextAt: 0 }, responders: { busy: false, nextAt: 0 },
+};
 let stopPhoton: (() => Promise<void>) | null = null;
 let handoffKey: string | null = null;
 let stopping = false;
+const responderQuestionWorker = createResponderQuestionWorker(controller, generateResponderAnswer,
+  { canQueue: () => !stopping });
 let contextPreviewBusy = false;
 let checkinAudio: CheckinAudioStatus | null = null;
 let boardVoice = { configured: false, detail: 'No complete verified WILi voice cache found.' };
@@ -217,10 +226,10 @@ function snapshot(): Snapshot {
   const wearerMessaging = { configured: Boolean(wearerPhone && providers.photon?.configured),
     detail: !wearerPhone ? 'Set LIFELINE_WEARER_PHONE to the approved wearer phone for the companion iMessage check-in.'
       : !providers.photon?.configured ? 'Wearer phone configured; Photon credentials are required for iMessage check-in.'
-        : 'Wearer phone and Photon credentials configured; verify actual iMessage receipt and replies on the demo phone.' };
+        : 'Wearer phone and Photon credentials configured.' };
   return { serverTime: Date.now(), wearer: { name: controller.wearerName }, incident, responders: responders.map(r => ({ ...r, phone: r.phone ? 'configured' : null })),
     dispatch: { mode: dispatchMode, detail: dispatchMode === 'simulated'
-      ? 'Maya is a simulated human responder. Acceptance, travel, arrival and the recorded outcome run automatically; no responder phone or live responder GPS is used.'
+      ? 'Local dispatch: Maya’s acceptance, travel, arrival and outcome run automatically.'
       : 'Approved human responders accept and report their own progress over Photon.' },
     timeline: incident ? controller.events(incident.id) : [], actions: incident ? controller.actions(incident.id).map(action => {
       const { providerChatId, providerLineId, replyChatId, replyLineId, ...visible } = action;
@@ -249,9 +258,10 @@ async function prepareWellbeingReply(): Promise<void> {
 }
 function wellbeingHelp(transcript: string, source: 'freewili-local-speech' | 'photon-imessage', event?: ProviderInbound): boolean {
   if (classifyCheckinReply(transcript) !== 'help_requested' || controller.active()) return false;
-  const i = controller.trigger({ kind: 'manual', summary: 'Wearer explicitly requested help during a wellbeing conversation.' });
-  if (event) controller.recordWearerCheckinReply({ incidentId: i.id, checkinId: i.checkinId, transcript }, event.messageId, event);
-  else controller.recordCheckinReply({ incidentId: i.id, checkinId: i.checkinId, transcript, source: 'freewili-local-speech' });
+  const seizure = reportsCurrentSeizure(transcript);
+  const i = controller.triggerReportedHelp({ kind: 'manual', ...(seizure ? { eventType: 'reported-seizure' as const } : {}),
+    summary: seizure ? 'Wearer explicitly reports a current seizure; help requested. Reported, not sensor-confirmed.'
+      : 'Wearer explicitly requested help during a wellbeing conversation.' }, transcript, source, event);
   const pending = wellbeing.replyNeeded(); if (pending) wellbeing.markIncidentRouted(pending.id);
   prepareIncident(controller.active() ?? i); return true;
 }
@@ -286,7 +296,7 @@ function prepareIncident(i: Incident): void {
         controller.setHandoff(i.id, handoff.text, handoff); broadcast();
       }
     }).catch(() => { if (stillCurrent())
-      controller.setHandoff(i.id, 'Synthetic health record unavailable. Response continues.', { generation: 'degraded' }); });
+      controller.setHandoff(i.id, 'Health record unavailable. Response continues.', { generation: 'degraded' }); });
   }
   prepareAudio();
 }
@@ -296,18 +306,21 @@ function prepareAudio(): void {
     void prepareCheckinAudio().then(bytes => { audio = bytes; }).catch(() => {}).finally(() => { audioPreparing = false; });
   }
 }
-async function providerWorker(): Promise<void> {
-  if (messageBusy || stopping || Date.now() < nextMessageAt || !providerStatus().photon?.configured) return;
-  messageBusy = true;
+async function providerWorker(channel: MessageLane): Promise<void> {
+  const lane = messageLanes[channel];
+  if (lane.busy || stopping || Date.now() < lane.nextAt || !providerStatus().photon?.configured
+    || (channel === 'responders' && dispatchMode === 'simulated')) return;
+  lane.busy = true;
   try {
-    let a = controller.claimAction(dispatchMode === 'simulated' ? 'wearer' : 'any', true);
+    let a = controller.claimAction(channel, true);
     if (!a) {
+      if (channel === 'responders') return;
       const native = findMyEnabled ? findMyRequests.claim() : null;
       if (native) {
         const eligible = () => !stopping && findMySubjects().some(s => s.role === native.subject.role && s.address === native.subject.address
           && s.incidentId === native.subject.incidentId && s.responderId === native.subject.responderId);
         if (!eligible()) { findMyRequests.finish(native.id, { status: 'failed', detail: 'Sharing request authorization ended before submission.' }); return; }
-        nextMessageAt = Date.now() + messageGapMs;
+        lane.nextAt = Date.now() + messageGapMs;
         const result = await findMy.request(native.subject.address, native.chatId, native.id, eligible);
         if (!stopping) findMyRequests.finish(native.id, result);
         return;
@@ -315,13 +328,13 @@ async function providerWorker(): Promise<void> {
       if (controller.active()) return;
       const invite = locations.claimInvite();
       if (invite && wearerPhone) {
-        nextMessageAt = Date.now() + messageGapMs;
+        lane.nextAt = Date.now() + messageGapMs;
         const result = await sendMessage(wearerPhone, invite.text, () => !stopping && !controller.active());
         if (!stopping) locations.finishInvite(invite.id, result);
         return;
       }
       const daily = wellbeing.claimAction(); if (!daily || !wearerPhone) return;
-      nextMessageAt = Date.now() + messageGapMs;
+      lane.nextAt = Date.now() + messageGapMs;
       const result = await sendMessage(wearerPhone, daily.text,
         () => !stopping && wellbeing.actionPermitted(daily, Boolean(controller.active())), daily.replyToMessageId
           ? { replyToMessageId: daily.replyToMessageId, chatId: daily.replyChatId, lineId: daily.replyLineId } : undefined);
@@ -332,7 +345,7 @@ async function providerWorker(): Promise<void> {
     const recipientId = a.recipientId;
     const phone = wearerAction ? wearerPhone : responders.find(r => r.id === recipientId)?.phone;
     if (!phone) { controller.finishAction(a.id, 'failed', wearerAction
-      ? 'No approved wearer phone configured; wearer iMessage was not sent.' : 'No approved phone configured; development simulation only.'); return; }
+      ? 'No approved wearer phone configured; wearer iMessage was not sent.' : 'No approved phone configured; message not sent.'); return; }
     let prepared = a.text;
     if (locationPublicUrl && !prepared.includes('/share-location#grant=')) {
       if (a.type === 'wearer_checkin') prepared += `\n\nShare where you are (optional):\n${shareLink(`action:${a.id}`, 'wearer', a.incidentId)}`;
@@ -342,13 +355,13 @@ async function providerWorker(): Promise<void> {
     if (['alert', 'handoff'].includes(a.type) && locationView().wearer && !prepared.includes('\n\nShared location:\n'))
       prepared = prepared.replace('Location not provided.', 'Current location appears in the separate shared-location section.') + `\n\nShared location:\n${locationBrief()}`;
     if (prepared.length <= 6000 && prepared !== a.text) a = controller.decorateAction(a.id, prepared);
-    nextMessageAt = Date.now() + messageGapMs;
+    lane.nextAt = Date.now() + messageGapMs;
     const result = await sendMessage(phone, a.text, () => !stopping && controller.actionPermitted(a)
       && (a.type !== 'wearer_location' || Boolean(locationView().eta)), a.replyToMessageId
       ? { replyToMessageId: a.replyToMessageId, chatId: a.replyChatId, lineId: a.replyLineId } : undefined);
     if (!stopping) controller.finishAction(a.id, result.status, result.detail, result.messageId, result);
   } catch { /* attempt remains attempting; startup recovery preserves an unknown outcome */ }
-  finally { messageBusy = false; if (!stopping) broadcast(); }
+  finally { lane.busy = false; if (!stopping) broadcast(); }
 }
 async function inbound(e: ProviderInbound): Promise<void> {
   if (stopping || controller.seenInbound(e.messageId)) return;
@@ -370,22 +383,22 @@ async function inbound(e: ProviderInbound): Promise<void> {
     if (e.kind !== 'text') return;
     if (e.targetMessageId !== undefined
       && (!e.targetMessageId || !controller.responderIncidentForMessage(e.targetMessageId, r.id))) return;
-    const text = (e.text ?? '').trim();
-    if (text) await handleResponderQuestion(e, controller,
-      async (incident, question) => {
-        if (/\blocation\b|\bwhere\b|\beta\b|how (?:far|long)|when.*arriv/i.test(question)) {
-          const brief = locationBrief();
-          if (!/medicat|allerg|condition|health|record|vital|dose|blood/i.test(question)) return brief;
-          const answer = await answerQuestionDetailed(incident, await healthForIncident(incident), question, controller.conversation(incident.id));
-          return { ...answer, text: answer.text.replace('Location not provided.', 'See the current shared-location context below.') + `\n\n${brief}` };
-        }
-        return answerQuestionDetailed(incident, await healthForIncident(incident), question, controller.conversation(incident.id));
-      }, () => !stopping);
+    if ((e.text ?? '').trim()) enqueueResponderQuestion(e, controller);
   } catch (error) {
     if (!(error instanceof PolicyError)) console.error('Provider processing failed; incident remains unresolved.');
   } finally {
     if (!stopping) { const active = controller.active(); if (active) prepareIncident(active); broadcast(); }
   }
+}
+
+async function generateResponderAnswer(incident: Incident, question: string) {
+  if (/\blocation\b|\bwhere\b|\beta\b|how (?:far|long)|when.*arriv/i.test(question)) {
+    const brief = locationBrief();
+    if (!/medicat|allerg|condition|health|record|vital|dose|blood/i.test(question)) return brief;
+    const answer = await answerQuestionDetailed(incident, await healthForIncident(incident), question, controller.conversation(incident.id));
+    return { ...answer, text: answer.text.replace('Location not provided.', 'See the current shared-location context below.') + `\n\n${brief}` };
+  }
+  return answerQuestionDetailed(incident, await healthForIncident(incident), question, controller.conversation(incident.id));
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
@@ -409,7 +422,7 @@ function execute(c: Command): { calibratedSources: Source[] } | undefined {
   switch (c.type) {
     case 'trigger': {
       if (!['synthetic', 'manual'].includes(c.kind) || (c.summary !== undefined && (typeof c.summary !== 'string' || c.summary.length > 1000))) throw new PolicyError('Invalid trigger.');
-      prepareIncident(controller.trigger({ kind: c.kind, summary: c.summary ?? (c.kind === 'synthetic' ? 'Development simulation — not a real sensor event.' : 'Explicit manual help request.') })); break;
+      prepareIncident(controller.trigger({ kind: c.kind, summary: c.summary ?? (c.kind === 'synthetic' ? 'Check-in started manually.' : 'Help requested.') })); break;
     }
     case 'cancel': controller.cancel(c.incidentId, c.checkinId); break;
     case 'accept': controller.accept(c.incidentId, c.responderId); break;
@@ -431,11 +444,11 @@ function execute(c: Command): { calibratedSources: Source[] } | undefined {
       if (!sources.length) throw new PolicyError('Calibration requires one second of continuous still samples; stop moving and try again.');
       trials.record('calibration', { sources }); return { calibratedSources: sources };
     }
-    case 'reset': controller.reset(); motion.reset(); wiliAssessment.reset(); trials.record('motion.reset', { clocks: false, cooldown: true }); handoffKey = null; break;
+    case 'reset': controller.reset(); motion.reset({ preserveCalibration: true }); wiliAssessment.reset(); shakingAssessment.reset(); trials.record('motion.reset', { clocks: false, cooldown: true, preserveCalibration: true }); handoffKey = null; break;
     default: throw new PolicyError('Unsupported command.');
   }
 }
-const mime: Record<string, string> = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml', '.ttf': 'font/ttf', '.woff2': 'font/woff2', '.webp': 'image/webp', '.png': 'image/png', '.json': 'application/json' };
+const mime: Record<string, string> = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml', '.ttf': 'font/ttf', '.woff2': 'font/woff2', '.webp': 'image/webp', '.png': 'image/png', '.json': 'application/json', '.ico': 'image/vnd.microsoft.icon', '.zip': 'application/zip' };
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -572,7 +585,7 @@ const server = createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store',
         'Content-Disposition': `attachment; filename="${i.id}-care-brief.json"` });
       return res.end(JSON.stringify({ schemaVersion: 1, kind: 'LIFELINE care brief', exportedAt: new Date().toISOString(),
-        hospitalRecords: { source: 'FinchNode read-only synthetic demo', snapshot: h?.patientRecord ?? null },
+        hospitalRecords: { source: 'FinchNode (read-only)', snapshot: h?.patientRecord ?? null },
         lifelineObservations: { source: 'LIFELINE local incident log; not hospital EHR entries',
           incident: i, timeline: controller.events(i.id), conversation: controller.conversation(i.id),
           limitations: 'Motion evidence is a possible incident, not a diagnosis. Responder progress and outcome are reports. Older sensor-or-operator events have unspecified origin.' },
@@ -669,12 +682,28 @@ const server = createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'private, max-age=3600' }); return res.end(Buffer.from(audio));
     }
     if (url.pathname.startsWith('/api/')) return json(res, 404, { error: 'Unknown API endpoint.' });
+    const avatarAsset: Record<string, { file: string; mime: string }> = {
+      '/media/demo/avatar.ply': { file: 'output/demo-avatar/person-posed.ply', mime: 'application/octet-stream' },
+      '/vendor/avatar-engine.js': { file: 'output/demo-avatar/engine.js', mime: 'text/javascript' },
+    };
+    const avatarFile = avatarAsset[url.pathname];
+    if (req.method === 'GET' && avatarFile) {
+      if (!existsSync(avatarFile.file)) return json(res, 404, { error: 'Avatar asset is unavailable.' });
+      res.writeHead(200, { 'Content-Type': avatarFile.mime, 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' });
+      return res.end(readFileSync(avatarFile.file));
+    }
     const allowed = new Set(['/index.html', '/landing.html', '/styles.css', '/app.js', '/dashboard-view.js', '/care-summary.js', '/landing.js', '/storyboard.html', '/storyboard.js',
       '/ehr.html', '/ehr.js', '/ehr.css',
+      '/twin/lab.html', '/twin/lab.js', '/twin/lab.css', '/twin/kinematics.js',
+      '/vendor/location-engine.js', '/media/location/apartment-111.glb', '/media/location/provenance.json',
+      '/brand.html', '/brand.css', '/brand.js', '/favicon.svg', '/favicon.ico', '/favicon-16.png', '/favicon-32.png', '/apple-touch-icon.png',
+      '/media/brand/lifeline-mark.svg', '/media/brand/lifeline-mark-white.svg', '/media/brand/lifeline-logo-original.png', '/media/brand/identity-board.png', '/media/brand/color-tokens.json', '/media/brand/lifeline-brand-kit.zip',
       '/media/ehr-workspace.png', '/media/lifeline-logo.png',
       '/share-location.html', '/share-location.js', '/share-location.css',
       '/fonts/cormorant-regular.ttf', '/fonts/cormorant-italic.ttf', '/fonts/dm-sans-regular.ttf', '/fonts/aspekta-variable.woff2']);
     const pageRoutes: Record<string, string> = { '/': '/landing.html', '/dashboard': '/index.html',
+      '/motion-lab': '/twin/lab.html', '/motion-lab/': '/twin/lab.html',
+      '/brand': '/brand.html', '/brand/': '/brand.html',
       '/ehr': '/ehr.html', '/ehr/': '/ehr.html',
       '/dashboard/': '/index.html', '/care': '/index.html', '/calibration': '/index.html', '/storyboard': '/storyboard.html', '/share-location': '/share-location.html' };
     const path = pageRoutes[url.pathname] ?? url.pathname;
@@ -682,7 +711,7 @@ const server = createServer(async (req, res) => {
     if (req.method !== 'GET' || (!allowed.has(path) && !storyAsset)) return json(res, 404, { error: 'Not found.' });
     const file = resolve('public', path.slice(1));
     if (!existsSync(file)) return json(res, 404, { error: 'Not found.' });
-    res.writeHead(200, { 'Content-Type': mime[extname(path)], 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' });
+    res.writeHead(200, { 'Content-Type': path.endsWith('.glb') ? 'model/gltf-binary' : mime[extname(path)], 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' });
     res.end(readFileSync(file));
   } catch (error) { json(res, error instanceof PolicyError || error instanceof SyntaxError ? 400 : 500,
     { error: error instanceof PolicyError || error instanceof SyntaxError ? error.message : 'Request failed; incident state is preserved.' }); }
@@ -724,15 +753,16 @@ server.on('upgrade', (req, socket, head) => {
           ON_SCENE: `${ownerName ?? 'RESPONDER'} ON SCENE`,
           RESOLVED: 'RESOLVED\nOUTCOME RECORDED',
           CANCELLED_FALSE_ALARM: i?.resolutionActor === 'development-operator'
-            ? 'REHEARSAL ENDED\nDEVELOPMENT RESET'
+            ? 'CHECK-IN ENDED\nREADY'
             : 'CHECK-IN CLOSED\nEXPLICIT CONTROL CONFIRMED',
         };
-        const voices: Record<string, string> = { CONFIRMING: 'CHECKIN', HELP_REQUESTED: 'HELP', ACKNOWLEDGED: 'ACCEPTED',
+        const voices: Record<string, string> = { CONFIRMING: i?.evidence.eventType === 'sustained-shaking' ? 'MOVEMENT' : 'CHECKIN', HELP_REQUESTED: 'HELP', ACKNOWLEDGED: 'ACCEPTED',
           RESPONDER_EN_ROUTE: 'ENROUTE', ON_SCENE: 'ARRIVED', RESOLVED: 'RESOLVED' };
         ws.send(JSON.stringify({ type: 'incident.context', sessionId: protocol.hello.sessionId,
           incidentId: i?.id ?? null, checkinId: i?.checkinId ?? null, phase: i?.phase ?? null,
           checkinDeadline: i?.checkinDeadline ?? null, serverTime: Date.now(), ownerName,
-          statusText: `LIFELINE${i?.dispatchMode === 'simulated' ? ' DEMO' : ''}\n${i ? screens[i.phase] ?? i.phase : 'READY\nGREEN: OKAY\nRED: HELP'}`.slice(0,300),
+          dispatchMode: i?.dispatchMode ?? dispatchMode,
+          statusText: `LIFELINE\n${i ? screens[i.phase] ?? i.phase : 'READY\nGREEN: OKAY\nRED: HELP'}`.slice(0,300),
           voiceAsset: i ? voices[i.phase] ?? null : null }));
       };
       const sendConversation = () => {
@@ -741,7 +771,7 @@ server.on('upgrade', (req, socket, head) => {
         if (!message) return;
         ws.send(JSON.stringify({ type: 'conversation.speak', sessionId: protocol.hello.sessionId,
           eventId: message.id, incidentId: message.incidentId,
-          speakerName: message.source === 'simulated-dispatch' ? `Demo responder ${message.speakerName}` : message.speakerName,
+          speakerName: message.speakerName,
           text: message.text }));
       };
       const sendWellbeingContext = () => {
@@ -889,9 +919,9 @@ server.on('upgrade', (req, socket, head) => {
 live.on('connection', ws => ws.on('error', () => ws.close()));
 const heartbeat = setInterval(() => {
   controller.tick(); simulatedDispatch.tick(); const assessedAt = performance.now(), evaluated = !controller.active(); const evidence = !evaluated ? null
-    : legacyPhone ? motion.candidate() : wiliAssessment.candidate(wili, motion, assessedAt);
+    : legacyPhone ? motion.candidate() : wiliAssessment.candidate(wili, motion, assessedAt) ?? shakingAssessment.candidate(wili, motion, assessedAt);
   trials.record('assessment', { candidate: evidence, evaluated,
-    detector: legacyPhone ? 'legacy-core-motion' : 'wili-waist-provisional-v1' }, undefined, assessedAt);
+    detector: legacyPhone ? 'legacy-core-motion' : evidence?.shaking?.detector ?? 'wili-waist-provisional-v1' }, undefined, assessedAt);
   if (evidence) prepareIncident(controller.trigger(evidence));
   const active = controller.active(); if (active) prepareIncident(active);
   if (Date.now() >= nextWellbeingTick) {
@@ -908,7 +938,10 @@ const heartbeat = setInterval(() => {
         `${active.id}: ${position.responder.name} is on the way. Estimated walk: ${Math.max(1, Math.ceil(position.eta.seconds / 60))} min (${position.eta.method === 'apple-maps-walking' ? 'Apple Maps' : 'straight-line approximation'}), updated ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. This is an estimate; arrival is not confirmed.`);
     }
   }
-  broadcast(); void providerWorker();
+  broadcast(); void providerWorker('wearer'); void providerWorker('responders');
+  void responderQuestionWorker.tick().catch(() => {
+    if (!stopping) console.error('Responder answer preparation interrupted; persisted question remains available.');
+  });
 }, 100);
 
 server.listen(port, host, () => {
@@ -932,6 +965,7 @@ server.on('error', error => { console.error(error.message); process.exitCode = 1
 locationGateway?.on('error', () => console.error('Location gateway unavailable; private incident response continues.'));
 async function shutdown(): Promise<void> {
   if (stopping) return; stopping = true; clearInterval(heartbeat); clearInterval(voiceCacheTimer);
+  responderQuestionWorker.stop();
   for (const ws of [...live.clients, ...ingest.clients, ...producers.values()]) ws.terminate();
   for (const recorder of recorders.values()) recorder.end();
   if (trials.recording) trials.stop('Backend stopped; capture ended.');

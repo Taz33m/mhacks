@@ -24,8 +24,8 @@ export interface EhrWorkspace {
     incidents: EhrIncidentSummary[]; selectedIncident: EhrSelectedIncident | null };
   sources: { hospital: string; observations: string };
 }
-const hospitalSource = 'FinchNode read-only synthetic demo; fictional subject, not the wearer’s personal EHR';
-const observationSource = 'LIFELINE local care log; wearer identity is not linked to the fictional Finch subject; not hospital EHR entries';
+const hospitalSource = 'FinchNode (read-only)';
+const observationSource = 'LIFELINE care log';
 
 function incidentView(i: Incident): EhrIncident {
   const a = i.evidence.assessment;
@@ -54,6 +54,7 @@ function eventDetail(event: TimelineEvent): string {
     case 'HANDOFF_PREPARED': return `Handoff prepared · ${text(data.generation) ?? 'generation unknown'} · saved clinical revision ${text(data.clinicalRevision) ?? 'unavailable'}.`;
     case 'HEALTH_CONTEXT_BOUND': return `Clinical context saved · revision ${text(data.revision) ?? 'unavailable'} · ${Array.isArray(data.recordIds) ? data.recordIds.length : 0} source records.`;
     case 'CONVERSATION_PLAYBACK': return `Wearable playback: ${text(data.status) ?? 'unknown'}.`;
+    case 'QUESTION_RECEIVED': return `Responder question: ${text(data.question) ?? 'not retained'}. Received for preparation; no answer delivery is established.`;
     case 'ANSWER_QUEUED': return `Record question: ${text(data.question) ?? 'not retained'} · ${text(data.generation) ?? 'generation unknown'} · clinical revision ${text(data.healthRevision) ?? 'unavailable'}. Queued does not establish receipt.`;
     default: return 'Local care event recorded.';
   }

@@ -120,8 +120,8 @@ test('EHR authenticates, separates sources and keeps incident/answer snapshots i
     assert.equal(initial.care.selectedIncident, null); assert.deepEqual(initial.care.incidents, []);
     assert.deepEqual(initial.care.subject, { name: 'Generated EHR wearer', recordLink: 'unlinked' });
     assert.equal(initial.patientRecord!.subject, 'patient-demo-001'); assert.equal(initial.patientRecord!.synthetic, true);
-    assert.match(initial.sources.hospital, /synthetic.*fictional.*not the wearer/);
-    assert.match(initial.sources.observations, /not linked.*not hospital EHR/);
+    assert.match(initial.sources.hospital, /FinchNode \(read-only\)/);
+    assert.match(initial.sources.observations, /LIFELINE care log/);
     assert.equal((await fixture.state()).providers.photon.configured, false);
     assert.equal((await fixture.state()).wearerMessaging.configured, false);
 
@@ -139,7 +139,7 @@ test('EHR authenticates, separates sources and keeps incident/answer snapshots i
     const answered = await waitFor(fixture.state, value => value.wellbeing!.messages.some(message => message.recordContext?.sourceRecordIds.includes('allergy-1')));
     assert.equal(answered.incident, null);
     const answer = answered.wellbeing!.messages.find(message => message.recordContext?.sourceRecordIds.includes('allergy-1'))!;
-    assert.match(answer.text, /Fictional Patient.*fictional; not your personal record/);
+    assert.match(answer.text, /^From your health record:\n(?!From the health record)/);
     const savedAnswers = (await fixture.brief()).hospitalRecords.answerSnapshots;
     assert.equal(savedAnswers.length, 1); assert.equal(savedAnswers[0].replyMessageId, answer.id);
     assert.equal(savedAnswers[0].snapshot.revision, initial.patientRecord!.revision);
@@ -176,8 +176,8 @@ test('EHR authenticates, separates sources and keeps incident/answer snapshots i
     assert.deepEqual(exported.lifelineObservations.wearer, initial.care.subject);
     assert.deepEqual(exported.lifelineObservations.wellbeing.messages, (await fixture.state()).wellbeing!.messages);
     assert.deepEqual(exported.lifelineObservations.incident, (await fixture.workspace(first.id)).care.selectedIncident);
-    assert.match(exported.hospitalRecords.source, /fictional.*not the wearer/);
-    assert.match(exported.lifelineObservations.source, /not hospital EHR entries/);
+    assert.match(exported.hospitalRecords.source, /FinchNode \(read-only\)/);
+    assert.match(exported.lifelineObservations.source, /LIFELINE care log/);
 
     const oldQuestion = await fixture.json<{ answer: string; revision: string }>('/api/patient-record/question', {
       method: 'POST', body: JSON.stringify({ incidentId: first.id, revision: savedPatient.revision, question: 'What allergies are recorded?' }) });

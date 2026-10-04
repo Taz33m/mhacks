@@ -31,6 +31,19 @@ test('isolated HTTP/WS server accepts native packets, authenticates commands, an
       child.on('error', reject); child.on('exit', () => { clearTimeout(timer); reject(new Error('Server stopped before ready.')); });
     });
     const base = `http://127.0.0.1:${port}`;
+    const lab = await fetch(`${base}/motion-lab`); assert.equal(lab.status, 200);
+    assert.match(await lab.text(), /synthetic kinematics/);
+    assert.equal((await fetch(`${base}/twin/kinematics.js`)).status, 200);
+    assert.equal((await fetch(`${base}/twin/lab.js`)).status, 200);
+    const locationModel = await fetch(`${base}/media/location/apartment-111.glb`);
+    assert.equal(locationModel.status, 200);
+    assert.equal(locationModel.headers.get('content-type'), 'model/gltf-binary');
+    assert.equal(Buffer.from(await locationModel.arrayBuffer()).subarray(0, 4).toString(), 'glTF');
+    const locationEngine = await fetch(`${base}/vendor/location-engine.js`);
+    assert.equal(locationEngine.status, 200);
+    assert.equal(locationEngine.headers.get('content-type'), 'text/javascript');
+    await locationEngine.arrayBuffer();
+    assert.equal((await fetch(`${base}/media/location/../../.env`)).status, 404);
     assert.equal((await fetch(`${base}/api/commands`, { method: 'POST', body: '{}' })).status, 401);
     const blockedHostStatus = await new Promise<number>((resolve, reject) => {
       get(`${base}/api/setup`, { headers: { Host: 'untrusted.example' } }, response => {
@@ -90,6 +103,9 @@ test('isolated HTTP/WS server accepts native packets, authenticates commands, an
     assert.equal(measured.sensors.every(s => s.fresh && s.calibrated && s.alignmentUncertaintyMs !== null), true);
     assert.equal(measured.trial!.sampleCounts['chest-phone'] > 30, true);
     assert.equal(measured.trial!.sampleCounts['waist-airpod'] > 30, true);
+    assert.equal((await commands({ type: 'reset' })).status, 200);
+    assert.equal((await state()).sensors.every(s => s.calibrated && s.fresh), true,
+      'demo reset preserves a current baseline and clock alignment');
     assert.equal((await commands({ type: 'trigger', kind: 'synthetic', summary: 'Isolated protocol fixture; not a physical fall.' })).status, 200);
     const confirming = (await state()).incident!;
     assert.equal((await fetch(`${base}/api/incidents/${confirming.id}/brief`)).status, 401);
@@ -178,6 +194,17 @@ test('isolated HTTP/WS server accepts native packets, authenticates commands, an
     });
     assert.equal(voiced.status, 200); assert.equal(voiced.body.decision, 'help_requested');
     assert.equal((await state()).incident?.phase, 'HELP_REQUESTED');
+    intervals.forEach(clearInterval); sockets.forEach(ws => ws.terminate());
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal((await commands({ type: 'reset' })).status, 200);
+    const reset = await state();
+    assert.equal(reset.incident?.phase, 'CANCELLED_FALSE_ALARM');
+    assert.equal(reset.incident?.resolutionActor, 'development-operator');
+    assert.equal(reset.sensors.every(s => !s.fresh && !s.calibrated), true);
+    assert.equal((await commands({ type: 'trigger', kind: 'synthetic', summary: 'Rehearsal restart without sensors or calibration.' })).status, 200);
+    const restarted = (await state()).incident!;
+    assert.equal(restarted.phase, 'CONFIRMING');
+    assert.notEqual(restarted.id, next.id);
   } finally {
     intervals.forEach(clearInterval); sockets.forEach(ws => ws.terminate());
     child.kill('SIGTERM'); await exit; rmSync(dir, { recursive: true, force: true });

@@ -191,12 +191,19 @@ test('custom protocol rejects missing hello, identity changes and duplicate cont
   assert.equal(validDevicePacket({ ...button, action: ['help'] }), false);
   assert.throws(() => protocol.accept(button), /Repeated/);
   assert.equal(validDevicePacket({ ...button, action: 'cancel' }), false);
+  assert.equal(validDevicePacket({ ...button, action: 'rehearse' }), true);
+  assert.equal(validDevicePacket({ ...button, action: 'rehearse', incidentId: 'LF-STALE', checkinId: 'stale-checkin' }), false);
   assert.equal(validHostPacket({ type: 'audio.command', sessionId: sample().sessionId, commandId: 'synthetic-play-1',
     incidentId: 'LF-SYNTHETIC', checkinId: 'synthetic-checkin', action: 'play', asset: 'fall-checkin' }), true);
   assert.equal(validHostPacket({ type: 'audio.command', sessionId: sample().sessionId, commandId: 'synthetic-play-1',
     incidentId: 'LF-SYNTHETIC', checkinId: 'synthetic-checkin', action: ['play'], asset: 'fall-checkin' }), false);
   assert.equal(validHostPacket({ type: 'incident.context', sessionId: sample().sessionId, incidentId: null,
     checkinId: null, phase: 'CONFIRMING', checkinDeadline: null, serverTime: 1 }), false);
+  const idle = { type: 'incident.context', sessionId: sample().sessionId, incidentId: null,
+    checkinId: null, phase: null, checkinDeadline: null, serverTime: 1 };
+  assert.equal(validHostPacket({ ...idle, dispatchMode: 'simulated' }), true);
+  assert.equal(validHostPacket({ ...idle, dispatchMode: 'live' }), true);
+  assert.equal(validHostPacket({ ...idle, dispatchMode: 'unknown' }), false);
 });
 
 test('capability and range declarations constrain later board packets', () => {
